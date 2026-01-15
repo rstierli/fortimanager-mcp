@@ -10,8 +10,7 @@ Based on FNDN FortiManager 7.6.5 API specifications.
 
 from typing import Any
 
-from fortimanager_mcp.server import mcp, get_fmg_client
-
+from fortimanager_mcp.server import get_fmg_client, mcp
 
 # =============================================================================
 # SD-WAN Template Operations
@@ -178,9 +177,7 @@ async def assign_sdwan_template(
 
     try:
         scope = [{"name": device, "vdom": vdom}]
-        result = await client.assign_sdwan_template(
-            adom=adom, template=template, scope=scope
-        )
+        result = await client.assign_sdwan_template(adom=adom, template=template, scope=scope)
         return {
             "success": True,
             "message": f"SD-WAN template '{template}' assigned to device '{device}'",
@@ -211,9 +208,7 @@ async def assign_sdwan_template_bulk(
         return {"error": "FortiManager client not connected"}
 
     try:
-        result = await client.assign_sdwan_template(
-            adom=adom, template=template, scope=devices
-        )
+        result = await client.assign_sdwan_template(adom=adom, template=template, scope=devices)
         return {
             "success": True,
             "message": f"SD-WAN template '{template}' assigned to {len(devices)} devices",
@@ -247,9 +242,7 @@ async def unassign_sdwan_template(
 
     try:
         scope = [{"name": device, "vdom": vdom}]
-        result = await client.unassign_sdwan_template(
-            adom=adom, template=template, scope=scope
-        )
+        result = await client.unassign_sdwan_template(adom=adom, template=template, scope=scope)
         return {
             "success": True,
             "message": f"SD-WAN template '{template}' unassigned from device '{device}'",

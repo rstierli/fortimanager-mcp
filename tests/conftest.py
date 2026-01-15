@@ -261,6 +261,8 @@ def mock_get_fmg_client_none() -> Generator[MagicMock, None, None]:
 
 
 @pytest.fixture
-async def async_mock_client(mock_client: FortiManagerClient, configure_mock_responses: None) -> FortiManagerClient:
+async def async_mock_client(
+    mock_client: FortiManagerClient, configure_mock_responses: None
+) -> FortiManagerClient:
     """Async fixture that provides a fully configured mock client."""
     return mock_client

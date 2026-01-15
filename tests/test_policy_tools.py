@@ -17,6 +17,7 @@ class TestPolicyListTools:
         mock_fmg_instance: MagicMock,
     ) -> None:
         """Test listing firewall policies."""
+
         # Mock count and list responses
         def mock_get(url: str, **kwargs):
             if "/policy" in url and "count" not in url:

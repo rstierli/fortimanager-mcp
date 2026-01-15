@@ -8,8 +8,7 @@ Based on FNDN FortiManager 7.6.5 API specifications.
 
 from typing import Any
 
-from fortimanager_mcp.server import mcp, get_fmg_client
-
+from fortimanager_mcp.server import get_fmg_client, mcp
 
 # =============================================================================
 # Script CRUD Operations
@@ -453,9 +452,7 @@ async def get_script_log_output(
         return {"error": "FortiManager client not connected"}
 
     try:
-        result = await client.get_script_log_output(
-            adom=adom, log_id=log_id, device=device
-        )
+        result = await client.get_script_log_output(adom=adom, log_id=log_id, device=device)
         return {"log": result}
     except Exception as e:
         return {"error": str(e)}

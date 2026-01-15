@@ -618,9 +618,7 @@ async def move_firewall_policy(
     """
     try:
         client = _get_client()
-        await client.move_firewall_policy(
-            adom, package, policyid, target_policyid, position
-        )
+        await client.move_firewall_policy(adom, package, policyid, target_policyid, position)
 
         return {
             "status": "success",

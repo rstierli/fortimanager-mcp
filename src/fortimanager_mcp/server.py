@@ -3,10 +3,9 @@
 Uses FastMCP pattern for tool registration.
 """
 
-import asyncio
 import logging
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
 
 from mcp.server.fastmcp import FastMCP
 
@@ -39,8 +38,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[None]:
     # Check if host is configured
     if not settings.fortimanager_host:
         logger.warning(
-            "FORTIMANAGER_HOST not configured. "
-            "Set environment variables or .env file to connect."
+            "FORTIMANAGER_HOST not configured. Set environment variables or .env file to connect."
         )
         _fmg_client = None
         yield
@@ -74,13 +72,15 @@ mcp = FastMCP(
 def main() -> None:
     """Main entry point for the FortiManager MCP server."""
     # Import tools to register them with the server
-    from fortimanager_mcp.tools import system_tools  # noqa: F401
-    from fortimanager_mcp.tools import dvm_tools  # noqa: F401
-    from fortimanager_mcp.tools import policy_tools  # noqa: F401
-    from fortimanager_mcp.tools import object_tools  # noqa: F401
-    from fortimanager_mcp.tools import script_tools  # noqa: F401
-    from fortimanager_mcp.tools import template_tools  # noqa: F401
-    from fortimanager_mcp.tools import sdwan_tools  # noqa: F401
+    from fortimanager_mcp.tools import (
+        dvm_tools,  # noqa: F401
+        object_tools,  # noqa: F401
+        policy_tools,  # noqa: F401
+        script_tools,  # noqa: F401
+        sdwan_tools,  # noqa: F401
+        system_tools,  # noqa: F401
+        template_tools,  # noqa: F401
+    )
 
     logger.info("Starting FortiManager MCP Server...")
     mcp.run()

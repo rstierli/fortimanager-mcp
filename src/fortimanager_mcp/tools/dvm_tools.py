@@ -25,7 +25,14 @@ def _get_client():
 CONN_STATUS = {0: "unknown", 1: "up", 2: "down"}
 CONF_STATUS = {0: "unknown", 1: "in_sync", 2: "out_of_sync"}
 DB_STATUS = {0: "unknown", 1: "no_changes", 2: "modified"}
-DEV_STATUS = {0: "none", 1: "unknown", 2: "checkedin", 3: "in_progress", 4: "installed", 5: "aborted"}
+DEV_STATUS = {
+    0: "none",
+    1: "unknown",
+    2: "checkedin",
+    3: "in_progress",
+    4: "installed",
+    5: "aborted",
+}
 
 
 def _decode_status(device: dict[str, Any]) -> dict[str, Any]:

@@ -3,7 +3,6 @@
 Based on FNDN FortiManager 7.6.5 API specifications.
 """
 
-import json
 import logging
 from typing import Any
 
@@ -22,8 +21,17 @@ logger = logging.getLogger(__name__)
 def _sanitize_for_logging(data: Any, depth: int = 0) -> Any:
     """Sanitize sensitive data before logging."""
     SENSITIVE_FIELDS = {
-        "password", "passwd", "pass", "adm_pass", "api_token",
-        "apikey", "token", "session", "sid", "authorization", "secret",
+        "password",
+        "passwd",
+        "pass",
+        "adm_pass",
+        "api_token",
+        "apikey",
+        "token",
+        "session",
+        "sid",
+        "authorization",
+        "secret",
     }
     MASK = "***REDACTED***"
 
@@ -309,18 +317,14 @@ class FortiManagerClient:
         result = await self.get(f"/dvmdb/adom/{adom}/device", **params)
         return result if isinstance(result, list) else [result] if result else []
 
-    async def get_device(
-        self, device: str, adom: str = "root", loadsub: int = 0
-    ) -> dict[str, Any]:
+    async def get_device(self, device: str, adom: str = "root", loadsub: int = 0) -> dict[str, Any]:
         """Get specific device.
 
         FNDN: GET /dvmdb/adom/{adom}/device/{device}
         """
         return await self.get(f"/dvmdb/adom/{adom}/device/{device}", loadsub=loadsub)
 
-    async def list_device_vdoms(
-        self, device: str, adom: str = "root"
-    ) -> list[dict[str, Any]]:
+    async def list_device_vdoms(self, device: str, adom: str = "root") -> list[dict[str, Any]]:
         """List VDOMs for a device.
 
         FNDN: GET /dvmdb/adom/{adom}/device/{device}/vdom
@@ -444,8 +448,15 @@ class FortiManagerClient:
         FNDN: GET /dvmdb/adom/{adom}/device with status fields
         """
         fields = [
-            "name", "ip", "sn", "conn_status", "conf_status",
-            "db_status", "dev_status", "os_ver", "platform_str",
+            "name",
+            "ip",
+            "sn",
+            "conn_status",
+            "conf_status",
+            "db_status",
+            "dev_status",
+            "os_ver",
+            "platform_str",
         ]
         filter_param = [["name", "==", device]] if device else None
         return await self.list_devices(adom, fields=fields, filter=filter_param)
@@ -663,10 +674,7 @@ class FortiManagerClient:
 
         FNDN: UPDATE /pm/pkg/adom/{adom}/{pkg}
         """
-        return await self.update(
-            f"/pm/pkg/adom/{adom}/{pkg}",
-            **{"scope member": scope}
-        )
+        return await self.update(f"/pm/pkg/adom/{adom}/{pkg}", **{"scope member": scope})
 
     # =========================================================================
     # Firewall Policies
@@ -693,10 +701,7 @@ class FortiManagerClient:
         if range:
             params["range"] = range
 
-        result = await self.get(
-            f"/pm/config/adom/{adom}/pkg/{pkg}/firewall/policy",
-            **params
-        )
+        result = await self.get(f"/pm/config/adom/{adom}/pkg/{pkg}/firewall/policy", **params)
         return result if isinstance(result, list) else [result] if result else []
 
     async def get_firewall_policy(
@@ -832,10 +837,7 @@ class FortiManagerClient:
         if filter:
             params["filter"] = filter
 
-        result = await self.get(
-            f"/pm/config/adom/{adom}/obj/firewall/address",
-            **params
-        )
+        result = await self.get(f"/pm/config/adom/{adom}/obj/firewall/address", **params)
         return result if isinstance(result, list) else [result] if result else []
 
     async def get_address(
@@ -909,10 +911,7 @@ class FortiManagerClient:
         if filter:
             params["filter"] = filter
 
-        result = await self.get(
-            f"/pm/config/adom/{adom}/obj/firewall/addrgrp",
-            **params
-        )
+        result = await self.get(f"/pm/config/adom/{adom}/obj/firewall/addrgrp", **params)
         return result if isinstance(result, list) else [result] if result else []
 
     async def get_address_group(
@@ -986,10 +985,7 @@ class FortiManagerClient:
         if filter:
             params["filter"] = filter
 
-        result = await self.get(
-            f"/pm/config/adom/{adom}/obj/firewall/service/custom",
-            **params
-        )
+        result = await self.get(f"/pm/config/adom/{adom}/obj/firewall/service/custom", **params)
         return result if isinstance(result, list) else [result] if result else []
 
     async def get_service(
@@ -1001,9 +997,7 @@ class FortiManagerClient:
 
         FNDN: GET /pm/config/adom/{adom}/obj/firewall/service/custom/{name}
         """
-        return await self.get(
-            f"/pm/config/adom/{adom}/obj/firewall/service/custom/{name}"
-        )
+        return await self.get(f"/pm/config/adom/{adom}/obj/firewall/service/custom/{name}")
 
     async def create_service(
         self,
@@ -1043,9 +1037,7 @@ class FortiManagerClient:
 
         FNDN: DELETE /pm/config/adom/{adom}/obj/firewall/service/custom/{name}
         """
-        return await self.delete(
-            f"/pm/config/adom/{adom}/obj/firewall/service/custom/{name}"
-        )
+        return await self.delete(f"/pm/config/adom/{adom}/obj/firewall/service/custom/{name}")
 
     # =========================================================================
     # Firewall Objects - Service Groups
@@ -1067,10 +1059,7 @@ class FortiManagerClient:
         if filter:
             params["filter"] = filter
 
-        result = await self.get(
-            f"/pm/config/adom/{adom}/obj/firewall/service/group",
-            **params
-        )
+        result = await self.get(f"/pm/config/adom/{adom}/obj/firewall/service/group", **params)
         return result if isinstance(result, list) else [result] if result else []
 
     async def get_service_group(
@@ -1082,9 +1071,7 @@ class FortiManagerClient:
 
         FNDN: GET /pm/config/adom/{adom}/obj/firewall/service/group/{name}
         """
-        return await self.get(
-            f"/pm/config/adom/{adom}/obj/firewall/service/group/{name}"
-        )
+        return await self.get(f"/pm/config/adom/{adom}/obj/firewall/service/group/{name}")
 
     async def create_service_group(
         self,
@@ -1109,9 +1096,7 @@ class FortiManagerClient:
 
         FNDN: DELETE /pm/config/adom/{adom}/obj/firewall/service/group/{name}
         """
-        return await self.delete(
-            f"/pm/config/adom/{adom}/obj/firewall/service/group/{name}"
-        )
+        return await self.delete(f"/pm/config/adom/{adom}/obj/firewall/service/group/{name}")
 
     # =========================================================================
     # Workspace Mode (ADOM Locking)
@@ -1433,10 +1418,7 @@ class FortiManagerClient:
         if fields:
             params["fields"] = fields
 
-        result = await self.get(
-            f"/pm/config/adom/{adom}/obj/cli/template-group",
-            **params
-        )
+        result = await self.get(f"/pm/config/adom/{adom}/obj/cli/template-group", **params)
         return result if isinstance(result, list) else [result] if result else []
 
     async def get_cli_template_group(
@@ -1448,9 +1430,7 @@ class FortiManagerClient:
 
         FNDN: GET /pm/config/adom/{adom}/obj/cli/template-group/{name}
         """
-        return await self.get(
-            f"/pm/config/adom/{adom}/obj/cli/template-group/{name}"
-        )
+        return await self.get(f"/pm/config/adom/{adom}/obj/cli/template-group/{name}")
 
     async def create_cli_template_group(
         self,
@@ -1475,9 +1455,7 @@ class FortiManagerClient:
 
         FNDN: DELETE /pm/config/adom/{adom}/obj/cli/template-group/{name}
         """
-        return await self.delete(
-            f"/pm/config/adom/{adom}/obj/cli/template-group/{name}"
-        )
+        return await self.delete(f"/pm/config/adom/{adom}/obj/cli/template-group/{name}")
 
     async def list_template_groups(
         self,

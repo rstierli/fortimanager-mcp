@@ -150,10 +150,9 @@ async def create_address_subnet(
             ip, prefix = subnet.split("/")
             # Convert CIDR to netmask
             prefix_int = int(prefix)
-            netmask = ".".join([
-                str((0xffffffff << (32 - prefix_int) >> i) & 0xff)
-                for i in [24, 16, 8, 0]
-            ])
+            netmask = ".".join(
+                [str((0xFFFFFFFF << (32 - prefix_int) >> i) & 0xFF) for i in [24, 16, 8, 0]]
+            )
             subnet_value = [ip, netmask]
         elif " " in subnet:
             subnet_value = subnet.split()
@@ -382,10 +381,9 @@ async def update_address(
             if "/" in subnet:
                 ip, prefix = subnet.split("/")
                 prefix_int = int(prefix)
-                netmask = ".".join([
-                    str((0xffffffff << (32 - prefix_int) >> i) & 0xff)
-                    for i in [24, 16, 8, 0]
-                ])
+                netmask = ".".join(
+                    [str((0xFFFFFFFF << (32 - prefix_int) >> i) & 0xFF) for i in [24, 16, 8, 0]]
+                )
                 data["subnet"] = [ip, netmask]
             else:
                 data["subnet"] = subnet.split()

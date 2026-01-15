@@ -8,8 +8,11 @@ from tests.conftest import MOCK_SYSTEM_STATUS, MOCK_ADOMS, MOCK_DEVICES, MOCK_PA
 
 
 @pytest.fixture
-def mock_client_configured(mock_client: FortiManagerClient, mock_fmg_instance: MagicMock) -> FortiManagerClient:
+def mock_client_configured(
+    mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+) -> FortiManagerClient:
     """Configure mock client with standard responses."""
+
     def mock_get(url: str, **kwargs):
         if url == "/sys/status":
             return (0, MOCK_SYSTEM_STATUS)
@@ -35,7 +38,9 @@ class TestSystemStatus:
     """Test system status tools."""
 
     @pytest.mark.asyncio
-    async def test_get_system_status_success(self, mock_client_configured: FortiManagerClient) -> None:
+    async def test_get_system_status_success(
+        self, mock_client_configured: FortiManagerClient
+    ) -> None:
         """Test successful system status retrieval."""
         from fortimanager_mcp.tools import system_tools
 
@@ -103,7 +108,9 @@ class TestPackageTools:
         assert result["count"] == 2
 
     @pytest.mark.asyncio
-    async def test_install_package_returns_task(self, mock_client_configured: FortiManagerClient) -> None:
+    async def test_install_package_returns_task(
+        self, mock_client_configured: FortiManagerClient
+    ) -> None:
         """Test package installation returns task ID."""
         from fortimanager_mcp.tools import system_tools
 
