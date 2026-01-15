@@ -3,12 +3,13 @@
 Provides mocked client fixtures for testing tools without a real FortiManager.
 """
 
+from collections.abc import Generator
+from typing import Any
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
-from typing import Any, Generator
 
 from fortimanager_mcp.api.client import FortiManagerClient
-
 
 # =============================================================================
 # Mock Response Data

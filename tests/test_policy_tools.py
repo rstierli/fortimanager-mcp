@@ -1,7 +1,8 @@
 """Tests for policy_tools module."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from fortimanager_mcp.tools import policy_tools
 from tests.conftest import MOCK_POLICIES

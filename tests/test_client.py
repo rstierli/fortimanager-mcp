@@ -1,7 +1,8 @@
 """Tests for FortiManager API client."""
 
-import pytest
 from unittest.mock import MagicMock
+
+import pytest
 
 from fortimanager_mcp.api.client import FortiManagerClient, parse_fmg_error
 from fortimanager_mcp.utils.errors import APIError, ConnectionError

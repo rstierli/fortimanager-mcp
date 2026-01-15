@@ -1,6 +1,7 @@
 """Tests for configuration management."""
 
 import pytest
+
 from fortimanager_mcp.utils.config import Settings
 
 

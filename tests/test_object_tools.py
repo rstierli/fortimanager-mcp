@@ -1,7 +1,8 @@
 """Tests for object_tools module."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from fortimanager_mcp.tools import object_tools
 from tests.conftest import MOCK_ADDRESSES

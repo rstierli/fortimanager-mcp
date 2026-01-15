@@ -1,10 +1,11 @@
 """Tests for system_tools module."""
 
-import pytest
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from fortimanager_mcp.api.client import FortiManagerClient
-from tests.conftest import MOCK_SYSTEM_STATUS, MOCK_ADOMS, MOCK_DEVICES, MOCK_PACKAGES
+from tests.conftest import MOCK_ADOMS, MOCK_DEVICES, MOCK_PACKAGES, MOCK_SYSTEM_STATUS
 
 
 @pytest.fixture
