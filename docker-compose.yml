@@ -1,0 +1,12 @@
+services:
+  fortimanager-mcp:
+    build: .
+    container_name: fortimanager-mcp
+    environment:
+      - FORTIMANAGER_HOST=${FORTIMANAGER_HOST}
+      - FORTIMANAGER_API_TOKEN=${FORTIMANAGER_API_TOKEN}
+      - FORTIMANAGER_VERIFY_SSL=${FORTIMANAGER_VERIFY_SSL:-false}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./output:/app/output
+    restart: unless-stopped
