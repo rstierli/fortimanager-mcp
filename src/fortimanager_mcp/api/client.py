@@ -249,10 +249,17 @@ class FortiManagerClient:
         code, response = fmg.execute(url, **kwargs)
         return self._handle_response(code, response, f"EXEC {url}")
 
-    async def move(self, url: str, **kwargs: Any) -> Any:
-        """Execute MOVE request."""
+    async def move(self, url: str, option: str, target: str) -> Any:
+        """Execute MOVE request.
+
+        Args:
+            url: The URL of the object to move
+            option: "before" or "after"
+            target: Target object ID (as string)
+        """
         fmg = self._ensure_connected()
-        code, response = fmg.move(url, **kwargs)
+        # Pass as dict in args (not kwargs) so it merges at top level, not in 'data'
+        code, response = fmg.move(url, {"option": option, "target": target})
         return self._handle_response(code, response, f"MOVE {url}")
 
     # =========================================================================
@@ -826,8 +833,8 @@ class FortiManagerClient:
         """
         return await self.move(
             f"/pm/config/adom/{adom}/pkg/{pkg}/firewall/policy/{policyid}",
-            option=option,
-            target=str(target),
+            option,
+            str(target),
         )
 
     # =========================================================================
