@@ -104,13 +104,13 @@ class FortiManagerClient:
     def from_settings(cls, settings: Settings) -> "FortiManagerClient":
         """Create client from settings."""
         return cls(
-            host=settings.fortimanager_host,
-            api_token=settings.fortimanager_api_token or None,
-            username=settings.fortimanager_username or None,
-            password=settings.fortimanager_password or None,
-            verify_ssl=settings.fortimanager_verify_ssl,
-            timeout=settings.fortimanager_timeout,
-            max_retries=settings.fortimanager_max_retries,
+            host=settings.FORTIMANAGER_HOST,
+            api_token=settings.FORTIMANAGER_API_TOKEN or None,
+            username=settings.FORTIMANAGER_USERNAME or None,
+            password=settings.FORTIMANAGER_PASSWORD or None,
+            verify_ssl=settings.FORTIMANAGER_VERIFY_SSL,
+            timeout=settings.FORTIMANAGER_TIMEOUT,
+            max_retries=settings.FORTIMANAGER_MAX_RETRIES,
         )
 
     async def connect(self) -> None:
@@ -248,6 +248,12 @@ class FortiManagerClient:
         fmg = self._ensure_connected()
         code, response = fmg.execute(url, **kwargs)
         return self._handle_response(code, response, f"EXEC {url}")
+
+    async def move(self, url: str, **kwargs: Any) -> Any:
+        """Execute MOVE request."""
+        fmg = self._ensure_connected()
+        code, response = fmg.move(url, **kwargs)
+        return self._handle_response(code, response, f"MOVE {url}")
 
     # =========================================================================
     # System Status (from sys.json)
@@ -806,15 +812,22 @@ class FortiManagerClient:
     ) -> dict[str, Any]:
         """Move a firewall policy before or after another policy.
 
-        FNDN: EXEC /securityconsole/package/move
+        FNDN: MOVE /pm/config/adom/{adom}/pkg/{pkg}/firewall/policy/{policyid}
+
+        Args:
+            adom: ADOM name
+            pkg: Policy package name
+            policyid: Policy ID to move
+            target: Target policy ID (move before/after this)
+            option: "before" or "after"
+
+        Returns:
+            {"policyid": <moved_policyid>}
         """
-        return await self.execute(
-            "/securityconsole/move",
-            adom=adom,
-            pkg=pkg,
-            policyid=policyid,
-            target=target,
+        return await self.move(
+            f"/pm/config/adom/{adom}/pkg/{pkg}/firewall/policy/{policyid}",
             option=option,
+            target=str(target),
         )
 
     # =========================================================================
