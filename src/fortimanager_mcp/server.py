@@ -299,7 +299,9 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
         }
 
     @mcp_server.tool()
-    async def execute_fortimanager_tool(tool_name: str, parameters: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def execute_fortimanager_tool(
+        tool_name: str, parameters: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         """Execute a FortiManager tool by name with parameters.
 
         Args:
@@ -315,8 +317,15 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
 
             # Find the tool function
             tool_func = None
-            for module_name in ["system_tools", "dvm_tools", "policy_tools",
-                               "object_tools", "script_tools", "template_tools", "sdwan_tools"]:
+            for module_name in [
+                "system_tools",
+                "dvm_tools",
+                "policy_tools",
+                "object_tools",
+                "script_tools",
+                "template_tools",
+                "sdwan_tools",
+            ]:
                 module = getattr(tools, module_name, None)
                 if module and hasattr(module, tool_name):
                     tool_func = getattr(module, tool_name)
@@ -365,7 +374,6 @@ else:
 
 def main() -> None:
     """Entry point for the MCP server."""
-    import os
     import sys
 
     # Determine server mode from settings
@@ -387,6 +395,7 @@ def main() -> None:
     else:
         # HTTP mode for Docker/web
         import uvicorn
+
         uvicorn.run(
             "fortimanager_mcp.server:mcp",
             host=settings.MCP_SERVER_HOST,
