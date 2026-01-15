@@ -110,6 +110,31 @@ FORTIMANAGER_MAX_RETRIES=3
 
 # Logging
 LOG_LEVEL=INFO  # DEBUG for troubleshooting
+
+# Tool Loading Mode (important for context window optimization)
+FMG_TOOL_MODE=full  # or "dynamic" for ~90% context reduction
+```
+
+### Tool Loading Modes
+
+FortiManager MCP supports two tool loading modes to optimize context window usage:
+
+| Mode | Tools Loaded | Context Usage | Best For |
+|------|-------------|---------------|----------|
+| `full` (default) | All 101 tools | ~100% | Large context windows, full functionality |
+| `dynamic` | 4 discovery tools | ~10% | Smaller context windows, on-demand loading |
+
+**Full Mode** (default): All 101 tools are loaded at startup. Best when you have sufficient context window and need immediate access to all FortiManager operations.
+
+**Dynamic Mode**: Only lightweight discovery tools are loaded:
+- `find_fortimanager_tool(operation)` - Search for tools by keyword
+- `list_fortimanager_categories()` - List tool categories
+- `execute_fortimanager_tool(name, params)` - Execute any tool by name
+- `health_check()` - Server health status
+
+To enable dynamic mode:
+```bash
+FMG_TOOL_MODE=dynamic
 ```
 
 ### Generating an API Token
