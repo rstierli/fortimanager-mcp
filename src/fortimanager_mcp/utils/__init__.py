@@ -32,10 +32,12 @@ from fortimanager_mcp.utils.errors import (
 )
 from fortimanager_mcp.utils.validation import (
     ValidationError as InputValidationError,
+)
+from fortimanager_mcp.utils.validation import (
     sanitize_for_logging,
     sanitize_json_for_logging,
-    validate_adom,
     validate_address_type,
+    validate_adom,
     validate_device_name,
     validate_device_serial,
     validate_filename,

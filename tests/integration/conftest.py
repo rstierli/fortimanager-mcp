@@ -10,7 +10,6 @@ import pytest
 
 from fortimanager_mcp.api.client import FortiManagerClient
 
-
 # =============================================================================
 # Skip Decorators
 # =============================================================================

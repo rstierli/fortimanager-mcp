@@ -21,7 +21,7 @@ warnings.filterwarnings("ignore")
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from dotenv import load_dotenv
+from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv()
 
@@ -150,11 +150,23 @@ class FMGIntegrationTester:
                 # Find a valid FortiGate ADOM for further tests
                 # Prefer root, rootp, or custom ADOMs over product-specific ones
                 skip_adoms = {
-                    "FortiAnalyzer", "FortiAuthenticator", "FortiCache",
-                    "FortiCarrier", "FortiClient", "FortiDDoS", "FortiDeceptor",
-                    "FortiFirewall", "FortiFirewallCarrier", "FortiMail",
-                    "FortiManager", "FortiProxy", "FortiSandbox", "FortiWeb",
-                    "Syslog", "Unmanaged_Devices", "others"
+                    "FortiAnalyzer",
+                    "FortiAuthenticator",
+                    "FortiCache",
+                    "FortiCarrier",
+                    "FortiClient",
+                    "FortiDDoS",
+                    "FortiDeceptor",
+                    "FortiFirewall",
+                    "FortiFirewallCarrier",
+                    "FortiMail",
+                    "FortiManager",
+                    "FortiProxy",
+                    "FortiSandbox",
+                    "FortiWeb",
+                    "Syslog",
+                    "Unmanaged_Devices",
+                    "others",
                 }
                 for adom in response:
                     name = adom.get("name", "")
@@ -303,9 +315,7 @@ class FMGIntegrationTester:
 
         # Test get_installation_targets
         try:
-            status, response = self.fmg.get(
-                f"/pm/pkg/adom/{self.adom}"
-            )
+            status, response = self.fmg.get(f"/pm/pkg/adom/{self.adom}")
             if status == 0 and isinstance(response, list):
                 # Check scope members in packages
                 targets = []
@@ -349,9 +359,7 @@ class FMGIntegrationTester:
 
         # Test list_address_groups
         try:
-            status, response = self.fmg.get(
-                f"/pm/config/adom/{self.adom}/obj/firewall/addrgrp"
-            )
+            status, response = self.fmg.get(f"/pm/config/adom/{self.adom}/obj/firewall/addrgrp")
             if status == 0:
                 groups = response if isinstance(response, list) else []
                 self.add_result(
@@ -406,9 +414,7 @@ class FMGIntegrationTester:
             status, response = self.fmg.get(f"/pm/config/adom/{self.adom}/obj/firewall/vip")
             if status == 0:
                 vips = response if isinstance(response, list) else []
-                self.add_result(
-                    "object_tools", "list_vips", True, f"Found {len(vips)} VIPs"
-                )
+                self.add_result("object_tools", "list_vips", True, f"Found {len(vips)} VIPs")
             else:
                 self.add_result("object_tools", "list_vips", False, str(response))
         except Exception as e:
@@ -521,9 +527,7 @@ class FMGIntegrationTester:
 
         # Test list_cli_template_groups
         try:
-            status, response = self.fmg.get(
-                f"/pm/config/adom/{self.adom}/obj/cli/template-group"
-            )
+            status, response = self.fmg.get(f"/pm/config/adom/{self.adom}/obj/cli/template-group")
             if status == 0:
                 groups = response if isinstance(response, list) else []
                 self.add_result(

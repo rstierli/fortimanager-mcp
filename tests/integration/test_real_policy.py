@@ -14,7 +14,6 @@ import pytest
 
 from fortimanager_mcp.api.client import FortiManagerClient
 
-
 pytestmark = pytest.mark.integration
 
 
@@ -118,9 +117,7 @@ class TestPolicyOperations:
             "comments": "MCP integration test policy - safe to delete",
         }
 
-        result = await fmg_client.create_firewall_policy(
-            test_adom, test_package_name, policy
-        )
+        result = await fmg_client.create_firewall_policy(test_adom, test_package_name, policy)
         assert result is not None
 
     @pytest.mark.asyncio
@@ -132,9 +129,7 @@ class TestPolicyOperations:
         test_policy_name: str,
     ):
         """List and verify the created policy exists."""
-        policies = await fmg_client.list_firewall_policies(
-            test_adom, test_package_name
-        )
+        policies = await fmg_client.list_firewall_policies(test_adom, test_package_name)
 
         assert isinstance(policies, list)
         policy_names = [p.get("name") for p in policies]
@@ -148,9 +143,7 @@ class TestPolicyOperations:
         test_package_name: str,
     ):
         """Get policy count in test package."""
-        count = await fmg_client.get_firewall_policy_count(
-            test_adom, test_package_name
-        )
+        count = await fmg_client.get_firewall_policy_count(test_adom, test_package_name)
 
         assert isinstance(count, int)
         assert count >= 1  # At least our test policy
@@ -166,9 +159,7 @@ class TestPolicyOperations:
         """Assign the test package to the test device."""
         scope = [{"name": test_device, "vdom": "root"}]
 
-        result = await fmg_client.assign_package(
-            test_adom, test_package_name, scope
-        )
+        result = await fmg_client.assign_package(test_adom, test_package_name, scope)
         assert result is not None
 
         # Verify assignment
@@ -234,9 +225,7 @@ class TestPolicyOperations:
     ):
         """Cleanup: delete the test firewall policy."""
         # Find the policy ID
-        policies = await fmg_client.list_firewall_policies(
-            test_adom, test_package_name
-        )
+        policies = await fmg_client.list_firewall_policies(test_adom, test_package_name)
 
         policy_id = None
         for p in policies:

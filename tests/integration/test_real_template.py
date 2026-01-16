@@ -11,7 +11,6 @@ import pytest
 
 from fortimanager_mcp.api.client import FortiManagerClient
 
-
 pytestmark = pytest.mark.integration
 
 
@@ -77,9 +76,7 @@ class TestCLITemplateGroupLifecycle:
         """Create a CLI template group."""
         # Clean up if exists from previous run
         try:
-            await fmg_client.delete_cli_template_group(
-                test_adom, test_cli_template_group_name
-            )
+            await fmg_client.delete_cli_template_group(test_adom, test_cli_template_group_name)
         except Exception:
             pass
 
@@ -104,9 +101,7 @@ class TestCLITemplateGroupLifecycle:
         test_cli_template_group_name: str,
     ):
         """Get the created CLI template group."""
-        group = await fmg_client.get_cli_template_group(
-            test_adom, test_cli_template_group_name
-        )
+        group = await fmg_client.get_cli_template_group(test_adom, test_cli_template_group_name)
 
         assert group is not None
         assert group.get("name") == test_cli_template_group_name
@@ -208,9 +203,7 @@ class TestScriptLifecycle:
             "desc": "Updated description",
         }
 
-        result = await fmg_client.update_script(
-            test_adom, test_script_name, update_data
-        )
+        result = await fmg_client.update_script(test_adom, test_script_name, update_data)
         assert result is not None
 
         # Verify update

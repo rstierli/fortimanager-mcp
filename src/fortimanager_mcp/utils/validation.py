@@ -123,9 +123,7 @@ POLICY_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_. -]{1,35}$")
 INTERFACE_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,35}$")
 
 # FQDN pattern: valid domain name format
-FQDN_PATTERN = re.compile(
-    r"^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$"
-)
+FQDN_PATTERN = re.compile(r"^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$")
 
 # IPv4 address pattern
 IPV4_PATTERN = re.compile(
@@ -488,12 +486,12 @@ def validate_port_range(port_range: str) -> str:
         if "-" in part:
             start, end = part.split("-")
             if not (1 <= int(start) <= 65535) or not (1 <= int(end) <= 65535):
-                raise ValidationError(f"Port values must be between 1 and 65535")
+                raise ValidationError("Port values must be between 1 and 65535")
             if int(start) > int(end):
-                raise ValidationError(f"Start port must be less than end port")
+                raise ValidationError("Start port must be less than end port")
         else:
             if not (1 <= int(part) <= 65535):
-                raise ValidationError(f"Port value must be between 1 and 65535")
+                raise ValidationError("Port value must be between 1 and 65535")
 
     return port_range
 
@@ -569,8 +567,7 @@ def validate_status(status: str) -> str:
 
     if status not in VALID_POLICY_STATUSES:
         raise ValidationError(
-            f"Invalid status '{status}'. "
-            f"Valid values: {', '.join(sorted(VALID_POLICY_STATUSES))}"
+            f"Invalid status '{status}'. Valid values: {', '.join(sorted(VALID_POLICY_STATUSES))}"
         )
 
     return status
@@ -595,8 +592,7 @@ def validate_ngfw_mode(mode: str) -> str:
 
     if mode not in VALID_NGFW_MODES:
         raise ValidationError(
-            f"Invalid NGFW mode '{mode}'. "
-            f"Valid modes: {', '.join(sorted(VALID_NGFW_MODES))}"
+            f"Invalid NGFW mode '{mode}'. Valid modes: {', '.join(sorted(VALID_NGFW_MODES))}"
         )
 
     return mode

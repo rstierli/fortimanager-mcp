@@ -250,9 +250,7 @@ ERROR_CODE_MESSAGES: dict[int, str] = {
 }
 
 
-def parse_fmg_error(
-    code: int, message: str, url: str | None = None
-) -> FortiManagerMCPError:
+def parse_fmg_error(code: int, message: str, url: str | None = None) -> FortiManagerMCPError:
     """Parse FortiManager error code and create appropriate exception.
 
     Args:
