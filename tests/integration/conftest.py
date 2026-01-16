@@ -7,6 +7,10 @@ import os
 from collections.abc import AsyncGenerator
 
 import pytest
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 from fortimanager_mcp.api.client import FortiManagerClient
 

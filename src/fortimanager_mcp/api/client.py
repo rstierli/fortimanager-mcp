@@ -97,6 +97,7 @@ class FortiManagerClient:
 
         self._fmg: FortiManager | None = None
         self._connected = False
+        self._fmg_version: tuple[int, int, int] | None = None  # (major, minor, patch)
 
         logger.info(f"Initialized FortiManager client for {self.host}")
 
@@ -190,6 +191,49 @@ class FortiManagerClient:
     def is_connected(self) -> bool:
         """Check if client is connected."""
         return self._connected and self._fmg is not None
+
+    @property
+    def fmg_version(self) -> tuple[int, int, int] | None:
+        """Get cached FortiManager version tuple (major, minor, patch)."""
+        return self._fmg_version
+
+    async def _detect_version(self) -> tuple[int, int, int]:
+        """Detect and cache FortiManager version.
+
+        Returns tuple of (major, minor, patch).
+        """
+        if self._fmg_version is not None:
+            return self._fmg_version
+
+        try:
+            status = await self.get_system_status()
+            version_str = status.get("Version", "7.0.0")
+            # Version format: "v7.6.5-build3653 251215 (GA.M)"
+            version_part = version_str.split("-")[0].split()[0]
+            # Strip leading 'v' if present
+            version_part = version_part.lstrip("v")
+            parts = version_part.split(".")
+            self._fmg_version = (
+                int(parts[0]) if len(parts) > 0 else 7,
+                int(parts[1]) if len(parts) > 1 else 0,
+                int(parts[2]) if len(parts) > 2 else 0,
+            )
+            logger.info(f"Detected FortiManager version: {self._fmg_version}")
+        except Exception as e:
+            logger.warning(f"Failed to detect FMG version, assuming 7.0.0: {e}")
+            self._fmg_version = (7, 0, 0)
+
+        return self._fmg_version
+
+    def _script_base_url(self, adom: str) -> str:
+        """Get the appropriate script endpoint URL based on FMG version.
+
+        FMG 7.6+: /pm/config/adom/{adom}/obj/fmg/script
+        FMG 7.0-7.4: /dvmdb/adom/{adom}/script
+        """
+        if self._fmg_version and self._fmg_version >= (7, 6, 0):
+            return f"/pm/config/adom/{adom}/obj/fmg/script"
+        return f"/dvmdb/adom/{adom}/script"
 
     def _ensure_connected(self) -> FortiManager:
         """Ensure client is connected and return pyfmg instance."""
@@ -1194,15 +1238,18 @@ class FortiManagerClient:
     ) -> list[dict[str, Any]]:
         """List CLI scripts in an ADOM.
 
-        FNDN: GET /dvmdb/adom/{adom}/script
+        Uses version-aware endpoint:
+        - FMG 7.6+: /pm/config/adom/{adom}/obj/fmg/script
+        - FMG 7.0-7.4: /dvmdb/adom/{adom}/script
         """
+        await self._detect_version()
         params: dict[str, Any] = {}
         if fields:
             params["fields"] = fields
         if filter:
             params["filter"] = filter
 
-        result = await self.get(f"/dvmdb/adom/{adom}/script", **params)
+        result = await self.get(self._script_base_url(adom), **params)
         return result if isinstance(result, list) else [result] if result else []
 
     async def get_script(
@@ -1212,9 +1259,10 @@ class FortiManagerClient:
     ) -> dict[str, Any]:
         """Get a specific CLI script.
 
-        FNDN: GET /dvmdb/adom/{adom}/script/{name}
+        Uses version-aware endpoint (see list_scripts).
         """
-        return await self.get(f"/dvmdb/adom/{adom}/script/{name}")
+        await self._detect_version()
+        return await self.get(f"{self._script_base_url(adom)}/{name}")
 
     async def create_script(
         self,
@@ -1223,7 +1271,7 @@ class FortiManagerClient:
     ) -> dict[str, Any]:
         """Create a CLI script.
 
-        FNDN: ADD /dvmdb/adom/{adom}/script
+        Uses version-aware endpoint (see list_scripts).
 
         Script dict should contain:
             - name: Script name (required)
@@ -1232,7 +1280,8 @@ class FortiManagerClient:
             - target: device_database, remote_device, adom_database
             - desc: Description
         """
-        return await self.add(f"/dvmdb/adom/{adom}/script", data=script)
+        await self._detect_version()
+        return await self.add(self._script_base_url(adom), data=script)
 
     async def update_script(
         self,
@@ -1242,9 +1291,10 @@ class FortiManagerClient:
     ) -> dict[str, Any]:
         """Update a CLI script.
 
-        FNDN: UPDATE /dvmdb/adom/{adom}/script/{name}
+        Uses version-aware endpoint (see list_scripts).
         """
-        return await self.update(f"/dvmdb/adom/{adom}/script/{name}", **data)
+        await self._detect_version()
+        return await self.update(f"{self._script_base_url(adom)}/{name}", data=data)
 
     async def delete_script(
         self,
@@ -1253,9 +1303,10 @@ class FortiManagerClient:
     ) -> dict[str, Any]:
         """Delete a CLI script.
 
-        FNDN: DELETE /dvmdb/adom/{adom}/script/{name}
+        Uses version-aware endpoint (see list_scripts).
         """
-        return await self.delete(f"/dvmdb/adom/{adom}/script/{name}")
+        await self._detect_version()
+        return await self.delete(f"{self._script_base_url(adom)}/{name}")
 
     async def execute_script(
         self,

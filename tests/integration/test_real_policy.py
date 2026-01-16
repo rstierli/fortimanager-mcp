@@ -111,6 +111,7 @@ class TestPolicyOperations:
             "srcaddr": [test_address_name],
             "dstaddr": ["all"],
             "service": ["ALL"],
+            "schedule": ["always"],
             "action": 0,  # deny
             "status": 0,  # disabled
             "logtraffic": 2,  # all
