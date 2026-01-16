@@ -3,6 +3,8 @@
 import pytest
 
 from fortimanager_mcp.utils.errors import (
+    ERROR_CODE_MAP,
+    ERROR_CODE_MESSAGES,
     ADOMLockError,
     APIError,
     AuthenticationError,
@@ -20,15 +22,12 @@ from fortimanager_mcp.utils.errors import (
     TemplateError,
     TimeoutError,
     ValidationError,
-    ERROR_CODE_MAP,
-    ERROR_CODE_MESSAGES,
     is_auth_error,
     is_duplicate_error,
     is_object_in_use_error,
     is_permission_error,
     parse_fmg_error,
 )
-
 
 # =============================================================================
 # Base Exception Tests

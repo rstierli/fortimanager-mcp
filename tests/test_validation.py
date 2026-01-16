@@ -1,43 +1,40 @@
 """Tests for FortiManager MCP validation and sanitization utilities."""
 
-import os
 from pathlib import Path
 
 import pytest
 
 from fortimanager_mcp.utils.validation import (
-    SENSITIVE_FIELDS,
     MASK_VALUE,
-    VALID_POLICY_ACTIONS,
-    VALID_LOG_TRAFFIC_MODES,
     VALID_ADDRESS_TYPES,
+    VALID_LOG_TRAFFIC_MODES,
     VALID_MOVE_POSITIONS,
+    VALID_POLICY_ACTIONS,
     ValidationError,
+    get_allowed_output_dirs,
     sanitize_for_logging,
     sanitize_json_for_logging,
+    validate_address_type,
     validate_adom,
     validate_device_name,
     validate_device_serial,
-    validate_package_name,
-    validate_policy_name,
-    validate_object_name,
+    validate_filename,
+    validate_fqdn,
     validate_interface_name,
     validate_ipv4_address,
     validate_ipv4_subnet,
-    validate_fqdn,
-    validate_port_range,
-    validate_policy_action,
     validate_log_traffic_mode,
-    validate_status,
-    validate_ngfw_mode,
-    validate_address_type,
     validate_move_position,
-    validate_policy_id,
+    validate_ngfw_mode,
+    validate_object_name,
     validate_output_path,
-    validate_filename,
-    get_allowed_output_dirs,
+    validate_package_name,
+    validate_policy_action,
+    validate_policy_id,
+    validate_policy_name,
+    validate_port_range,
+    validate_status,
 )
-
 
 # =============================================================================
 # Log Sanitization Tests
