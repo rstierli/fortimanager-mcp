@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
-from fortimanager_mcp.api.client import FortiManagerClient
+from fortimanager_mcp.api.client import FortiManagerClient  # noqa: E402
 
 # =============================================================================
 # Skip Decorators
