@@ -40,13 +40,13 @@ jobs:
         env:
           FORTIMANAGER_HOST: test.example.com
         run: |
-          uv run pytest tests/ -v --tb=short
+          uv run pytest tests/ -v --tb=short --ignore=tests/integration
 
       - name: Run tests with coverage
         env:
           FORTIMANAGER_HOST: test.example.com
         run: |
-          uv run pytest tests/ --cov=src/fortimanager_mcp --cov-report=xml
+          uv run pytest tests/ --cov=src/fortimanager_mcp --cov-report=xml --ignore=tests/integration
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
