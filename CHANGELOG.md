@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-beta] - 2026-01-17
+
+### Added
+- **Unit tests expanded** - 213 tests covering errors, validation, and tool modules
+- **Version-aware script endpoints** - Automatically selects correct API endpoint based on FMG version (7.6+ uses `/pm/config`, 7.0-7.4 uses `/dvmdb`)
+
+### Fixed
+- Import sorting in test files (ruff compliance)
+- E402 linting errors for post-dotenv imports
+
+### Technical
+- All CI checks passing
+- Integration tests verified against FMG 7.6.2
+
 ## [0.1.0-alpha] - 2025-01-15
 
 ### Added
