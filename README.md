@@ -113,6 +113,9 @@ LOG_LEVEL=INFO  # DEBUG for troubleshooting
 
 # Tool Loading Mode (important for context window optimization)
 FMG_TOOL_MODE=full  # or "dynamic" for ~90% context reduction
+
+# Default ADOM (optional - defaults to "root")
+DEFAULT_ADOM=root
 ```
 
 ### Tool Loading Modes
@@ -136,6 +139,21 @@ To enable dynamic mode:
 ```bash
 FMG_TOOL_MODE=dynamic
 ```
+
+### Default ADOM
+
+The `DEFAULT_ADOM` environment variable sets the default Administrative Domain (ADOM) for all FortiManager operations. When a tool is called without specifying an ADOM, this value is used.
+
+```bash
+DEFAULT_ADOM=root  # default value
+```
+
+This is particularly useful when:
+- Your FortiManager only uses a single ADOM
+- Most of your work is within one specific ADOM
+- You want to avoid repeatedly specifying the ADOM in each tool call
+
+If not set, defaults to `root` (the global ADOM).
 
 ### Generating an API Token
 

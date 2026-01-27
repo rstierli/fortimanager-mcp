@@ -9,6 +9,7 @@ import logging
 from typing import Any
 
 from fortimanager_mcp.server import get_fmg_client, mcp
+from fortimanager_mcp.utils.config import get_default_adom
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,7 @@ def _decode_status(device: dict[str, Any]) -> dict[str, Any]:
 @mcp.tool()
 async def list_device_vdoms(
     device: str,
-    adom: str = "root",
+    adom: str | None = None,
 ) -> dict[str, Any]:
     """List VDOMs for a specific device.
 
@@ -66,7 +67,7 @@ async def list_device_vdoms(
 
     Args:
         device: Device name
-        adom: ADOM name (default: "root")
+        adom: ADOM name (default: from DEFAULT_ADOM env var, or "root")
 
     Returns:
         dict: VDOM list with keys:
@@ -80,6 +81,7 @@ async def list_device_vdoms(
         >>> for vdom in result['vdoms']:
         ...     print(f"VDOM: {vdom['name']}")
     """
+    adom = adom or get_default_adom()
     try:
         client = _get_client()
         vdoms = await client.list_device_vdoms(device, adom)
@@ -96,7 +98,7 @@ async def list_device_vdoms(
 
 @mcp.tool()
 async def get_device_status(
-    adom: str = "root",
+    adom: str | None = None,
     device: str | None = None,
 ) -> dict[str, Any]:
     """Get device status including connection and config sync status.
@@ -108,7 +110,7 @@ async def get_device_status(
     - Device status (installed/checkedin/etc.)
 
     Args:
-        adom: ADOM name (default: "root")
+        adom: ADOM name (default: from DEFAULT_ADOM env var, or "root")
         device: Specific device name (optional, returns all if not specified)
 
     Returns:
@@ -127,6 +129,7 @@ async def get_device_status(
         >>> # Get specific device status
         >>> result = await get_device_status("root", "FGT-HQ")
     """
+    adom = adom or get_default_adom()
     try:
         client = _get_client()
         devices = await client.get_device_status(adom, device)
@@ -146,7 +149,7 @@ async def get_device_status(
 
 @mcp.tool()
 async def search_devices(
-    adom: str = "root",
+    adom: str | None = None,
     name_filter: str | None = None,
     platform_filter: str | None = None,
     os_version_filter: str | None = None,
@@ -155,7 +158,7 @@ async def search_devices(
     """Search for devices with filters.
 
     Args:
-        adom: ADOM name (default: "root")
+        adom: ADOM name (default: from DEFAULT_ADOM env var, or "root")
         name_filter: Filter by device name (partial match)
         platform_filter: Filter by platform type (e.g., "FortiGate-VM")
         os_version_filter: Filter by OS version (e.g., "7.4")
@@ -178,6 +181,7 @@ async def search_devices(
         >>> # Find devices by name pattern
         >>> result = await search_devices(name_filter="Branch")
     """
+    adom = adom or get_default_adom()
     try:
         client = _get_client()
 
@@ -605,7 +609,7 @@ async def update_device(
 
 @mcp.tool()
 async def reload_device_list(
-    adom: str = "root",
+    adom: str | None = None,
 ) -> dict[str, Any]:
     """Reload the device list from FortiManager database.
 
@@ -613,13 +617,14 @@ async def reload_device_list(
     direct database changes or if device list appears stale.
 
     Args:
-        adom: ADOM name (default: "root")
+        adom: ADOM name (default: from DEFAULT_ADOM env var, or "root")
 
     Returns:
         dict: Reload result with keys:
             - status: "success" or "error"
             - message: Status or error message
     """
+    adom = adom or get_default_adom()
     try:
         client = _get_client()
         await client.reload_device_list(adom)

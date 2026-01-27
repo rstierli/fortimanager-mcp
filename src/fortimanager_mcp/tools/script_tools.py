@@ -9,6 +9,7 @@ Based on FNDN FortiManager 7.6.5 API specifications.
 from typing import Any
 
 from fortimanager_mcp.server import get_fmg_client, mcp
+from fortimanager_mcp.utils.config import get_default_adom
 
 # =============================================================================
 # Script CRUD Operations
@@ -17,7 +18,7 @@ from fortimanager_mcp.server import get_fmg_client, mcp
 
 @mcp.tool()
 async def list_scripts(
-    adom: str = "root",
+    adom: str | None = None,
     script_type: str | None = None,
     target: str | None = None,
     limit: int = 100,
@@ -25,7 +26,7 @@ async def list_scripts(
     """List CLI scripts in an ADOM.
 
     Args:
-        adom: ADOM name (default: root)
+        adom: ADOM name (default: from DEFAULT_ADOM env var, or "root")
         script_type: Filter by type (cli, tcl, cligrp, tclgrp, jinja)
         target: Filter by target (device_database, remote_device, adom_database)
         limit: Maximum number of scripts to return
@@ -33,6 +34,7 @@ async def list_scripts(
     Returns:
         List of scripts with name, type, target, and description
     """
+    adom = adom or get_default_adom()
     client = get_fmg_client()
     if not client:
         return {"error": "FortiManager client not connected"}

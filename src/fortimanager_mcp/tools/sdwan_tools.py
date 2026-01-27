@@ -11,6 +11,7 @@ Based on FNDN FortiManager 7.6.5 API specifications.
 from typing import Any
 
 from fortimanager_mcp.server import get_fmg_client, mcp
+from fortimanager_mcp.utils.config import get_default_adom
 
 # =============================================================================
 # SD-WAN Template Operations
@@ -19,7 +20,7 @@ from fortimanager_mcp.server import get_fmg_client, mcp
 
 @mcp.tool()
 async def list_sdwan_templates(
-    adom: str = "root",
+    adom: str | None = None,
     limit: int = 100,
 ) -> dict[str, Any]:
     """List SD-WAN templates in an ADOM.
@@ -28,12 +29,13 @@ async def list_sdwan_templates(
     and traffic steering rules for SD-WAN deployments.
 
     Args:
-        adom: ADOM name (default: root)
+        adom: ADOM name (default: from DEFAULT_ADOM env var, or "root")
         limit: Maximum number of templates to return
 
     Returns:
         List of SD-WAN templates with name, type, and assigned devices
     """
+    adom = adom or get_default_adom()
     client = get_fmg_client()
     if not client:
         return {"error": "FortiManager client not connected"}

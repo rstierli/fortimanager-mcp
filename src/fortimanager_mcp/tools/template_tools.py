@@ -11,6 +11,7 @@ Based on FNDN FortiManager 7.6.5 API specifications.
 from typing import Any
 
 from fortimanager_mcp.server import get_fmg_client, mcp
+from fortimanager_mcp.utils.config import get_default_adom
 
 # =============================================================================
 # Provisioning Templates (General)
@@ -19,7 +20,7 @@ from fortimanager_mcp.server import get_fmg_client, mcp
 
 @mcp.tool()
 async def list_templates(
-    adom: str = "root",
+    adom: str | None = None,
     limit: int = 100,
 ) -> dict[str, Any]:
     """List all provisioning templates in an ADOM.
@@ -27,12 +28,13 @@ async def list_templates(
     Returns all template types: IPsec, BGP, system, etc.
 
     Args:
-        adom: ADOM name (default: root)
+        adom: ADOM name (default: from DEFAULT_ADOM env var, or "root")
         limit: Maximum number of templates to return
 
     Returns:
         List of templates with name, type, and settings
     """
+    adom = adom or get_default_adom()
     client = get_fmg_client()
     if not client:
         return {"error": "FortiManager client not connected"}
@@ -82,7 +84,7 @@ async def get_template(
 
 @mcp.tool()
 async def list_system_templates(
-    adom: str = "root",
+    adom: str | None = None,
     limit: int = 100,
 ) -> dict[str, Any]:
     """List system templates (device profiles) in an ADOM.
@@ -90,12 +92,13 @@ async def list_system_templates(
     System templates configure device settings like DNS, NTP, logging, etc.
 
     Args:
-        adom: ADOM name (default: root)
+        adom: ADOM name (default: from DEFAULT_ADOM env var, or "root")
         limit: Maximum number to return
 
     Returns:
         List of system templates with name, type, and assigned devices
     """
+    adom = adom or get_default_adom()
     client = get_fmg_client()
     if not client:
         return {"error": "FortiManager client not connected"}
@@ -244,7 +247,7 @@ async def unassign_system_template(
 
 @mcp.tool()
 async def list_cli_template_groups(
-    adom: str = "root",
+    adom: str | None = None,
     limit: int = 100,
 ) -> dict[str, Any]:
     """List CLI template groups in an ADOM.
@@ -252,12 +255,13 @@ async def list_cli_template_groups(
     CLI template groups contain CLI commands to be executed on devices.
 
     Args:
-        adom: ADOM name (default: root)
+        adom: ADOM name (default: from DEFAULT_ADOM env var, or "root")
         limit: Maximum number to return
 
     Returns:
         List of CLI template groups
     """
+    adom = adom or get_default_adom()
     client = get_fmg_client()
     if not client:
         return {"error": "FortiManager client not connected"}
@@ -371,7 +375,7 @@ async def delete_cli_template_group(
 
 @mcp.tool()
 async def list_template_groups(
-    adom: str = "root",
+    adom: str | None = None,
     limit: int = 100,
 ) -> dict[str, Any]:
     """List template groups in an ADOM.
@@ -380,12 +384,13 @@ async def list_template_groups(
     into a single package for device assignment.
 
     Args:
-        adom: ADOM name (default: root)
+        adom: ADOM name (default: from DEFAULT_ADOM env var, or "root")
         limit: Maximum number to return
 
     Returns:
         List of template groups
     """
+    adom = adom or get_default_adom()
     client = get_fmg_client()
     if not client:
         return {"error": "FortiManager client not connected"}

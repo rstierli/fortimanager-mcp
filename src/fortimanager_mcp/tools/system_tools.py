@@ -7,6 +7,7 @@ import logging
 from typing import Any
 
 from fortimanager_mcp.server import get_fmg_client, mcp
+from fortimanager_mcp.utils.config import get_default_adom
 
 logger = logging.getLogger(__name__)
 
@@ -174,7 +175,7 @@ async def get_adom(
 
 @mcp.tool()
 async def list_devices(
-    adom: str = "root",
+    adom: str | None = None,
     fields: list[str] | None = None,
 ) -> dict[str, Any]:
     """List all managed devices in an ADOM.
@@ -183,7 +184,7 @@ async def list_devices(
     This lists all devices registered in the specified ADOM.
 
     Args:
-        adom: ADOM name (default: "root")
+        adom: ADOM name (default: from DEFAULT_ADOM env var, or "root")
         fields: Specific fields to return (optional)
 
     Returns:
@@ -198,6 +199,7 @@ async def list_devices(
         >>> for device in result["devices"]:
         ...     print(f"{device['name']}: {device.get('ip', 'N/A')}")
     """
+    adom = adom or get_default_adom()
     try:
         client = _get_client()
         devices = await client.list_devices(adom, fields=fields)
@@ -214,14 +216,14 @@ async def list_devices(
 @mcp.tool()
 async def get_device(
     name: str,
-    adom: str = "root",
+    adom: str | None = None,
     include_details: bool = False,
 ) -> dict[str, Any]:
     """Get detailed information about a specific managed device.
 
     Args:
         name: Device name
-        adom: ADOM name (default: "root")
+        adom: ADOM name (default: from DEFAULT_ADOM env var, or "root")
         include_details: Include sub-objects like VDOMs (default: False)
 
     Returns:
@@ -235,6 +237,7 @@ async def get_device(
         >>> print(f"Version: {result['device']['os_ver']}")
         >>> print(f"Platform: {result['device']['platform_str']}")
     """
+    adom = adom or get_default_adom()
     try:
         client = _get_client()
         loadsub = 1 if include_details else 0
@@ -250,7 +253,7 @@ async def get_device(
 
 @mcp.tool()
 async def list_device_groups(
-    adom: str = "root",
+    adom: str | None = None,
 ) -> dict[str, Any]:
     """List all device groups in an ADOM.
 
@@ -258,7 +261,7 @@ async def list_device_groups(
     like policy installation or configuration deployment.
 
     Args:
-        adom: ADOM name (default: "root")
+        adom: ADOM name (default: from DEFAULT_ADOM env var, or "root")
 
     Returns:
         dict: Device groups with keys:
@@ -267,6 +270,7 @@ async def list_device_groups(
             - groups: List of device group objects
             - message: Error message if failed
     """
+    adom = adom or get_default_adom()
     try:
         client = _get_client()
         groups = await client.list_device_groups(adom)
@@ -454,7 +458,7 @@ async def wait_for_task(
 
 @mcp.tool()
 async def list_packages(
-    adom: str = "root",
+    adom: str | None = None,
 ) -> dict[str, Any]:
     """List all policy packages in an ADOM.
 
@@ -462,7 +466,7 @@ async def list_packages(
     and other configurations to be installed on managed devices.
 
     Args:
-        adom: ADOM name (default: "root")
+        adom: ADOM name (default: from DEFAULT_ADOM env var, or "root")
 
     Returns:
         dict: Package list with keys:
@@ -476,6 +480,7 @@ async def list_packages(
         >>> for pkg in result["packages"]:
         ...     print(f"{pkg['name']}: {pkg.get('type', 'policy')}")
     """
+    adom = adom or get_default_adom()
     try:
         client = _get_client()
         packages = await client.list_packages(adom)
@@ -492,14 +497,14 @@ async def list_packages(
 @mcp.tool()
 async def get_package(
     name: str,
-    adom: str = "root",
+    adom: str | None = None,
     include_details: bool = False,
 ) -> dict[str, Any]:
     """Get detailed information about a policy package.
 
     Args:
         name: Package name
-        adom: ADOM name (default: "root")
+        adom: ADOM name (default: from DEFAULT_ADOM env var, or "root")
         include_details: Include policies and settings (default: False)
 
     Returns:
@@ -508,6 +513,7 @@ async def get_package(
             - package: Package object
             - message: Error message if failed
     """
+    adom = adom or get_default_adom()
     try:
         client = _get_client()
         loadsub = 1 if include_details else 0

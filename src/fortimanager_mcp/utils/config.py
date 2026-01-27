@@ -59,6 +59,12 @@ class Settings(BaseSettings):
         description="Maximum number of retry attempts",
     )
 
+    # Default ADOM
+    DEFAULT_ADOM: str = Field(
+        default="root",
+        description="Default ADOM for API operations when not specified",
+    )
+
     # MCP Server Settings
     MCP_SERVER_HOST: str = Field(
         default="0.0.0.0",
@@ -206,3 +212,17 @@ def get_settings() -> Settings:
         ValidationError: If required settings are missing or invalid
     """
     return Settings()
+
+
+def get_default_adom() -> str:
+    """Get the default ADOM from environment or fallback to 'root'.
+
+    This function is safe to call even before full settings are available,
+    as it only reads the DEFAULT_ADOM environment variable.
+
+    Returns:
+        The default ADOM name
+    """
+    import os
+
+    return os.environ.get("DEFAULT_ADOM", "root")

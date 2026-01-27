@@ -12,6 +12,7 @@ import logging
 from typing import Any
 
 from fortimanager_mcp.server import get_fmg_client, mcp
+from fortimanager_mcp.utils.config import get_default_adom
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ def _get_client():
 
 @mcp.tool()
 async def list_addresses(
-    adom: str = "root",
+    adom: str | None = None,
     name_filter: str | None = None,
     type_filter: str | None = None,
 ) -> dict[str, Any]:
@@ -41,7 +42,7 @@ async def list_addresses(
     used in firewall policies.
 
     Args:
-        adom: ADOM name (default: "root")
+        adom: ADOM name (default: from DEFAULT_ADOM env var, or "root")
         name_filter: Filter by name (partial match)
         type_filter: Filter by type ("ipmask", "fqdn", "iprange", "wildcard")
 
@@ -59,6 +60,7 @@ async def list_addresses(
         >>> # Find FQDN addresses
         >>> result = await list_addresses("root", type_filter="fqdn")
     """
+    adom = adom or get_default_adom()
     try:
         client = _get_client()
 
@@ -444,7 +446,7 @@ async def delete_address(
 
 @mcp.tool()
 async def list_address_groups(
-    adom: str = "root",
+    adom: str | None = None,
     name_filter: str | None = None,
 ) -> dict[str, Any]:
     """List firewall address groups in an ADOM.
@@ -453,7 +455,7 @@ async def list_address_groups(
     policy management.
 
     Args:
-        adom: ADOM name (default: "root")
+        adom: ADOM name (default: from DEFAULT_ADOM env var, or "root")
         name_filter: Filter by name (partial match)
 
     Returns:
@@ -463,6 +465,7 @@ async def list_address_groups(
             - groups: List of address group objects
             - message: Error message if failed
     """
+    adom = adom or get_default_adom()
     try:
         client = _get_client()
 
@@ -648,7 +651,7 @@ async def delete_address_group(
 
 @mcp.tool()
 async def list_services(
-    adom: str = "root",
+    adom: str | None = None,
     name_filter: str | None = None,
     protocol_filter: str | None = None,
 ) -> dict[str, Any]:
@@ -657,7 +660,7 @@ async def list_services(
     Service objects define network protocols and ports used in policies.
 
     Args:
-        adom: ADOM name (default: "root")
+        adom: ADOM name (default: from DEFAULT_ADOM env var, or "root")
         name_filter: Filter by name (partial match)
         protocol_filter: Filter by protocol ("TCP/UDP/SCTP", "ICMP", "IP")
 
@@ -668,6 +671,7 @@ async def list_services(
             - services: List of service objects
             - message: Error message if failed
     """
+    adom = adom or get_default_adom()
     try:
         client = _get_client()
 
@@ -936,13 +940,13 @@ async def delete_service(
 
 @mcp.tool()
 async def list_service_groups(
-    adom: str = "root",
+    adom: str | None = None,
     name_filter: str | None = None,
 ) -> dict[str, Any]:
     """List service groups in an ADOM.
 
     Args:
-        adom: ADOM name (default: "root")
+        adom: ADOM name (default: from DEFAULT_ADOM env var, or "root")
         name_filter: Filter by name (partial match)
 
     Returns:
@@ -952,6 +956,7 @@ async def list_service_groups(
             - groups: List of service group objects
             - message: Error message if failed
     """
+    adom = adom or get_default_adom()
     try:
         client = _get_client()
 
