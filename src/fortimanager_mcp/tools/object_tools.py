@@ -732,15 +732,19 @@ async def create_service_tcp_udp(
     name: str,
     tcp_portrange: str | None = None,
     udp_portrange: str | None = None,
+    sctp_portrange: str | None = None,
+    udplite_portrange: str | None = None,
     comment: str | None = None,
 ) -> dict[str, Any]:
-    """Create a TCP/UDP service object.
+    """Create a TCP/UDP/SCTP/UDP-Lite service object.
 
     Args:
         adom: ADOM name
         name: Service object name
         tcp_portrange: TCP port range (e.g., "80", "8080-8090", "80 443 8080")
         udp_portrange: UDP port range (e.g., "53", "500-502")
+        sctp_portrange: SCTP port range (e.g., "3868", "2905-2907")
+        udplite_portrange: UDP-Lite port range (e.g., "1234")
         comment: Optional comment
 
     Returns:
@@ -765,22 +769,42 @@ async def create_service_tcp_udp(
         ...     tcp_portrange="53",
         ...     udp_portrange="53"
         ... )
+
+        >>> # Create SCTP service (Diameter)
+        >>> result = await create_service_tcp_udp(
+        ...     adom="root",
+        ...     name="Diameter",
+        ...     sctp_portrange="3868",
+        ...     comment="Diameter protocol"
+        ... )
     """
     try:
-        if not tcp_portrange and not udp_portrange:
+        if not any([tcp_portrange, udp_portrange, sctp_portrange, udplite_portrange]):
             return {"status": "error", "message": "At least one port range required"}
 
         client = _get_client()
 
+        # FMG protocol field = service TYPE category, not IP protocol number
+        # 15 = TCP/UDP/SCTP service type (covers all port-based services)
+        # The actual protocol is determined by which portrange fields are set
+        # Verified: TFTP (UDP-only, port 69) uses protocol=15 with empty tcp-portrange
+        protocol = 15
+
         service: dict[str, Any] = {
             "name": name,
-            "protocol": "TCP/UDP/SCTP",
+            "protocol": protocol,
         }
-
+        # Only include portrange fields if they have values
+        # GUI sends null for unused ranges, we simply omit them
         if tcp_portrange:
             service["tcp-portrange"] = tcp_portrange
         if udp_portrange:
             service["udp-portrange"] = udp_portrange
+        if sctp_portrange:
+            service["sctp-portrange"] = sctp_portrange
+        if udplite_portrange:
+            service["udplite-portrange"] = udplite_portrange
+
         if comment:
             service["comment"] = comment
 
