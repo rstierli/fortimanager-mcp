@@ -619,19 +619,20 @@ class TestValidatePolicyId:
 class TestGetAllowedOutputDirs:
     """Tests for get_allowed_output_dirs function."""
 
-    def test_returns_list(self):
-        """Test function returns a list."""
-        result = get_allowed_output_dirs()
-        assert isinstance(result, list)
+    def test_no_env_raises_validation_error(self, monkeypatch):
+        """Test that missing env var raises ValidationError (secure by default)."""
+        monkeypatch.delenv("FMG_ALLOWED_OUTPUT_DIRS", raising=False)
+        with pytest.raises(ValidationError, match="No output directories configured"):
+            get_allowed_output_dirs()
 
-    def test_includes_home_directory(self):
-        """Test that home directory is included by default."""
-        result = get_allowed_output_dirs()
-        assert Path.home() in result
+    def test_empty_env_raises_validation_error(self, monkeypatch):
+        """Test that empty env var raises ValidationError."""
+        monkeypatch.setenv("FMG_ALLOWED_OUTPUT_DIRS", "")
+        with pytest.raises(ValidationError, match="No output directories configured"):
+            get_allowed_output_dirs()
 
     def test_custom_dirs_from_env(self, monkeypatch, tmp_path):
         """Test custom directories from environment variable."""
-        # Create temp directories
         dir1 = tmp_path / "dir1"
         dir2 = tmp_path / "dir2"
         dir1.mkdir()
@@ -643,25 +644,34 @@ class TestGetAllowedOutputDirs:
         assert dir1 in result
         assert dir2 in result
 
+    def test_nonexistent_dir_ignored(self, monkeypatch):
+        """Test that non-existent directories are ignored."""
+        monkeypatch.setenv("FMG_ALLOWED_OUTPUT_DIRS", "/nonexistent/path")
+        with pytest.raises(ValidationError, match="No output directories configured"):
+            get_allowed_output_dirs()
+
 
 class TestValidateOutputPath:
     """Tests for validate_output_path function."""
 
-    def test_valid_home_path(self):
-        """Test path within home directory is valid."""
-        home = Path.home()
-        result = validate_output_path(str(home))
-        assert result == home
+    def test_valid_path_in_allowed_dir(self, monkeypatch):
+        """Test path within allowed directory is valid."""
+        monkeypatch.setenv("FMG_ALLOWED_OUTPUT_DIRS", "/tmp")
+        result = validate_output_path("/tmp")
+        assert result == Path("/tmp").resolve()
 
-    def test_valid_downloads_path(self):
-        """Test Downloads path is valid."""
+    def test_valid_downloads_path(self, monkeypatch):
+        """Test Downloads path is valid when configured."""
         downloads = Path.home() / "Downloads"
         if downloads.exists():
+            monkeypatch.setenv("FMG_ALLOWED_OUTPUT_DIRS", str(downloads))
             result = validate_output_path(str(downloads))
             assert result == downloads
 
-    def test_tilde_expansion(self):
+    def test_tilde_expansion(self, monkeypatch):
         """Test that ~ is expanded."""
+        home = str(Path.home())
+        monkeypatch.setenv("FMG_ALLOWED_OUTPUT_DIRS", home)
         result = validate_output_path("~")
         assert result == Path.home()
 

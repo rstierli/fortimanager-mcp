@@ -114,7 +114,8 @@ class Settings(BaseSettings):
     FMG_ALLOWED_OUTPUT_DIRS: str | None = Field(
         default=None,
         description="Comma-separated list of allowed output directories. "
-        "Default: home directory and common subdirs (Downloads, Documents, Desktop)",
+        "No defaults — file output is disabled until explicitly configured. "
+        "Example: FMG_ALLOWED_OUTPUT_DIRS=~/Downloads",
     )
 
     # Testing Configuration
