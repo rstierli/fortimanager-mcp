@@ -8,6 +8,8 @@
 
 A Model Context Protocol (MCP) server for FortiManager JSON-RPC API. This server enables AI assistants like Claude to interact with FortiManager for centralized firewall policy management, device provisioning, and network configuration.
 
+> **Note**: This is an independent open-source project and is not affiliated with, endorsed by, or supported by Fortinet, Inc. FortiManager is a trademark of Fortinet, Inc.
+
 ## Overview
 
 This MCP server provides a comprehensive interface to FortiManager's capabilities, allowing AI assistants to:
@@ -199,6 +201,27 @@ Add to your Claude Desktop configuration file:
 ```
 
 **Note**: Use the full path to the `fortimanager-mcp` executable in your virtual environment.
+
+### Claude Code Integration
+
+Add to `~/.claude/mcp_servers.json`:
+
+```json
+{
+  "mcpServers": {
+    "fortimanager": {
+      "command": "/path/to/fortimanager-mcp/.venv/bin/fortimanager-mcp",
+      "env": {
+        "FORTIMANAGER_HOST": "your-fmg-hostname",
+        "FORTIMANAGER_API_TOKEN": "your-api-token",
+        "FORTIMANAGER_VERIFY_SSL": "false",
+        "DEFAULT_ADOM": "root",
+        "LOG_LEVEL": "INFO"
+      }
+    }
+  }
+}
+```
 
 ### Docker Mode
 
@@ -426,7 +449,7 @@ fortimanager-mcp/
 │   │   ├── config.py          # Configuration management
 │   │   └── errors.py          # Error handling
 │   └── server.py              # MCP server implementation
-├── tests/                     # Test suite (213 unit tests)
+├── tests/                     # Test suite (190+ tests)
 ├── docs/                      # API documentation
 ├── .env.example               # Example configuration
 ├── pyproject.toml             # Project configuration
@@ -497,7 +520,7 @@ LOG_LEVEL=DEBUG fortimanager-mcp
 
 ### Running Tests
 
-The project includes 213 unit tests covering all tool modules, error handling, and validation logic.
+The project includes 190+ tests covering all tool modules, error handling, and validation logic.
 
 ```bash
 # Install dev dependencies
@@ -566,11 +589,7 @@ ruff format src/
 
 ## Contributing
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to submit bug reports, feature requests, and pull requests.
 
 ## License
 
@@ -578,14 +597,14 @@ MIT License - See [LICENSE](LICENSE) file for details.
 
 ## Acknowledgments
 
-- [Anthropic](https://anthropic.com) for the Model Context Protocol
+- [Anthropic](https://anthropic.com) for the [Model Context Protocol](https://modelcontextprotocol.io)
 - [Fortinet](https://fortinet.com) for FortiManager
 - [pyfmg](https://github.com/ftntcorecse/pyfmg) library for FortiManager/FortiAnalyzer API
-- [jmpijll/fortimanager-mcp](https://github.com/jmpijll/fortimanager-mcp) - Reference implementation
+- [jmpijll/fortimanager-mcp](https://github.com/jmpijll/fortimanager-mcp) - Architectural inspiration
 
 ## Related Projects
 
-- [fortianalyzer-mcp](https://github.com/rstierli/fortianalyzer-mcp) - MCP server for FortiAnalyzer
+- [fortianalyzer-mcp](https://github.com/rstierli/fortianalyzer-mcp) - MCP server for FortiAnalyzer with 70+ tools
 - [pyfmg](https://github.com/ftntcorecse/pyfmg) - FortiManager/FortiAnalyzer Python library
 
 ## Author
