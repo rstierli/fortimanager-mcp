@@ -416,10 +416,10 @@ def run_http() -> None:
 
     import uvicorn
     from starlette.applications import Starlette
+    from starlette.middleware import Middleware
     from starlette.requests import Request
     from starlette.responses import JSONResponse
     from starlette.routing import Mount, Route
-    from starlette.middleware import Middleware
     from starlette.types import ASGIApp, Receive, Scope, Send
 
     # Health check endpoint

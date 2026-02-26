@@ -310,7 +310,9 @@ async def add_device(
         )
 
         # Sanitize: strip credentials before returning
-        device_config_safe = {k: v for k, v in device_config.items() if k not in ("adm_pass", "adm_passwd")}
+        device_config_safe = {
+            k: v for k, v in device_config.items() if k not in ("adm_pass", "adm_passwd")
+        }
 
         return {
             "status": "success",
@@ -490,8 +492,7 @@ async def add_devices_bulk(
 
         # Sanitize: strip credentials from device dicts before returning
         devices_safe = [
-            {k: v for k, v in d.items() if k not in ("adm_pass", "adm_passwd")}
-            for d in devices
+            {k: v for k, v in d.items() if k not in ("adm_pass", "adm_passwd")} for d in devices
         ]
 
         return {
