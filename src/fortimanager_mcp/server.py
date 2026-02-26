@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.utils.config import get_settings
@@ -68,11 +69,19 @@ async def lifespan(server: FastMCP) -> AsyncIterator[None]:
         logger.info("FortiManager client disconnected")
 
 
+# Configure transport security for reverse proxy deployments
+_transport_security = None
+if settings.MCP_ALLOWED_HOSTS:
+    _transport_security = TransportSecuritySettings(
+        allowed_hosts=settings.MCP_ALLOWED_HOSTS,
+    )
+
 # Create FastMCP server with lifespan
 mcp = FastMCP(
     "fortimanager-mcp",
     dependencies=["pyfmg", "pydantic-settings"],
     lifespan=lifespan,
+    transport_security=_transport_security,
 )
 
 

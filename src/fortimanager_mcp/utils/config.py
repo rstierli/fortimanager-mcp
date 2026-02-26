@@ -95,6 +95,13 @@ class Settings(BaseSettings):
         description="Bearer token for HTTP auth. If set, all HTTP requests (except /health) must include Authorization: Bearer <token>",
     )
 
+    # MCP Allowed Hosts (for reverse proxy / Docker deployments)
+    MCP_ALLOWED_HOSTS: list[str] = Field(
+        default_factory=list,
+        description="Additional allowed Host header values for DNS rebinding protection. "
+        "Comma-separated in env var. localhost/127.0.0.1 always allowed by SDK.",
+    )
+
     # Tool Loading Mode
     FMG_TOOL_MODE: Literal["full", "dynamic"] = Field(
         default="full",
