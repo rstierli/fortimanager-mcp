@@ -6,6 +6,7 @@ Supports two modes:
 - dynamic: Only discovery tools loaded (~90% context reduction)
 """
 
+import hmac
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -324,30 +325,132 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
         try:
             from fortimanager_mcp import tools
 
-            # Reject private/internal names
-            if tool_name.startswith("_"):
-                return {
-                    "error": f"Tool '{tool_name}' not found",
-                    "hint": "Use find_fortimanager_tool() to discover available tools",
-                }
+            # Allowlist of valid tool names (auto-generated from tool modules)
+            _TOOL_MODULES = {
+                "system_tools": {
+                    "get_system_status",
+                    "get_ha_status",
+                    "list_adoms",
+                    "get_adom",
+                    "list_devices",
+                    "get_device",
+                    "list_device_groups",
+                    "list_tasks",
+                    "get_task",
+                    "wait_for_task",
+                    "list_packages",
+                    "get_package",
+                    "install_package",
+                    "install_device_settings",
+                    "lock_adom",
+                    "unlock_adom",
+                    "commit_adom",
+                },
+                "dvm_tools": {
+                    "list_device_vdoms",
+                    "get_device_status",
+                    "search_devices",
+                    "add_device",
+                    "add_model_device",
+                    "delete_device",
+                    "add_devices_bulk",
+                    "delete_devices_bulk",
+                    "update_device",
+                    "reload_device_list",
+                    "get_device_realtime_status",
+                    "get_device_interfaces",
+                },
+                "policy_tools": {
+                    "create_package",
+                    "delete_package",
+                    "clone_package",
+                    "assign_package",
+                    "list_firewall_policies",
+                    "get_firewall_policy",
+                    "create_firewall_policy",
+                    "update_firewall_policy",
+                    "delete_firewall_policy",
+                    "delete_firewall_policies_bulk",
+                    "move_firewall_policy",
+                    "search_firewall_policies",
+                    "preview_install",
+                    "get_preview_result",
+                },
+                "object_tools": {
+                    "list_addresses",
+                    "get_address",
+                    "create_address_subnet",
+                    "create_address_host",
+                    "create_address_fqdn",
+                    "create_address_range",
+                    "update_address",
+                    "delete_address",
+                    "list_address_groups",
+                    "get_address_group",
+                    "create_address_group",
+                    "update_address_group",
+                    "delete_address_group",
+                    "list_services",
+                    "get_service",
+                    "create_service_tcp_udp",
+                    "create_service_icmp",
+                    "update_service",
+                    "delete_service",
+                    "list_service_groups",
+                    "get_service_group",
+                    "create_service_group",
+                    "delete_service_group",
+                    "search_objects",
+                },
+                "script_tools": {
+                    "list_scripts",
+                    "get_script",
+                    "create_script",
+                    "update_script",
+                    "delete_script",
+                    "execute_script_on_device",
+                    "execute_script_on_devices",
+                    "execute_script_on_device_group",
+                    "execute_script_on_package",
+                    "get_script_log_latest",
+                    "get_script_log_summary",
+                    "get_script_log_output",
+                },
+                "template_tools": {
+                    "list_templates",
+                    "get_template",
+                    "list_system_templates",
+                    "get_system_template",
+                    "assign_system_template",
+                    "assign_system_template_bulk",
+                    "unassign_system_template",
+                    "list_cli_template_groups",
+                    "get_cli_template_group",
+                    "create_cli_template_group",
+                    "delete_cli_template_group",
+                    "list_template_groups",
+                    "get_template_group",
+                    "assign_template_group",
+                    "validate_template",
+                },
+                "sdwan_tools": {
+                    "list_sdwan_templates",
+                    "get_sdwan_template",
+                    "create_sdwan_template",
+                    "delete_sdwan_template",
+                    "assign_sdwan_template",
+                    "assign_sdwan_template_bulk",
+                    "unassign_sdwan_template",
+                },
+            }
 
-            # Find the tool function
+            # Find the tool function via allowlist
             tool_func = None
-            for module_name in [
-                "system_tools",
-                "dvm_tools",
-                "policy_tools",
-                "object_tools",
-                "script_tools",
-                "template_tools",
-                "sdwan_tools",
-            ]:
-                module = getattr(tools, module_name, None)
-                if module and hasattr(module, tool_name):
-                    candidate = getattr(module, tool_name)
-                    if not callable(candidate):
-                        continue
-                    tool_func = candidate
+            for module_name, allowed_names in _TOOL_MODULES.items():
+                if tool_name in allowed_names:
+                    module = getattr(tools, module_name, None)
+                    if module:
+                        tool_func = getattr(module, tool_name, None)
                     break
 
             if not tool_func:
@@ -472,7 +575,7 @@ def run_http() -> None:
             headers = dict(scope.get("headers", []))
             auth_header = headers.get(b"authorization", b"").decode()
 
-            if auth_header != f"Bearer {token}":
+            if not hmac.compare_digest(auth_header, f"Bearer {token}"):
                 response = JSONResponse(
                     {"error": "Unauthorized", "detail": "Invalid or missing Bearer token"},
                     status_code=401,
