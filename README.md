@@ -3,7 +3,7 @@
 [![CI](https://github.com/rstierli/fortimanager-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/rstierli/fortimanager-mcp/actions/workflows/ci.yml)
 [![Python Version](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.1.0--beta-green)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.0.0--beta-green)](CHANGELOG.md)
 [![FortiManager](https://img.shields.io/badge/FortiManager-7.0%20%7C%207.2%20%7C%207.4%20%7C%207.6-red)](README.md)
 
 A Model Context Protocol (MCP) server for FortiManager JSON-RPC API. This server enables AI assistants like Claude to interact with FortiManager for centralized firewall policy management, device provisioning, and network configuration.
@@ -118,6 +118,9 @@ FMG_TOOL_MODE=full  # or "dynamic" for ~90% context reduction
 
 # Default ADOM (optional - defaults to "root")
 DEFAULT_ADOM=root
+
+# HTTP Authentication (optional, recommended for Docker/HTTP deployments)
+# MCP_AUTH_TOKEN=your-secret-token
 ```
 
 ### Tool Loading Modes
@@ -581,11 +584,40 @@ ruff format src/
 
 ## Security Considerations
 
+### HTTP Authentication
+
+When running in HTTP mode (Docker), you can secure the MCP endpoint with Bearer token authentication:
+
+```bash
+# Set in .env or environment
+MCP_AUTH_TOKEN=your-secret-token
+```
+
+When configured, all HTTP requests (except `/health`) must include the `Authorization: Bearer <token>` header. If not set, the server runs without authentication (backwards compatible).
+
+### Environment File Permissions
+
+Protect your `.env` files containing API tokens:
+
+```bash
+chmod 600 .env .env.*
+```
+
+### Dynamic Tool Dispatch Security
+
+In dynamic mode, the tool dispatcher validates tool names:
+- Rejects private/internal functions (underscore-prefixed names)
+- Validates that resolved attributes are callable
+- Error responses never include request parameters (prevents credential leakage)
+
+### General Security
+
 - **API Tokens**: Store tokens securely, never commit to version control
 - **SSL Verification**: Enable SSL verification in production environments
 - **Least Privilege**: Use FortiManager accounts with minimal required permissions
 - **Network Security**: Restrict access to FortiManager management interface
-- **Workspace Mode**: Use ADOM locking to prevent concurrent modifications
+- **Workspace Locking**: Use ADOM locking to prevent concurrent modifications
+- **Credential Sanitization**: Device credentials are automatically stripped from API responses
 
 ## Contributing
 

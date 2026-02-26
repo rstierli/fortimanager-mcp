@@ -315,6 +315,13 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
         try:
             from fortimanager_mcp import tools
 
+            # Reject private/internal names
+            if tool_name.startswith("_"):
+                return {
+                    "error": f"Tool '{tool_name}' not found",
+                    "hint": "Use find_fortimanager_tool() to discover available tools",
+                }
+
             # Find the tool function
             tool_func = None
             for module_name in [
@@ -328,7 +335,10 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
             ]:
                 module = getattr(tools, module_name, None)
                 if module and hasattr(module, tool_name):
-                    tool_func = getattr(module, tool_name)
+                    candidate = getattr(module, tool_name)
+                    if not callable(candidate):
+                        continue
+                    tool_func = candidate
                     break
 
             if not tool_func:
@@ -346,7 +356,6 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
             return {
                 "error": str(e),
                 "tool": tool_name,
-                "parameters": parameters,
             }
 
 
@@ -394,14 +403,121 @@ def main() -> None:
         mcp.run()
     else:
         # HTTP mode for Docker/web
-        import uvicorn
-
-        uvicorn.run(
-            "fortimanager_mcp.server:mcp",
-            host=settings.MCP_SERVER_HOST,
-            port=settings.MCP_SERVER_PORT,
-            log_level=settings.LOG_LEVEL.lower(),
+        logger.info(
+            f"Starting MCP server in HTTP mode on {settings.MCP_SERVER_HOST}:{settings.MCP_SERVER_PORT}"
         )
+        run_http()
+
+
+def run_http() -> None:
+    """Run MCP server in HTTP mode with Starlette wrapper and optional auth."""
+    from collections.abc import AsyncIterator
+    from contextlib import asynccontextmanager
+
+    import uvicorn
+    from starlette.applications import Starlette
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse
+    from starlette.routing import Mount, Route
+    from starlette.middleware import Middleware
+    from starlette.types import ASGIApp, Receive, Scope, Send
+
+    # Health check endpoint
+    async def health_endpoint(request: Request) -> JSONResponse:
+        """HTTP health check endpoint for Docker health checks."""
+        is_connected = _fmg_client is not None
+        return JSONResponse(
+            {
+                "status": "healthy",
+                "service": "fortimanager-mcp",
+                "fortimanager_connected": is_connected,
+            },
+            status_code=200,
+        )
+
+    # Auth middleware
+    class AuthMiddleware:
+        """ASGI middleware that enforces Bearer token auth when MCP_AUTH_TOKEN is set."""
+
+        def __init__(self, app: ASGIApp) -> None:
+            self.app = app
+
+        async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+            if scope["type"] not in ("http", "websocket"):
+                await self.app(scope, receive, send)
+                return
+
+            # Allow health endpoint without auth
+            path = scope.get("path", "")
+            if path == "/health":
+                await self.app(scope, receive, send)
+                return
+
+            # Skip auth if no token configured (backwards compatible)
+            token = settings.MCP_AUTH_TOKEN
+            if not token:
+                await self.app(scope, receive, send)
+                return
+
+            # Check Authorization header
+            headers = dict(scope.get("headers", []))
+            auth_header = headers.get(b"authorization", b"").decode()
+
+            if auth_header != f"Bearer {token}":
+                response = JSONResponse(
+                    {"error": "Unauthorized", "detail": "Invalid or missing Bearer token"},
+                    status_code=401,
+                )
+                await response(scope, receive, send)
+                return
+
+            await self.app(scope, receive, send)
+
+    # Lifespan context manager
+    @asynccontextmanager
+    async def app_lifespan(app: Starlette) -> AsyncIterator[None]:
+        """Ensure MCP session manager and FortiManager client start."""
+        async with mcp.session_manager.run():
+            global _fmg_client
+
+            if settings.FORTIMANAGER_HOST:
+                logger.info("Initializing FortiManager connection")
+                _fmg_client = FortiManagerClient.from_settings(settings)
+                try:
+                    await _fmg_client.connect()
+                    logger.info("FortiManager connection established")
+                except Exception as e:
+                    logger.warning(f"FortiManager connection failed: {e}. Server will still start.")
+                    _fmg_client = None
+            else:
+                logger.warning(
+                    "FORTIMANAGER_HOST not configured. Set environment variables or .env file to connect."
+                )
+                _fmg_client = None
+
+            try:
+                yield
+            finally:
+                logger.info("Closing FortiManager connection")
+                if _fmg_client:
+                    await _fmg_client.disconnect()
+
+    # Create Starlette app with health route, MCP mount, and auth middleware
+    app = Starlette(
+        routes=[
+            Route("/health", health_endpoint, methods=["GET"]),
+            Mount("/", app=mcp.streamable_http_app()),
+        ],
+        lifespan=app_lifespan,
+        middleware=[Middleware(AuthMiddleware)],
+    )
+
+    uvicorn.run(
+        app,
+        host=settings.MCP_SERVER_HOST,
+        port=settings.MCP_SERVER_PORT,
+        log_level=settings.LOG_LEVEL.lower(),
+    )
 
 
 if __name__ == "__main__":

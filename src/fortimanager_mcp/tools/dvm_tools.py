@@ -309,9 +309,12 @@ async def add_device(
             flags=flags,
         )
 
+        # Sanitize: strip credentials before returning
+        device_config_safe = {k: v for k, v in device_config.items() if k not in ("adm_pass", "adm_passwd")}
+
         return {
             "status": "success",
-            "device": result.get("device", device_config),
+            "device": result.get("device", device_config_safe),
             "task_id": result.get("taskid"),
             "message": f"Device {name} added successfully",
         }
@@ -485,11 +488,18 @@ async def add_devices_bulk(
             flags=flags,
         )
 
+        # Sanitize: strip credentials from device dicts before returning
+        devices_safe = [
+            {k: v for k, v in d.items() if k not in ("adm_pass", "adm_passwd")}
+            for d in devices
+        ]
+
         return {
             "status": "success",
-            "added_count": len(devices),
+            "added_count": len(devices_safe),
+            "devices": devices_safe,
             "task_id": result.get("taskid"),
-            "message": f"Added {len(devices)} devices",
+            "message": f"Added {len(devices_safe)} devices",
         }
     except Exception as e:
         logger.error(f"Failed to add devices in bulk: {e}")
