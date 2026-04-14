@@ -3,7 +3,7 @@
 [![CI](https://github.com/rstierli/fortimanager-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/rstierli/fortimanager-mcp/actions/workflows/ci.yml)
 [![Python Version](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.0.0--beta-green)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.1.0--beta-green)](CHANGELOG.md)
 [![FortiManager](https://img.shields.io/badge/FortiManager-7.0%20%7C%207.2%20%7C%207.4%20%7C%207.6-red)](README.md)
 
 A Model Context Protocol (MCP) server for FortiManager JSON-RPC API. This server enables AI assistants like Claude to interact with FortiManager for centralized firewall policy management, device provisioning, and network configuration.
@@ -184,10 +184,10 @@ FortiManager MCP supports two tool loading modes to optimize context window usag
 
 | Mode | Tools Loaded | Context Usage | Best For |
 |------|-------------|---------------|----------|
-| `full` (default) | All 101 tools | ~100% | Large context windows, full functionality |
+| `full` (default) | All 102 tools | ~100% | Large context windows, full functionality |
 | `dynamic` | 4 discovery tools | ~10% | Smaller context windows, on-demand loading |
 
-**Full Mode** (default): All 101 tools are loaded at startup. Best when you have sufficient context window and need immediate access to all FortiManager operations.
+**Full Mode** (default): All 102 tools are loaded at startup. Best when you have sufficient context window and need immediate access to all FortiManager operations.
 
 **Dynamic Mode**: Only lightweight discovery tools are loaded:
 - `find_fortimanager_tool(operation)` - Search for tools by keyword
@@ -395,7 +395,7 @@ networks:
     external: true
 ```
 
-## Available Tools (101 tools)
+## Available Tools (102 tools)
 
 ### System Tools (17 tools)
 
@@ -436,7 +436,7 @@ networks:
 | `get_device_realtime_status` | Get live device status |
 | `get_device_interfaces` | Get device interface information |
 
-### Policy Tools (14 tools)
+### Policy Tools (15 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -452,6 +452,7 @@ networks:
 | `delete_firewall_policies_bulk` | Bulk delete policies |
 | `move_firewall_policy` | Reorder policy position |
 | `search_firewall_policies` | Search policies with filters |
+| `get_policy_services` | Get policy services with optional group resolution |
 | `preview_install` | Preview installation changes |
 | `get_preview_result` | Get preview results |
 

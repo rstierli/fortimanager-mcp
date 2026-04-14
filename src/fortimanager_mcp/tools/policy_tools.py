@@ -5,6 +5,7 @@ Provides policy package management, firewall policy CRUD operations,
 and installation operations.
 """
 
+import asyncio
 import logging
 from typing import Any
 
@@ -713,6 +714,179 @@ async def search_firewall_policies(
         }
     except Exception as e:
         logger.error(f"Failed to search policies: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+# =============================================================================
+# Service Resolution
+# =============================================================================
+
+
+def _extract_service_details(service_data: dict[str, Any]) -> dict[str, Any]:
+    """Extract structured port/protocol info from a service object.
+
+    Args:
+        service_data: Raw service object from FortiManager API.
+
+    Returns:
+        dict with name, protocol, and port details.
+    """
+    details: dict[str, Any] = {
+        "name": service_data.get("name", ""),
+        "protocol": service_data.get("protocol", ""),
+    }
+
+    # TCP/UDP/SCTP services (protocol == 15 means TCP/UDP/SCTP type)
+    protocol = service_data.get("protocol", "")
+    if protocol == 15 or str(protocol) == "15":
+        ports: dict[str, str] = {}
+        for key in ("tcp-portrange", "udp-portrange", "sctp-portrange"):
+            value = service_data.get(key)
+            if value:
+                ports[key] = value
+        details["ports"] = ports
+        details["category"] = "TCP/UDP/SCTP"
+    elif str(protocol).upper() == "ICMP":
+        details["category"] = "ICMP"
+        if "icmptype" in service_data:
+            details["icmp_type"] = service_data["icmptype"]
+        if "icmpcode" in service_data:
+            details["icmp_code"] = service_data["icmpcode"]
+    else:
+        details["category"] = "IP"
+        if "protocol-number" in service_data:
+            details["protocol_number"] = service_data["protocol-number"]
+
+    return details
+
+
+async def _resolve_single_service(
+    client: Any,
+    adom: str,
+    service_name: str,
+) -> dict[str, Any]:
+    """Resolve a single service name to its definition.
+
+    Tries service custom first, then service group. Returns an
+    error entry if neither is found.
+    """
+    # Try as individual service first
+    try:
+        svc = await client.get_service(adom, service_name)
+        return _extract_service_details(svc)
+    except Exception:
+        pass
+
+    # Try as service group
+    try:
+        group = await client.get_service_group(adom, service_name)
+        members = group.get("member", [])
+        # Recursively resolve group members
+        resolved_members = []
+        if members:
+            tasks = [_resolve_single_service(client, adom, m) for m in members]
+            resolved_members = list(await asyncio.gather(*tasks))
+        return {
+            "name": service_name,
+            "type": "group",
+            "members": resolved_members,
+        }
+    except Exception:
+        pass
+
+    return {
+        "name": service_name,
+        "type": "unknown",
+        "error": f"Service '{service_name}' not found as custom service or group",
+    }
+
+
+@mcp.tool()
+async def get_policy_services(
+    adom: str,
+    package: str,
+    policy_id: int,
+    resolve: bool = True,
+) -> dict[str, Any]:
+    """Get services configured on a firewall policy with optional group resolution.
+
+    Retrieves the service list from a firewall policy and optionally
+    resolves each service/group into its detailed definition (ports,
+    protocols, group members).
+
+    Useful for policy hardening workflows where you need to compare
+    actual traffic against configured services.
+
+    Args:
+        adom: ADOM name
+        package: Policy package name
+        policy_id: Policy ID number
+        resolve: If True, resolve each service to its definition
+                 including port ranges and group members (default: True)
+
+    Returns:
+        dict: Service information with keys:
+            - status: "success" or "error"
+            - policy_id: The policy ID queried
+            - policy_name: Name of the policy
+            - service_names: List of raw service names from the policy
+            - services: Resolved service details (if resolve=True)
+            - message: Error message if failed
+
+    Example:
+        >>> # Get resolved services for policy 10
+        >>> result = await get_policy_services("root", "default", 10)
+
+        >>> # Get just the service names without resolution
+        >>> result = await get_policy_services("root", "default", 10, resolve=False)
+    """
+    try:
+        client = _get_client()
+        policy = await client.get_firewall_policy(adom, package, policy_id)
+
+        service_names = policy.get("service", [])
+        policy_name = policy.get("name", "")
+
+        if not resolve:
+            return {
+                "status": "success",
+                "policy_id": policy_id,
+                "policy_name": policy_name,
+                "service_names": service_names,
+            }
+
+        # Handle "ALL" service specially
+        if service_names == ["ALL"] or service_names == "ALL":
+            return {
+                "status": "success",
+                "policy_id": policy_id,
+                "policy_name": policy_name,
+                "service_names": ["ALL"],
+                "services": [
+                    {
+                        "name": "ALL",
+                        "category": "wildcard",
+                        "description": "All services/protocols (no restriction)",
+                    }
+                ],
+            }
+
+        # Resolve each service concurrently
+        if isinstance(service_names, str):
+            service_names = [service_names]
+
+        tasks = [_resolve_single_service(client, adom, name) for name in service_names]
+        resolved = list(await asyncio.gather(*tasks))
+
+        return {
+            "status": "success",
+            "policy_id": policy_id,
+            "policy_name": policy_name,
+            "service_names": service_names,
+            "services": resolved,
+        }
+    except Exception as e:
+        logger.error(f"Failed to get policy services for policy {policy_id}: {e}")
         return {"status": "error", "message": str(e)}
 
 
