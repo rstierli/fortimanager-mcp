@@ -7,7 +7,6 @@ import pytest
 from fortimanager_mcp.utils.config import get_settings
 from fortimanager_mcp.utils.validation import validate_script_content
 
-
 # =============================================================================
 # Pure Validation Function Tests
 # =============================================================================
@@ -88,12 +87,7 @@ class TestValidateScriptContent:
         assert len(matches) >= 2
 
     def test_dangerous_embedded_in_larger_script(self):
-        content = (
-            "config system global\n"
-            "set hostname test\n"
-            "end\n"
-            "execute reboot\n"
-        )
+        content = "config system global\nset hostname test\nend\nexecute reboot\n"
         matches = validate_script_content(content)
         assert len(matches) == 1
         assert "reboot" in matches[0]

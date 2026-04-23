@@ -7,7 +7,6 @@ import pytest
 from fortimanager_mcp.utils.config import get_settings
 from fortimanager_mcp.utils.validation import check_policy_permissiveness
 
-
 # =============================================================================
 # Pure Validation Function Tests
 # =============================================================================
@@ -39,9 +38,7 @@ class TestCheckPolicyPermissiveness:
         assert result is None
 
     def test_specific_both_passes(self):
-        result = check_policy_permissiveness(
-            ["LAN-Subnet"], ["Server-Net"], ["ALL"], "accept"
-        )
+        result = check_policy_permissiveness(["LAN-Subnet"], ["Server-Net"], ["ALL"], "accept")
         assert result is None
 
     def test_case_insensitive_all(self):
@@ -62,16 +59,12 @@ class TestCheckPolicyPermissiveness:
 
     def test_mixed_addresses_with_all(self):
         """If 'all' appears among multiple srcaddrs, still flags it."""
-        result = check_policy_permissiveness(
-            ["all", "extra"], ["all"], ["HTTP"], "accept"
-        )
+        result = check_policy_permissiveness(["all", "extra"], ["all"], ["HTTP"], "accept")
         assert result is not None
 
     def test_multiple_services_with_all(self):
         """If 'ALL' appears among multiple services, still flags as fully open."""
-        result = check_policy_permissiveness(
-            ["all"], ["all"], ["HTTP", "ALL"], "accept"
-        )
+        result = check_policy_permissiveness(["all"], ["all"], ["HTTP", "ALL"], "accept")
         assert result is not None
         assert "fully open" in result
 
