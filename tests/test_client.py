@@ -516,6 +516,24 @@ class TestScriptTargetMapping:
         assert params["filter"] == [["target", "==", "not_a_real_target"]]
 
     @pytest.mark.asyncio
+    async def test_list_scripts_target_filter_non_eq_operator_mapped(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+    ) -> None:
+        """Non-`==` operators (e.g. `!=`) on target are still mapped."""
+        mock_client._fmg_version = (7, 6, 5)
+        mock_fmg_instance.get.return_value = (0, [])
+
+        await mock_client.list_scripts(
+            adom="root",
+            filter=[["target", "!=", "remote_device"]],
+        )
+
+        params = mock_fmg_instance.get.call_args.kwargs
+        assert params["filter"] == [["target", "!=", 2]]
+
+    @pytest.mark.asyncio
     async def test_list_scripts_target_filter_int_value_unchanged(
         self,
         mock_client: FortiManagerClient,
