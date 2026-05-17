@@ -238,9 +238,8 @@ class FortiManagerClient:
     # Mapping source: FMG API doc 012_cli_script_management.rst
     #   - device_database -> 0 (confirmed, doc line 1649)
     #   - adom_database   -> 1 (confirmed, doc lines 1580/1603/1626)
-    #   - remote_device   -> 2 (likely, NEEDS LIVE VERIFICATION against a real
-    #                           FMG 7.6+ instance; documented as the only
-    #                           remaining value but not explicitly enumerated)
+    #   - remote_device   -> 2 (confirmed live against FMG 7.6.6:
+    #                           create_script + get_script round-trip)
     _SCRIPT_TARGET_MAP: dict[str, int] = {
         "device_database": 0,
         "adom_database": 1,
@@ -288,6 +287,36 @@ class FortiManagerClient:
         unmapped = dict(script)
         unmapped["target"] = self._SCRIPT_TARGET_REVERSE[target]
         return unmapped
+
+    def _map_script_target_filter(self, filter_expr: Any) -> Any:
+        """Translate string `target` values in a filter expression to ints
+        for the FMG 7.6+ script endpoint.
+
+        FMG 7.6+ stores `target` as an integer, so a filter like
+        `["target", "==", "remote_device"]` never matches and (worse) FMG
+        silently coerces the unknown string to 0, returning the wrong rows.
+        This walks the expression and replaces any 3-element triplet
+        `["target", <op>, <known string>]` with its integer counterpart.
+
+        No-op on the legacy /dvmdb endpoint (which stores strings), for
+        non-list inputs, and for unknown target string values (left for
+        FMG to surface explicitly).
+        """
+        if not self._uses_new_script_endpoint():
+            return filter_expr
+        return self._walk_script_target_filter(filter_expr)
+
+    def _walk_script_target_filter(self, expr: Any) -> Any:
+        if not isinstance(expr, list):
+            return expr
+        if (
+            len(expr) == 3
+            and expr[0] == "target"
+            and isinstance(expr[2], str)
+            and expr[2] in self._SCRIPT_TARGET_MAP
+        ):
+            return [expr[0], expr[1], self._SCRIPT_TARGET_MAP[expr[2]]]
+        return [self._walk_script_target_filter(item) for item in expr]
 
     def _ensure_connected(self) -> FortiManager:
         """Ensure client is connected and return pyfmg instance."""
@@ -1301,7 +1330,7 @@ class FortiManagerClient:
         if fields:
             params["fields"] = fields
         if filter:
-            params["filter"] = filter
+            params["filter"] = self._map_script_target_filter(filter)
 
         result = await self.get(self._script_base_url(adom), **params)
         if isinstance(result, list):

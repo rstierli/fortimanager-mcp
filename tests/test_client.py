@@ -431,3 +431,119 @@ class TestScriptTargetMapping:
             assert client._uses_new_script_endpoint() is expected, (
                 f"version {version} should yield {expected}"
             )
+
+    @pytest.mark.asyncio
+    async def test_list_scripts_maps_all_target_filter_values(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+    ) -> None:
+        """FMG 7.6+: each documented target string maps to int in filter."""
+        mock_client._fmg_version = (7, 6, 5)
+        mock_fmg_instance.get.return_value = (0, [])
+
+        expected = {"device_database": 0, "adom_database": 1, "remote_device": 2}
+        for target_str, target_int in expected.items():
+            mock_fmg_instance.get.reset_mock()
+            await mock_client.list_scripts(
+                adom="root",
+                filter=[["target", "==", target_str]],
+            )
+            params = mock_fmg_instance.get.call_args.kwargs
+            assert params["filter"] == [["target", "==", target_int]], (
+                f"filter target=={target_str} should send int {target_int}, "
+                f"got {params['filter']!r}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_list_scripts_target_filter_passes_through_on_legacy_endpoint(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+    ) -> None:
+        """FMG 7.0-7.4: legacy endpoint stores strings; filter unchanged."""
+        mock_client._fmg_version = (7, 4, 0)
+        mock_fmg_instance.get.return_value = (0, [])
+
+        await mock_client.list_scripts(
+            adom="root",
+            filter=[["target", "==", "remote_device"]],
+        )
+
+        params = mock_fmg_instance.get.call_args.kwargs
+        assert params["filter"] == [["target", "==", "remote_device"]]
+
+    @pytest.mark.asyncio
+    async def test_list_scripts_target_filter_with_compound_conditions(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+    ) -> None:
+        """Target mapping must coexist with other conditions in the filter."""
+        mock_client._fmg_version = (7, 6, 5)
+        mock_fmg_instance.get.return_value = (0, [])
+
+        await mock_client.list_scripts(
+            adom="root",
+            filter=[
+                ["type", "==", "cli"],
+                ["target", "==", "remote_device"],
+            ],
+        )
+
+        params = mock_fmg_instance.get.call_args.kwargs
+        assert params["filter"] == [
+            ["type", "==", "cli"],
+            ["target", "==", 2],
+        ]
+
+    @pytest.mark.asyncio
+    async def test_list_scripts_target_filter_unknown_value_passes_through(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+    ) -> None:
+        """Unknown target values are left for FMG to reject explicitly."""
+        mock_client._fmg_version = (7, 6, 5)
+        mock_fmg_instance.get.return_value = (0, [])
+
+        await mock_client.list_scripts(
+            adom="root",
+            filter=[["target", "==", "not_a_real_target"]],
+        )
+
+        params = mock_fmg_instance.get.call_args.kwargs
+        assert params["filter"] == [["target", "==", "not_a_real_target"]]
+
+    @pytest.mark.asyncio
+    async def test_list_scripts_target_filter_int_value_unchanged(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+    ) -> None:
+        """A caller passing an int already (advanced use) is left alone."""
+        mock_client._fmg_version = (7, 6, 5)
+        mock_fmg_instance.get.return_value = (0, [])
+
+        await mock_client.list_scripts(
+            adom="root",
+            filter=[["target", "==", 2]],
+        )
+
+        params = mock_fmg_instance.get.call_args.kwargs
+        assert params["filter"] == [["target", "==", 2]]
+
+    @pytest.mark.asyncio
+    async def test_list_scripts_no_filter_unchanged(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+    ) -> None:
+        """Calling without a filter must not forward one."""
+        mock_client._fmg_version = (7, 6, 5)
+        mock_fmg_instance.get.return_value = (0, [])
+
+        await mock_client.list_scripts(adom="root")
+
+        params = mock_fmg_instance.get.call_args.kwargs
+        assert "filter" not in params
