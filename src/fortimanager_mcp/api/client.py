@@ -329,11 +329,7 @@ class FortiManagerClient:
         ):
             return [expr[0], expr[1], self._map_target_value(expr[2])]
         # Multi-value list operator: ["target", "in"|"!in", v1, v2, ...]
-        if (
-            len(expr) >= 3
-            and expr[0] == "target"
-            and expr[1] in ("in", "!in")
-        ):
+        if len(expr) >= 3 and expr[0] == "target" and expr[1] in ("in", "!in"):
             return [expr[0], expr[1]] + [self._map_target_value(v) for v in expr[2:]]
         return [self._walk_script_target_filter(item) for item in expr]
 

@@ -636,9 +636,7 @@ class TestScriptTargetMapping:
         )
 
         params = mock_fmg_instance.get.call_args.kwargs
-        assert params["filter"] == [
-            ["target", "in", "device_database", "remote_device"]
-        ]
+        assert params["filter"] == [["target", "in", "device_database", "remote_device"]]
 
     @pytest.mark.asyncio
     async def test_list_scripts_target_filter_in_operator_inside_compound(
