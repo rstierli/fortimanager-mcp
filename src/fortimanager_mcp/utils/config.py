@@ -264,7 +264,9 @@ def get_settings() -> Settings:
         ValidationError: If required settings are missing or invalid
     """
     _check_env_file_permissions()
-    return Settings()
+    # pydantic-settings reads required fields from env vars at runtime;
+    # mypy can't see that and reports a false positive call-arg error.
+    return Settings()  # type: ignore[call-arg]
 
 
 def get_default_adom() -> str:

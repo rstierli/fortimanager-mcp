@@ -90,3 +90,12 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = "pyFMG.*"
 ignore_missing_imports = true
+
+# api.client wraps pyfmg, an untyped SDK whose response is `Any` for every
+# endpoint. Casting at every public method (~68 sites) only relabels the
+# type without validating the shape — pyfmg has no stubs to narrow
+# against. Disable Any-return warnings here only; all other strict checks
+# (no-untyped-def, no-implicit-optional, etc.) still apply.
+[[tool.mypy.overrides]]
+module = "fortimanager_mcp.api.client"
+warn_return_any = false

@@ -9,6 +9,7 @@ import asyncio
 import logging
 from typing import Any
 
+from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_settings
 from fortimanager_mcp.utils.validation import check_policy_permissiveness
@@ -16,7 +17,7 @@ from fortimanager_mcp.utils.validation import check_policy_permissiveness
 logger = logging.getLogger(__name__)
 
 
-def _get_client():
+def _get_client() -> FortiManagerClient:
     """Get the FortiManager client instance."""
     client = get_fmg_client()
     if not client:

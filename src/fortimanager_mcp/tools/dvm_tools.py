@@ -8,13 +8,14 @@ model device provisioning, and device group management.
 import logging
 from typing import Any
 
+from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_default_adom
 
 logger = logging.getLogger(__name__)
 
 
-def _get_client():
+def _get_client() -> FortiManagerClient:
     """Get the FortiManager client instance."""
     client = get_fmg_client()
     if not client:
@@ -185,8 +186,8 @@ async def search_devices(
     try:
         client = _get_client()
 
-        # Build filter list
-        filters = []
+        # Build filter list (heterogeneous: values can be str or int)
+        filters: list[list[Any]] = []
         if name_filter:
             filters.append(["name", "contain", name_filter])
         if platform_filter:

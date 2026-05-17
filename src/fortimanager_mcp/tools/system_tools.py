@@ -6,13 +6,14 @@ Based on FNDN FortiManager 7.6.5 SYS, DVMDB, and TASK API specifications.
 import logging
 from typing import Any
 
+from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_default_adom
 
 logger = logging.getLogger(__name__)
 
 
-def _get_client():
+def _get_client() -> FortiManagerClient:
     """Get the FortiManager client instance."""
     client = get_fmg_client()
     if not client:
