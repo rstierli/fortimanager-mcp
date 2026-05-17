@@ -1,5 +1,6 @@
 """Tests for FortiManager API client."""
 
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -167,3 +168,266 @@ class TestErrorHandling:
             await mock_client.get("/test/url")
 
         assert "Permission denied" in str(exc_info.value)
+
+
+class TestScriptTargetMapping:
+    """Regression tests for GitHub issue #3.
+
+    The FMG 7.6+ /pm/config/.../script endpoint expects an integer `target`
+    and silently coerces unknown values (including legacy strings) to 0
+    (device_database). The client must map strings -> ints when talking to
+    the new endpoint, and leave strings untouched on the legacy /dvmdb
+    endpoint. Responses go the other way to keep the public surface
+    string-typed.
+    """
+
+    @pytest.mark.asyncio
+    async def test_create_script_maps_target_on_new_endpoint(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+    ) -> None:
+        """FMG 7.6+: target string must be converted to integer."""
+        mock_client._fmg_version = (7, 6, 5)
+        mock_fmg_instance.get.return_value = (0, {"Version": "v7.6.5"})
+        mock_fmg_instance.add.return_value = (0, {"status": {"code": 0, "message": "OK"}})
+
+        await mock_client.create_script(
+            adom="root",
+            script={
+                "name": "reboot-fgt",
+                "content": "execute reboot",
+                "type": "cli",
+                "target": "remote_device",
+            },
+        )
+
+        mock_fmg_instance.add.assert_called_once()
+        call_args = mock_fmg_instance.add.call_args
+        url = call_args.args[0]
+        body = call_args.kwargs["data"]
+        assert url == "/pm/config/adom/root/obj/fmg/script"
+        assert body["target"] == 2, "remote_device must map to 2 on FMG 7.6+"
+        assert isinstance(body["target"], int)
+
+    @pytest.mark.asyncio
+    async def test_create_script_maps_all_known_targets(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+    ) -> None:
+        """Each documented target string maps to the expected integer."""
+        mock_client._fmg_version = (7, 6, 5)
+        mock_fmg_instance.add.return_value = (0, {"status": {"code": 0, "message": "OK"}})
+
+        expected = {
+            "device_database": 0,
+            "adom_database": 1,
+            "remote_device": 2,
+        }
+
+        for target_str, target_int in expected.items():
+            mock_fmg_instance.add.reset_mock()
+            await mock_client.create_script(
+                adom="root",
+                script={"name": f"s-{target_str}", "content": "noop", "target": target_str},
+            )
+            body = mock_fmg_instance.add.call_args.kwargs["data"]
+            assert body["target"] == target_int, (
+                f"{target_str} should map to {target_int}, got {body['target']!r}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_create_script_passes_target_through_on_legacy_endpoint(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+    ) -> None:
+        """FMG 7.0-7.4: legacy endpoint accepts strings, must not be remapped."""
+        mock_client._fmg_version = (7, 4, 0)
+        mock_fmg_instance.add.return_value = (0, {"status": {"code": 0, "message": "OK"}})
+
+        await mock_client.create_script(
+            adom="root",
+            script={
+                "name": "reboot-fgt",
+                "content": "execute reboot",
+                "type": "cli",
+                "target": "remote_device",
+            },
+        )
+
+        call_args = mock_fmg_instance.add.call_args
+        url = call_args.args[0]
+        body = call_args.kwargs["data"]
+        assert url == "/dvmdb/adom/root/script"
+        assert body["target"] == "remote_device"
+        assert isinstance(body["target"], str)
+
+    @pytest.mark.asyncio
+    async def test_create_script_unknown_target_passes_through(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+    ) -> None:
+        """Unknown target strings are not silently rewritten to 0."""
+        mock_client._fmg_version = (7, 6, 5)
+        mock_fmg_instance.add.return_value = (0, {"status": {"code": 0, "message": "OK"}})
+
+        await mock_client.create_script(
+            adom="root",
+            script={"name": "weird", "content": "noop", "target": "not_a_real_target"},
+        )
+
+        body = mock_fmg_instance.add.call_args.kwargs["data"]
+        assert body["target"] == "not_a_real_target"
+
+    @pytest.mark.asyncio
+    async def test_create_script_integer_target_passes_through(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+    ) -> None:
+        """A caller passing an int already (advanced use) is left alone."""
+        mock_client._fmg_version = (7, 6, 5)
+        mock_fmg_instance.add.return_value = (0, {"status": {"code": 0, "message": "OK"}})
+
+        await mock_client.create_script(
+            adom="root",
+            script={"name": "preformatted", "content": "noop", "target": 2},
+        )
+
+        body = mock_fmg_instance.add.call_args.kwargs["data"]
+        assert body["target"] == 2
+
+    @pytest.mark.asyncio
+    async def test_create_script_no_target_passes_through(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+    ) -> None:
+        """Scripts without a target field are unaffected."""
+        mock_client._fmg_version = (7, 6, 5)
+        mock_fmg_instance.add.return_value = (0, {"status": {"code": 0, "message": "OK"}})
+
+        await mock_client.create_script(
+            adom="root",
+            script={"name": "no-target", "content": "noop"},
+        )
+
+        body = mock_fmg_instance.add.call_args.kwargs["data"]
+        assert "target" not in body
+
+    @pytest.mark.asyncio
+    async def test_update_script_maps_target_on_new_endpoint(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+    ) -> None:
+        """update_script must also apply the mapping on FMG 7.6+."""
+        mock_client._fmg_version = (7, 6, 5)
+        mock_fmg_instance.update.return_value = (0, {"status": {"code": 0, "message": "OK"}})
+
+        await mock_client.update_script(
+            adom="root",
+            name="existing",
+            data={"target": "adom_database", "desc": "updated"},
+        )
+
+        call_args = mock_fmg_instance.update.call_args
+        url = call_args.args[0]
+        body = call_args.kwargs["data"]
+        assert url == "/pm/config/adom/root/obj/fmg/script/existing"
+        assert body["target"] == 1
+        assert body["desc"] == "updated"
+
+    @pytest.mark.asyncio
+    async def test_update_script_passes_target_through_on_legacy_endpoint(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+    ) -> None:
+        """update_script leaves string targets alone on FMG 7.0-7.4."""
+        mock_client._fmg_version = (7, 4, 0)
+        mock_fmg_instance.update.return_value = (0, {"status": {"code": 0, "message": "OK"}})
+
+        await mock_client.update_script(
+            adom="root",
+            name="existing",
+            data={"target": "remote_device"},
+        )
+
+        body = mock_fmg_instance.update.call_args.kwargs["data"]
+        assert body["target"] == "remote_device"
+
+    @pytest.mark.asyncio
+    async def test_list_scripts_reverse_maps_int_target(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+    ) -> None:
+        """Responses from FMG 7.6+ contain int targets; callers see strings."""
+        mock_client._fmg_version = (7, 6, 5)
+        mock_fmg_instance.get.return_value = (
+            0,
+            [
+                {"name": "s1", "target": 0},
+                {"name": "s2", "target": 1},
+                {"name": "s3", "target": 2},
+            ],
+        )
+
+        scripts = await mock_client.list_scripts(adom="root")
+        targets = {s["name"]: s["target"] for s in scripts}
+        assert targets == {
+            "s1": "device_database",
+            "s2": "adom_database",
+            "s3": "remote_device",
+        }
+
+    @pytest.mark.asyncio
+    async def test_list_scripts_leaves_string_targets_alone(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+    ) -> None:
+        """Legacy responses already contain string targets; pass them through."""
+        mock_client._fmg_version = (7, 4, 0)
+        mock_fmg_instance.get.return_value = (
+            0,
+            [{"name": "s1", "target": "device_database"}],
+        )
+
+        scripts = await mock_client.list_scripts(adom="root")
+        assert scripts[0]["target"] == "device_database"
+
+    @pytest.mark.asyncio
+    async def test_get_script_reverse_maps_int_target(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+    ) -> None:
+        """get_script reverses the mapping on FMG 7.6+ for the single result."""
+        mock_client._fmg_version = (7, 6, 5)
+        mock_fmg_instance.get.return_value = (0, {"name": "s1", "target": 2})
+
+        script = await mock_client.get_script(adom="root", name="s1")
+        assert script["target"] == "remote_device"
+
+    def test_uses_new_script_endpoint_predicate(self) -> None:
+        """The version predicate matches the script endpoint branch exactly."""
+        client = FortiManagerClient(host="test.example.com", api_token="t")
+        cases: list[tuple[Any, bool]] = [
+            (None, False),
+            ((7, 0, 0), False),
+            ((7, 4, 5), False),
+            ((7, 5, 99), False),
+            ((7, 6, 0), True),
+            ((7, 6, 5), True),
+            ((8, 0, 0), True),
+        ]
+        for version, expected in cases:
+            client._fmg_version = version
+            assert client._uses_new_script_endpoint() is expected, (
+                f"version {version} should yield {expected}"
+            )
