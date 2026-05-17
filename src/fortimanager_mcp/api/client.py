@@ -288,19 +288,30 @@ class FortiManagerClient:
         unmapped["target"] = self._SCRIPT_TARGET_REVERSE[target]
         return unmapped
 
+    # FMG filter operators that compare a single value (3-element triplet).
+    # Used to recognize ["field", op, value] in script target filter mapping.
+    _FMG_BINARY_FILTER_OPS: frozenset[str] = frozenset(
+        {"==", "!=", "<", "<=", ">", ">=", "like", "!like", "contain", "!contain"}
+    )
+
     def _map_script_target_filter(self, filter_expr: Any) -> Any:
         """Translate string `target` values in a filter expression to ints
         for the FMG 7.6+ script endpoint.
 
-        FMG 7.6+ stores `target` as an integer, so a filter like
-        `["target", "==", "remote_device"]` never matches and (worse) FMG
-        silently coerces the unknown string to 0, returning the wrong rows.
-        This walks the expression and replaces any 3-element triplet
-        `["target", <op>, <known string>]` with its integer counterpart.
+        FMG 7.6+ stores `target` as an integer, so filters like
+        `["target", "==", "remote_device"]` or `["target", "in",
+        "device_database", "remote_device"]` never match — FMG silently
+        coerces unknown strings to 0 and returns wrong rows.
 
-        No-op on the legacy /dvmdb endpoint (which stores strings), for
-        non-list inputs, and for unknown target string values (left for
-        FMG to surface explicitly).
+        Handles two filter shapes for the `target` field:
+            * binary operator triplet: `["target", op, <str>]`
+              (op in :attr:`_FMG_BINARY_FILTER_OPS`)
+            * multi-value `in`/`!in`: `["target", "in"|"!in", v1, v2, ...]`
+              (flat list, see existing usage at `list_devices` filter site)
+
+        No-op on the legacy /dvmdb endpoint (strings are accepted there),
+        for non-list inputs, unknown operators, and unknown target string
+        values (left for FMG to surface explicitly).
         """
         if not self._uses_new_script_endpoint():
             return filter_expr
@@ -309,14 +320,29 @@ class FortiManagerClient:
     def _walk_script_target_filter(self, expr: Any) -> Any:
         if not isinstance(expr, list):
             return expr
+        # Binary operator triplet: ["target", op, value]
         if (
             len(expr) == 3
             and expr[0] == "target"
-            and isinstance(expr[2], str)
-            and expr[2] in self._SCRIPT_TARGET_MAP
+            and isinstance(expr[1], str)
+            and expr[1] in self._FMG_BINARY_FILTER_OPS
         ):
-            return [expr[0], expr[1], self._SCRIPT_TARGET_MAP[expr[2]]]
+            return [expr[0], expr[1], self._map_target_value(expr[2])]
+        # Multi-value list operator: ["target", "in"|"!in", v1, v2, ...]
+        if (
+            len(expr) >= 3
+            and expr[0] == "target"
+            and expr[1] in ("in", "!in")
+        ):
+            return [expr[0], expr[1]] + [self._map_target_value(v) for v in expr[2:]]
         return [self._walk_script_target_filter(item) for item in expr]
+
+    def _map_target_value(self, value: Any) -> Any:
+        """Map a single `target` string value to its int counterpart, or
+        return unchanged for ints and unknown strings."""
+        if isinstance(value, str) and value in self._SCRIPT_TARGET_MAP:
+            return self._SCRIPT_TARGET_MAP[value]
+        return value
 
     def _ensure_connected(self) -> FortiManager:
         """Ensure client is connected and return pyfmg instance."""
@@ -414,7 +440,7 @@ class FortiManagerClient:
     async def list_adoms(
         self,
         fields: list[str] | None = None,
-        filter: list[str] | None = None,
+        filter: list | None = None,
         loadsub: int = 0,
     ) -> list[dict[str, Any]]:
         """List all ADOMs.
@@ -441,7 +467,7 @@ class FortiManagerClient:
         self,
         adom: str = "root",
         fields: list[str] | None = None,
-        filter: list[str] | None = None,
+        filter: list | None = None,
         loadsub: int = 0,
     ) -> list[dict[str, Any]]:
         """List devices in ADOM.
@@ -607,7 +633,7 @@ class FortiManagerClient:
 
     async def list_tasks(
         self,
-        filter: list[str] | None = None,
+        filter: list | None = None,
     ) -> list[dict[str, Any]]:
         """List all tasks.
 

@@ -565,3 +565,120 @@ class TestScriptTargetMapping:
 
         params = mock_fmg_instance.get.call_args.kwargs
         assert "filter" not in params
+
+    @pytest.mark.asyncio
+    async def test_list_scripts_target_filter_in_operator_mapped(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+    ) -> None:
+        """`["target", "in", v1, v2, ...]` maps each known string value."""
+        mock_client._fmg_version = (7, 6, 5)
+        mock_fmg_instance.get.return_value = (0, [])
+
+        await mock_client.list_scripts(
+            adom="root",
+            filter=[["target", "in", "device_database", "remote_device"]],
+        )
+
+        params = mock_fmg_instance.get.call_args.kwargs
+        assert params["filter"] == [["target", "in", 0, 2]]
+
+    @pytest.mark.asyncio
+    async def test_list_scripts_target_filter_not_in_operator_mapped(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+    ) -> None:
+        """`["target", "!in", ...]` is treated the same as `in`."""
+        mock_client._fmg_version = (7, 6, 5)
+        mock_fmg_instance.get.return_value = (0, [])
+
+        await mock_client.list_scripts(
+            adom="root",
+            filter=[["target", "!in", "remote_device", "adom_database"]],
+        )
+
+        params = mock_fmg_instance.get.call_args.kwargs
+        assert params["filter"] == [["target", "!in", 2, 1]]
+
+    @pytest.mark.asyncio
+    async def test_list_scripts_target_filter_in_operator_mixed_values(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+    ) -> None:
+        """Unknown values inside `in` are left untouched; known ones mapped."""
+        mock_client._fmg_version = (7, 6, 5)
+        mock_fmg_instance.get.return_value = (0, [])
+
+        await mock_client.list_scripts(
+            adom="root",
+            filter=[["target", "in", "device_database", "not_a_real_target", 2]],
+        )
+
+        params = mock_fmg_instance.get.call_args.kwargs
+        assert params["filter"] == [["target", "in", 0, "not_a_real_target", 2]]
+
+    @pytest.mark.asyncio
+    async def test_list_scripts_target_filter_in_operator_legacy_passthrough(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+    ) -> None:
+        """Legacy /dvmdb endpoint stores strings — `in` filter unchanged."""
+        mock_client._fmg_version = (7, 4, 0)
+        mock_fmg_instance.get.return_value = (0, [])
+
+        await mock_client.list_scripts(
+            adom="root",
+            filter=[["target", "in", "device_database", "remote_device"]],
+        )
+
+        params = mock_fmg_instance.get.call_args.kwargs
+        assert params["filter"] == [
+            ["target", "in", "device_database", "remote_device"]
+        ]
+
+    @pytest.mark.asyncio
+    async def test_list_scripts_target_filter_in_operator_inside_compound(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+    ) -> None:
+        """`in` filter on target coexists with other compound conditions."""
+        mock_client._fmg_version = (7, 6, 5)
+        mock_fmg_instance.get.return_value = (0, [])
+
+        await mock_client.list_scripts(
+            adom="root",
+            filter=[
+                ["type", "==", "cli"],
+                ["target", "in", "remote_device", "adom_database"],
+            ],
+        )
+
+        params = mock_fmg_instance.get.call_args.kwargs
+        assert params["filter"] == [
+            ["type", "==", "cli"],
+            ["target", "in", 2, 1],
+        ]
+
+    @pytest.mark.asyncio
+    async def test_list_scripts_unknown_operator_on_target_passes_through(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+    ) -> None:
+        """3-element list with an unrecognized operator is left alone."""
+        mock_client._fmg_version = (7, 6, 5)
+        mock_fmg_instance.get.return_value = (0, [])
+
+        # "weird_op" is not a known FMG comparison operator
+        await mock_client.list_scripts(
+            adom="root",
+            filter=[["target", "weird_op", "remote_device"]],
+        )
+
+        params = mock_fmg_instance.get.call_args.kwargs
+        assert params["filter"] == [["target", "weird_op", "remote_device"]]
