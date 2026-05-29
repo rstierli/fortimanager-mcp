@@ -9,6 +9,12 @@ from typing import Any
 from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_default_adom
+from fortimanager_mcp.utils.errors import client_safe_error
+from fortimanager_mcp.utils.validation import (
+    validate_adom,
+    validate_device_name,
+    validate_package_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +64,8 @@ async def get_system_status() -> dict[str, Any]:
         }
     except Exception as e:
         logger.error(f"Failed to get system status: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -90,7 +97,8 @@ async def get_ha_status() -> dict[str, Any]:
         }
     except Exception as e:
         logger.error(f"Failed to get HA status: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 # =============================================================================
@@ -132,7 +140,8 @@ async def list_adoms(
         }
     except Exception as e:
         logger.error(f"Failed to list ADOMs: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -157,6 +166,7 @@ async def get_adom(
         >>> print(f"State: {result['adom']['state']}")
     """
     try:
+        name = validate_adom(name)
         client = _get_client()
         loadsub = 1 if include_details else 0
         adom = await client.get_adom(name, loadsub=loadsub)
@@ -166,7 +176,8 @@ async def get_adom(
         }
     except Exception as e:
         logger.error(f"Failed to get ADOM {name}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 # =============================================================================
@@ -202,6 +213,7 @@ async def list_devices(
     """
     adom = adom or get_default_adom()
     try:
+        adom = validate_adom(adom)
         client = _get_client()
         devices = await client.list_devices(adom, fields=fields)
         return {
@@ -211,7 +223,8 @@ async def list_devices(
         }
     except Exception as e:
         logger.error(f"Failed to list devices in ADOM {adom}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -240,6 +253,8 @@ async def get_device(
     """
     adom = adom or get_default_adom()
     try:
+        adom = validate_adom(adom)
+        name = validate_device_name(name)
         client = _get_client()
         loadsub = 1 if include_details else 0
         device = await client.get_device(name, adom, loadsub=loadsub)
@@ -249,7 +264,8 @@ async def get_device(
         }
     except Exception as e:
         logger.error(f"Failed to get device {name}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -273,6 +289,7 @@ async def list_device_groups(
     """
     adom = adom or get_default_adom()
     try:
+        adom = validate_adom(adom)
         client = _get_client()
         groups = await client.list_device_groups(adom)
         return {
@@ -282,7 +299,8 @@ async def list_device_groups(
         }
     except Exception as e:
         logger.error(f"Failed to list device groups: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 # =============================================================================
@@ -338,7 +356,8 @@ async def list_tasks(
         }
     except Exception as e:
         logger.error(f"Failed to list tasks: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -380,7 +399,8 @@ async def get_task(
         return result
     except Exception as e:
         logger.error(f"Failed to get task {task_id}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -449,7 +469,8 @@ async def wait_for_task(
 
     except Exception as e:
         logger.error(f"Failed to wait for task {task_id}: {e}")
-        return {"status": "error", "completed": False, "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "completed": False, "message": msg, "error_code": code}
 
 
 # =============================================================================
@@ -483,6 +504,7 @@ async def list_packages(
     """
     adom = adom or get_default_adom()
     try:
+        adom = validate_adom(adom)
         client = _get_client()
         packages = await client.list_packages(adom)
         return {
@@ -492,7 +514,8 @@ async def list_packages(
         }
     except Exception as e:
         logger.error(f"Failed to list packages in ADOM {adom}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -516,6 +539,8 @@ async def get_package(
     """
     adom = adom or get_default_adom()
     try:
+        adom = validate_adom(adom)
+        name = validate_package_name(name)
         client = _get_client()
         loadsub = 1 if include_details else 0
         package = await client.get_package(adom, name, loadsub=loadsub)
@@ -525,7 +550,8 @@ async def get_package(
         }
     except Exception as e:
         logger.error(f"Failed to get package {name}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 # =============================================================================
@@ -577,6 +603,8 @@ async def install_package(
         ... )
     """
     try:
+        adom = validate_adom(adom)
+        package = validate_package_name(package)
         client = _get_client()
 
         flags = ["preview"] if preview else ["none"]
@@ -597,7 +625,8 @@ async def install_package(
         }
     except Exception as e:
         logger.error(f"Failed to install package {package}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -621,6 +650,7 @@ async def install_device_settings(
             - message: Status or error message
     """
     try:
+        adom = validate_adom(adom)
         client = _get_client()
 
         result = await client.install_device(
@@ -636,7 +666,8 @@ async def install_device_settings(
         }
     except Exception as e:
         logger.error(f"Failed to install device settings: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 # =============================================================================
@@ -668,6 +699,7 @@ async def lock_adom(adom: str) -> dict[str, Any]:
         ...     await unlock_adom("root")
     """
     try:
+        adom = validate_adom(adom)
         client = _get_client()
         await client.lock_adom(adom)
         return {
@@ -676,7 +708,8 @@ async def lock_adom(adom: str) -> dict[str, Any]:
         }
     except Exception as e:
         logger.error(f"Failed to lock ADOM {adom}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -695,6 +728,7 @@ async def unlock_adom(adom: str) -> dict[str, Any]:
             - message: Status or error message
     """
     try:
+        adom = validate_adom(adom)
         client = _get_client()
         await client.unlock_adom(adom)
         return {
@@ -703,7 +737,8 @@ async def unlock_adom(adom: str) -> dict[str, Any]:
         }
     except Exception as e:
         logger.error(f"Failed to unlock ADOM {adom}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -722,6 +757,7 @@ async def commit_adom(adom: str) -> dict[str, Any]:
             - message: Status or error message
     """
     try:
+        adom = validate_adom(adom)
         client = _get_client()
         await client.commit_adom(adom)
         return {
@@ -730,4 +766,5 @@ async def commit_adom(adom: str) -> dict[str, Any]:
         }
     except Exception as e:
         logger.error(f"Failed to commit ADOM {adom}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}

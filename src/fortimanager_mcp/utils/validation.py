@@ -109,15 +109,17 @@ DEVICE_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_.-]{1,64}$")
 # Device serial number pattern: starts with device type prefix, alphanumeric
 DEVICE_SERIAL_PATTERN = re.compile(r"^(FG|FM|FW|FA|FS|FD|FP|FC|FV)[A-Z0-9]{10,20}$")
 
-# Object name pattern: alphanumeric, underscore, hyphen, dot, space, 1-79 chars
-# FortiManager object names can be up to 79 chars and allow more characters
-OBJECT_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_. -]{1,79}$")
+# Object name pattern: alphanumeric, underscore, hyphen, dot, space, parens,
+# colon; 1-79 chars. FortiManager object names allow parentheses (e.g. cloned
+# "addr (1)") and colons; path/injection chars (/ \ ; quotes) stay blocked.
+OBJECT_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_.:() -]{1,79}$")
 
 # Package name pattern: alphanumeric, underscore, hyphen, 1-35 chars
 PACKAGE_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,35}$")
 
-# Policy name pattern: alphanumeric, underscore, hyphen, dot, space, 1-35 chars
-POLICY_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_. -]{1,35}$")
+# Policy name pattern: alphanumeric, underscore, hyphen, dot, space, parens,
+# colon; 1-35 chars. Path/injection chars (/ \ ; quotes) stay blocked.
+POLICY_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_.:() -]{1,35}$")
 
 # Interface name pattern: alphanumeric, underscore, hyphen, 1-35 chars
 INTERFACE_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,35}$")
@@ -801,10 +803,12 @@ def validate_filename(filename: str) -> str:
 # Script Content Safety
 # =============================================================================
 
-# Dangerous FortiOS CLI commands that must be blocked.
-# FortiOS allows abbreviated commands (e.g., "exec" for "execute"),
-# so patterns handle both forms. Case-insensitive matching.
+# Dangerous FortiOS CLI commands and high-impact config changes that must be
+# blocked. FortiOS allows abbreviated commands (e.g., "exec" for "execute"),
+# so patterns handle both forms. Matching is case-insensitive and runs against
+# whitespace-normalized content so attackers can't bypass via odd spacing/case.
 DANGEROUS_SCRIPT_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    # --- Destructive / availability-impacting exec commands ---
     # Factory reset (with and without hyphen)
     (re.compile(r"\bexec(?:ute)?\s+factory-?reset\b", re.IGNORECASE), "factory-reset"),
     (re.compile(r"\bexec(?:ute)?\s+factoryreset\b", re.IGNORECASE), "factoryreset"),
@@ -816,14 +820,31 @@ DANGEROUS_SCRIPT_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bexec(?:ute)?\s+format\b", re.IGNORECASE), "format"),
     # Erase disk (with and without hyphen)
     (re.compile(r"\bexec(?:ute)?\s+erase-?disk\b", re.IGNORECASE), "erase-disk"),
+    # --- High-impact config changes an attacker would use ---
+    # Adding/modifying admin accounts (backdoor admin)
+    (re.compile(r"\bconfig\s+system\s+admin\b", re.IGNORECASE), "config-system-admin"),
+    # Permissive firewall rule (action accept on any policy)
+    (re.compile(r"\bset\s+action\s+accept\b", re.IGNORECASE), "set-action-accept"),
+    # Disabling logging (under any log config block)
+    (re.compile(r"\bset\s+status\s+disable\b", re.IGNORECASE), "set-status-disable"),
+    # Changing DNS resolver configuration
+    (re.compile(r"\bconfig\s+system\s+dns\b", re.IGNORECASE), "config-system-dns"),
+    # Changing static/router config (routes)
+    (re.compile(r"\bconfig\s+router\s+static\b", re.IGNORECASE), "config-router-static"),
 ]
 
 
 def validate_script_content(content: str) -> list[str]:
-    """Check script content for dangerous CLI commands.
+    """Check script content for dangerous CLI commands and config changes.
 
-    Scans for destructive FortiOS commands that could cause device outages
-    or data loss (factory-reset, reboot, shutdown, format, erase-disk).
+    Scans for destructive FortiOS commands that could cause device outages or
+    data loss (factory-reset, reboot, shutdown, format, erase-disk) as well as
+    high-impact configuration changes an attacker would use (adding admin
+    users, permissive firewall actions, disabling logging, DNS/route changes).
+
+    Input is normalized (collapsing all runs of whitespace to a single space)
+    before matching so the check cannot be trivially bypassed by extra
+    spacing, tabs, or newlines between tokens.
 
     Args:
         content: Script content (CLI commands) to validate
@@ -831,9 +852,13 @@ def validate_script_content(content: str) -> list[str]:
     Returns:
         List of matched dangerous command names (empty if safe)
     """
+    # Normalize whitespace so "config   system\tadmin" matches the same as
+    # "config system admin". Patterns already use \s+ but this guards against
+    # multi-line splits and unusual whitespace between tokens.
+    normalized = re.sub(r"\s+", " ", content)
     matches = []
     for pattern, name in DANGEROUS_SCRIPT_PATTERNS:
-        if pattern.search(content):
+        if pattern.search(normalized):
             matches.append(name)
     return matches
 

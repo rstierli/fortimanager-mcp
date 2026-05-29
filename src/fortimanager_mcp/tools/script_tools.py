@@ -11,7 +11,14 @@ from typing import Any
 
 from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_default_adom, get_settings
-from fortimanager_mcp.utils.validation import validate_script_content
+from fortimanager_mcp.utils.errors import client_safe_error
+from fortimanager_mcp.utils.validation import (
+    validate_adom,
+    validate_device_name,
+    validate_object_name,
+    validate_package_name,
+    validate_script_content,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +42,43 @@ def _check_script_safety(content: str) -> dict[str, Any] | None:
             "Set FMG_SCRIPT_SAFETY=disabled to override.",
         }
     return None
+
+
+async def _check_stored_script_safety(client: Any, adom: str, script: str) -> dict[str, Any] | None:
+    """Re-validate the body of a stored script before executing it.
+
+    Execute tools run a script that already exists on the FortiManager. That
+    script may have been created while safety was disabled, or pre-existed on
+    the FMG, so its content must be re-checked at execution time — not just at
+    create/update time.
+
+    Fetches the stored script content and runs it through the safety check.
+    Returns an error dict if the script is blocked (or cannot be resolved when
+    safety is enabled), None if OK or safety is disabled.
+    """
+    settings = get_settings()
+    if settings.FMG_SCRIPT_SAFETY == "disabled":
+        return None
+
+    try:
+        stored = await client.get_script(adom=adom, name=script)
+    except Exception as e:
+        # Fail closed: if we can't verify the script body while safety is on,
+        # do not execute it. Log the detail server-side, return a generic note.
+        logger.warning(f"Script safety pre-check could not resolve script '{script}': {e}")
+        return {
+            "error": f"Could not verify script '{script}' content before execution. "
+            "Execution blocked by script safety. "
+            "Set FMG_SCRIPT_SAFETY=disabled to override.",
+        }
+
+    content = ""
+    if isinstance(stored, dict):
+        content = stored.get("content") or ""
+    if not isinstance(content, str):
+        content = str(content)
+
+    return _check_script_safety(content)
 
 
 # =============================================================================
@@ -66,6 +110,7 @@ async def list_scripts(
         return {"error": "FortiManager client not connected"}
 
     try:
+        adom = validate_adom(adom)
         # Build filter if type or target specified
         filter_conditions = []
         if script_type:
@@ -90,7 +135,9 @@ async def list_scripts(
             "scripts": scripts,
         }
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"Script tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -112,10 +159,14 @@ async def get_script(
         return {"error": "FortiManager client not connected"}
 
     try:
+        adom = validate_adom(adom)
+        name = validate_object_name(name, "script")
         script = await client.get_script(adom=adom, name=name)
         return {"script": script}
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"Script tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -153,6 +204,8 @@ async def create_script(
         return {"error": "FortiManager client not connected"}
 
     try:
+        adom = validate_adom(adom)
+        name = validate_object_name(name, "script")
         script_data: dict[str, Any] = {
             "name": name,
             "content": content,
@@ -169,7 +222,9 @@ async def create_script(
             "result": result,
         }
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"Script tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -205,6 +260,8 @@ async def update_script(
         return {"error": "FortiManager client not connected"}
 
     try:
+        adom = validate_adom(adom)
+        name = validate_object_name(name, "script")
         update_data: dict[str, Any] = {}
         if content is not None:
             update_data["content"] = content
@@ -225,7 +282,9 @@ async def update_script(
             "result": result,
         }
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"Script tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -247,6 +306,8 @@ async def delete_script(
         return {"error": "FortiManager client not connected"}
 
     try:
+        adom = validate_adom(adom)
+        name = validate_object_name(name, "script")
         result = await client.delete_script(adom=adom, name=name)
         return {
             "success": True,
@@ -254,7 +315,9 @@ async def delete_script(
             "result": result,
         }
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"Script tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
 
 
 # =============================================================================
@@ -288,6 +351,20 @@ async def execute_script_on_device(
         return {"error": "FortiManager client not connected"}
 
     try:
+        adom = validate_adom(adom)
+        script = validate_object_name(script, "script")
+        device = validate_device_name(device)
+    except Exception as e:
+        logger.error(f"Script tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
+
+    # Re-validate the resolved script body before execution
+    safety_error = await _check_stored_script_safety(client, adom, script)
+    if safety_error:
+        return safety_error
+
+    try:
         # vdom: global means target is a device (not a VDOM)
         scope = [{"name": device, "vdom": "global"}]
         result = await client.execute_script(adom=adom, script=script, scope=scope)
@@ -298,7 +375,9 @@ async def execute_script_on_device(
             "result": result,
         }
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"Script tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -322,6 +401,20 @@ async def execute_script_on_devices(
         return {"error": "FortiManager client not connected"}
 
     try:
+        adom = validate_adom(adom)
+        script = validate_object_name(script, "script")
+        devices = [validate_device_name(d) for d in devices]
+    except Exception as e:
+        logger.error(f"Script tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
+
+    # Re-validate the resolved script body before execution
+    safety_error = await _check_stored_script_safety(client, adom, script)
+    if safety_error:
+        return safety_error
+
+    try:
         scope = [{"name": device, "vdom": "global"} for device in devices]
         result = await client.execute_script(adom=adom, script=script, scope=scope)
         return {
@@ -332,7 +425,9 @@ async def execute_script_on_devices(
             "result": result,
         }
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"Script tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -356,6 +451,20 @@ async def execute_script_on_device_group(
         return {"error": "FortiManager client not connected"}
 
     try:
+        adom = validate_adom(adom)
+        script = validate_object_name(script, "script")
+        group = validate_object_name(group, "device group")
+    except Exception as e:
+        logger.error(f"Script tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
+
+    # Re-validate the resolved script body before execution
+    safety_error = await _check_stored_script_safety(client, adom, script)
+    if safety_error:
+        return safety_error
+
+    try:
         # No vdom attribute means it's a device group
         scope = [{"name": group}]
         result = await client.execute_script(adom=adom, script=script, scope=scope)
@@ -366,7 +475,9 @@ async def execute_script_on_device_group(
             "result": result,
         }
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"Script tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -393,6 +504,20 @@ async def execute_script_on_package(
         return {"error": "FortiManager client not connected"}
 
     try:
+        adom = validate_adom(adom)
+        script = validate_object_name(script, "script")
+        package = validate_package_name(package)
+    except Exception as e:
+        logger.error(f"Script tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
+
+    # Re-validate the resolved script body before execution
+    safety_error = await _check_stored_script_safety(client, adom, script)
+    if safety_error:
+        return safety_error
+
+    try:
         result = await client.execute_script(adom=adom, script=script, package=package)
         return {
             "success": True,
@@ -401,7 +526,9 @@ async def execute_script_on_package(
             "result": result,
         }
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"Script tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
 
 
 # =============================================================================
@@ -428,10 +555,15 @@ async def get_script_log_latest(
         return {"error": "FortiManager client not connected"}
 
     try:
+        adom = validate_adom(adom)
+        if device is not None:
+            device = validate_device_name(device)
         result = await client.get_script_log_latest(adom=adom, device=device)
         return {"log": result}
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"Script tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -455,6 +587,9 @@ async def get_script_log_summary(
         return {"error": "FortiManager client not connected"}
 
     try:
+        adom = validate_adom(adom)
+        if device is not None:
+            device = validate_device_name(device)
         logs = await client.get_script_log_summary(adom=adom, device=device)
         return {
             "adom": adom,
@@ -463,7 +598,9 @@ async def get_script_log_summary(
             "logs": logs,
         }
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"Script tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -491,7 +628,12 @@ async def get_script_log_output(
         return {"error": "FortiManager client not connected"}
 
     try:
+        adom = validate_adom(adom)
+        if device is not None:
+            device = validate_device_name(device)
         result = await client.get_script_log_output(adom=adom, log_id=log_id, device=device)
         return {"log": result}
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"Script tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}

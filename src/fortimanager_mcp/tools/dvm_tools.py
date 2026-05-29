@@ -11,6 +11,11 @@ from typing import Any
 from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_default_adom
+from fortimanager_mcp.utils.errors import client_safe_error
+from fortimanager_mcp.utils.validation import (
+    validate_adom,
+    validate_device_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +89,8 @@ async def list_device_vdoms(
     """
     adom = adom or get_default_adom()
     try:
+        adom = validate_adom(adom)
+        device = validate_device_name(device)
         client = _get_client()
         vdoms = await client.list_device_vdoms(device, adom)
 
@@ -94,7 +101,8 @@ async def list_device_vdoms(
         }
     except Exception as e:
         logger.error(f"Failed to list VDOMs for device {device}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -132,6 +140,9 @@ async def get_device_status(
     """
     adom = adom or get_default_adom()
     try:
+        adom = validate_adom(adom)
+        if device is not None:
+            device = validate_device_name(device)
         client = _get_client()
         devices = await client.get_device_status(adom, device)
 
@@ -145,7 +156,8 @@ async def get_device_status(
         }
     except Exception as e:
         logger.error(f"Failed to get device status: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -184,6 +196,7 @@ async def search_devices(
     """
     adom = adom or get_default_adom()
     try:
+        adom = validate_adom(adom)
         client = _get_client()
 
         # Build filter list (heterogeneous: values can be str or int)
@@ -213,7 +226,8 @@ async def search_devices(
         }
     except Exception as e:
         logger.error(f"Failed to search devices: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 # =============================================================================
@@ -276,6 +290,8 @@ async def add_device(
         ... )
     """
     try:
+        adom = validate_adom(adom)
+        name = validate_device_name(name)
         client = _get_client()
 
         # Build device configuration
@@ -323,7 +339,8 @@ async def add_device(
         }
     except Exception as e:
         logger.error(f"Failed to add device {name}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -365,6 +382,8 @@ async def add_model_device(
         ... )
     """
     try:
+        adom = validate_adom(adom)
+        name = validate_device_name(name)
         client = _get_client()
 
         device_config: dict[str, Any] = {
@@ -391,7 +410,8 @@ async def add_model_device(
         }
     except Exception as e:
         logger.error(f"Failed to add model device {name}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -424,6 +444,8 @@ async def delete_device(
         ...     print("Device removed from FortiManager")
     """
     try:
+        adom = validate_adom(adom)
+        device = validate_device_name(device)
         client = _get_client()
 
         result = await client.delete_device(
@@ -439,7 +461,8 @@ async def delete_device(
         }
     except Exception as e:
         logger.error(f"Failed to delete device {device}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -483,6 +506,7 @@ async def add_devices_bulk(
         if not devices:
             return {"status": "error", "message": "No devices provided"}
 
+        adom = validate_adom(adom)
         client = _get_client()
 
         result = await client.add_device_list(
@@ -505,7 +529,8 @@ async def add_devices_bulk(
         }
     except Exception as e:
         logger.error(f"Failed to add devices in bulk: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -539,6 +564,8 @@ async def delete_devices_bulk(
         if not devices:
             return {"status": "error", "message": "No devices provided"}
 
+        adom = validate_adom(adom)
+        devices = [validate_device_name(d) for d in devices]
         client = _get_client()
 
         # Convert device names to the expected format
@@ -558,7 +585,8 @@ async def delete_devices_bulk(
         }
     except Exception as e:
         logger.error(f"Failed to delete devices in bulk: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -595,6 +623,8 @@ async def update_device(
         ... )
     """
     try:
+        adom = validate_adom(adom)
+        device = validate_device_name(device)
         client = _get_client()
 
         data: dict[str, Any] = {}
@@ -616,7 +646,8 @@ async def update_device(
         }
     except Exception as e:
         logger.error(f"Failed to update device {device}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -638,6 +669,7 @@ async def reload_device_list(
     """
     adom = adom or get_default_adom()
     try:
+        adom = validate_adom(adom)
         client = _get_client()
         await client.reload_device_list(adom)
 
@@ -647,7 +679,8 @@ async def reload_device_list(
         }
     except Exception as e:
         logger.error(f"Failed to reload device list: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 # =============================================================================
@@ -680,6 +713,8 @@ async def get_device_realtime_status(
         >>> print(f"Uptime: {result['data'].get('uptime')}")
     """
     try:
+        adom = validate_adom(adom)
+        device = validate_device_name(device)
         client = _get_client()
 
         result = await client.proxy_call(
@@ -694,7 +729,8 @@ async def get_device_realtime_status(
         }
     except Exception as e:
         logger.error(f"Failed to get realtime status for {device}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -723,6 +759,8 @@ async def get_device_interfaces(
         ...     print(f"{iface['name']}: {iface.get('ip')}")
     """
     try:
+        adom = validate_adom(adom)
+        device = validate_device_name(device)
         client = _get_client()
 
         result = await client.proxy_call(
@@ -737,4 +775,5 @@ async def get_device_interfaces(
         }
     except Exception as e:
         logger.error(f"Failed to get interfaces for {device}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}

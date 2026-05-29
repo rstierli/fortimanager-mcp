@@ -1,5 +1,7 @@
 """Custom error classes for FortiManager MCP server."""
 
+import re
+
 
 class FortiManagerMCPError(Exception):
     """Base exception for FortiManager MCP errors.
@@ -280,6 +282,106 @@ def parse_fmg_error(code: int, message: str, url: str | None = None) -> FortiMan
         error_msg = f"{error_msg} (endpoint: {url})"
 
     return error_class(error_msg, code=code)
+
+
+# Regex to strip the internal "(endpoint: ...)" context that parse_fmg_error
+# appends. That suffix exposes API endpoint paths / topology and must never be
+# returned to the model.
+_ENDPOINT_SUFFIX_RE = re.compile(r"\s*\(endpoint:[^)]*\)")
+
+# Regex to redact any leaked FortiManager/FortiGate API path from an error
+# message. These paths expose internal endpoint structure / object hierarchy.
+_API_PATH_RE = re.compile(
+    r"\s*(?:GET|ADD|SET|UPDATE|DELETE|EXEC|MOVE)?\s*"
+    r"/(?:dvmdb|dvm|pm|sys|securityconsole|task|api)\b\S*"
+)
+
+
+def _scrub_message(message: str) -> str:
+    """Remove endpoint suffixes and leaked API paths from an error message."""
+    scrubbed = _ENDPOINT_SUFFIX_RE.sub("", message)
+    scrubbed = _API_PATH_RE.sub("", scrubbed)
+    return scrubbed.strip()
+
+
+def client_safe_error(error: Exception) -> tuple[str, str]:
+    """Convert an exception into a caller-safe (message, code) pair.
+
+    Tool functions log the full exception server-side (with endpoint context)
+    but must not echo raw API error bodies — which embed internal endpoint
+    paths and object hierarchies — back to the model. This helper returns a
+    sanitized, category-tagged message safe to surface to the caller.
+
+    Args:
+        error: The exception raised during an API operation.
+
+    Returns:
+        Tuple of (message, error_code) where error_code is a short, stable
+        category string (e.g. "not_found", "permission_denied", "api_error").
+    """
+    if isinstance(error, FortiManagerMCPError):
+        category = _ERROR_CATEGORY.get(type(error), "api_error")
+        # Prefer the human-readable mapped message for known FMG codes; never
+        # the raw API body (which carries endpoint paths).
+        if error.code is not None and error.code in ERROR_CODE_MESSAGES:
+            message = ERROR_CODE_MESSAGES[error.code]
+        else:
+            message = _scrub_message(str(error))
+            if not message:
+                message = _CATEGORY_MESSAGE.get(category, "FortiManager operation failed")
+        return message, category
+
+    # Input validation errors are safe to surface (they describe the bad input
+    # the caller supplied, not internal topology) — but still scrub any path.
+    if isinstance(error, ValueError):
+        return _scrub_message(str(error)) or "Invalid input parameter.", "validation_error"
+
+    # Other exceptions (runtime, unexpected): scrub any leaked paths but keep
+    # the message so operational errors (e.g. "client not initialized") remain
+    # actionable.
+    message = _scrub_message(str(error))
+    return message or "An internal error occurred.", "internal_error"
+
+
+# Maps exception classes to short, stable category codes for client_safe_error.
+_ERROR_CATEGORY: dict[type[FortiManagerMCPError], str] = {
+    AuthenticationError: "authentication_error",
+    ConnectionError: "connection_error",
+    APIError: "api_error",
+    ValidationError: "validation_error",
+    ResourceNotFoundError: "not_found",
+    PermissionError: "permission_denied",
+    TimeoutError: "timeout",
+    ADOMLockError: "adom_lock_error",
+    TaskError: "task_error",
+    PolicyError: "policy_error",
+    PackageError: "package_error",
+    ObjectError: "object_error",
+    TemplateError: "template_error",
+    ScriptError: "script_error",
+    DeviceError: "device_error",
+    InstallError: "install_error",
+}
+
+# Fallback generic messages per category when no specific message is available.
+_CATEGORY_MESSAGE: dict[str, str] = {
+    "authentication_error": "Authentication with FortiManager failed.",
+    "connection_error": "Could not connect to FortiManager.",
+    "api_error": "FortiManager returned an error.",
+    "validation_error": "Invalid input parameter.",
+    "not_found": "Requested resource not found.",
+    "permission_denied": "Permission denied for this operation.",
+    "timeout": "The operation timed out.",
+    "adom_lock_error": "ADOM lock operation failed.",
+    "task_error": "Task operation failed.",
+    "policy_error": "Policy operation failed.",
+    "package_error": "Policy package operation failed.",
+    "object_error": "Firewall object operation failed.",
+    "template_error": "Template operation failed.",
+    "script_error": "Script operation failed.",
+    "device_error": "Device management operation failed.",
+    "install_error": "Installation operation failed.",
+}
 
 
 def is_object_in_use_error(error: Exception) -> bool:

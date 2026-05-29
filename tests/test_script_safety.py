@@ -98,6 +98,38 @@ class TestValidateScriptContent:
         assert validate_script_content("# this will reboot the device") == []
         assert validate_script_content("set description 'reboot window'") == []
 
+    # --- Broadened high-impact config changes ---
+
+    def test_blocks_config_system_admin(self):
+        content = "config system admin\nedit backdoor\nset password x\nend"
+        matches = validate_script_content(content)
+        assert "config-system-admin" in matches
+
+    def test_blocks_set_action_accept(self):
+        content = "config firewall policy\nedit 0\nset action accept\nend"
+        assert "set-action-accept" in validate_script_content(content)
+
+    def test_blocks_set_status_disable(self):
+        content = "config log syslogd setting\nset status disable\nend"
+        assert "set-status-disable" in validate_script_content(content)
+
+    def test_blocks_config_system_dns(self):
+        content = "config system dns\nset primary 8.8.8.8\nend"
+        assert "config-system-dns" in validate_script_content(content)
+
+    def test_blocks_config_router_static(self):
+        content = "config router static\nedit 1\nset gateway 1.2.3.4\nend"
+        assert "config-router-static" in validate_script_content(content)
+
+    def test_normalizes_whitespace_cannot_bypass(self):
+        """Extra spaces/tabs/newlines between tokens must not bypass the check."""
+        assert "config-system-admin" in validate_script_content("config   system\tadmin")
+        assert "config-system-admin" in validate_script_content("config\n system\n admin")
+
+    def test_safe_dns_in_comment_still_safe(self):
+        """A plain config that doesn't hit a dangerous block stays safe."""
+        assert validate_script_content("config system interface\nset role lan\nend") == []
+
 
 # =============================================================================
 # Tool-Level Integration Tests
@@ -195,3 +227,104 @@ class TestScriptToolSafetyDisabled:
 
         assert result.get("success") is True
         mock_client.return_value.create_script.assert_called_once()
+
+
+class TestExecutePathReValidation:
+    """Execute tools must re-check the stored script body before running it."""
+
+    @pytest.mark.asyncio
+    async def test_execute_blocked_when_stored_script_dangerous(self, monkeypatch):
+        monkeypatch.setenv("FORTIMANAGER_HOST", "test.example.com")
+        monkeypatch.setenv("FMG_SCRIPT_SAFETY", "strict")
+
+        from fortimanager_mcp.tools.script_tools import execute_script_on_device
+
+        client = AsyncMock()
+        # Stored script (created while safety was off / pre-existing) is dangerous
+        client.get_script = AsyncMock(return_value={"content": "execute reboot"})
+        client.execute_script = AsyncMock(return_value={"task": 1})
+
+        with patch("fortimanager_mcp.tools.script_tools.get_fmg_client", return_value=client):
+            result = await execute_script_on_device(adom="root", script="evil", device="FGT-01")
+
+        assert "error" in result
+        assert "dangerous commands" in result["error"]
+        client.execute_script.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_execute_allowed_when_stored_script_safe(self, monkeypatch):
+        monkeypatch.setenv("FORTIMANAGER_HOST", "test.example.com")
+        monkeypatch.setenv("FMG_SCRIPT_SAFETY", "strict")
+
+        from fortimanager_mcp.tools.script_tools import execute_script_on_device
+
+        client = AsyncMock()
+        client.get_script = AsyncMock(return_value={"content": "config system interface\nend"})
+        client.execute_script = AsyncMock(return_value={"task": 42})
+
+        with patch("fortimanager_mcp.tools.script_tools.get_fmg_client", return_value=client):
+            result = await execute_script_on_device(adom="root", script="safe", device="FGT-01")
+
+        assert result.get("success") is True
+        client.execute_script.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_execute_fail_closed_when_script_unresolvable(self, monkeypatch):
+        monkeypatch.setenv("FORTIMANAGER_HOST", "test.example.com")
+        monkeypatch.setenv("FMG_SCRIPT_SAFETY", "strict")
+
+        from fortimanager_mcp.tools.script_tools import execute_script_on_package
+
+        client = AsyncMock()
+        client.get_script = AsyncMock(side_effect=Exception("not found"))
+        client.execute_script = AsyncMock(return_value={"task": 1})
+
+        with patch("fortimanager_mcp.tools.script_tools.get_fmg_client", return_value=client):
+            result = await execute_script_on_package(adom="root", script="ghost", package="default")
+
+        assert "error" in result
+        client.execute_script.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_execute_allowed_when_safety_disabled(self, monkeypatch):
+        monkeypatch.setenv("FORTIMANAGER_HOST", "test.example.com")
+        monkeypatch.setenv("FMG_SCRIPT_SAFETY", "disabled")
+
+        from fortimanager_mcp.tools.script_tools import execute_script_on_device
+
+        client = AsyncMock()
+        client.get_script = AsyncMock(return_value={"content": "execute reboot"})
+        client.execute_script = AsyncMock(return_value={"task": 7})
+
+        with patch("fortimanager_mcp.tools.script_tools.get_fmg_client", return_value=client):
+            result = await execute_script_on_device(adom="root", script="evil", device="FGT-01")
+
+        assert result.get("success") is True
+        client.execute_script.assert_called_once()
+        # When safety is disabled we must NOT pre-fetch the script body
+        client.get_script.assert_not_called()
+
+
+class TestExecutePathInputValidation:
+    """Execute tools must reject malformed identifiers before any API call."""
+
+    @pytest.mark.asyncio
+    async def test_rejects_bad_device_name(self, monkeypatch):
+        monkeypatch.setenv("FORTIMANAGER_HOST", "test.example.com")
+        monkeypatch.setenv("FMG_SCRIPT_SAFETY", "strict")
+
+        from fortimanager_mcp.tools.script_tools import execute_script_on_device
+
+        client = AsyncMock()
+        client.get_script = AsyncMock(return_value={"content": "config x\nend"})
+        client.execute_script = AsyncMock(return_value={"task": 1})
+
+        with patch("fortimanager_mcp.tools.script_tools.get_fmg_client", return_value=client):
+            # Path-injection style device name
+            result = await execute_script_on_device(
+                adom="root", script="safe", device="../../etc/passwd"
+            )
+
+        assert "error" in result
+        client.get_script.assert_not_called()
+        client.execute_script.assert_not_called()

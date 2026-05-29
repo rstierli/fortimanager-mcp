@@ -185,6 +185,36 @@ class TestServiceTools:
         assert result["name"] == "custom-http"
 
 
+class TestInputValidationRejection:
+    """HIGH 1: malformed identifiers must be rejected before any API call."""
+
+    @pytest.mark.asyncio
+    async def test_get_address_rejects_path_injection_name(
+        self,
+        mock_client: MagicMock,
+        mock_fmg_instance: MagicMock,
+    ) -> None:
+        """A name with path separators must not reach the client."""
+        with patch("fortimanager_mcp.tools.object_tools.get_fmg_client", return_value=mock_client):
+            result = await object_tools.get_address(adom="root", name="../../sys/status")
+
+        assert result["status"] == "error"
+        # Client GET must not have been called with the malformed name
+        mock_fmg_instance.get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_delete_address_rejects_bad_adom(
+        self,
+        mock_client: MagicMock,
+        mock_fmg_instance: MagicMock,
+    ) -> None:
+        with patch("fortimanager_mcp.tools.object_tools.get_fmg_client", return_value=mock_client):
+            result = await object_tools.delete_address(adom="root/../other", name="addr")
+
+        assert result["status"] == "error"
+        mock_fmg_instance.delete.assert_not_called()
+
+
 class TestSearchTools:
     """Test object search tools."""
 

@@ -12,7 +12,13 @@ from typing import Any
 from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_settings
-from fortimanager_mcp.utils.validation import check_policy_permissiveness
+from fortimanager_mcp.utils.errors import client_safe_error
+from fortimanager_mcp.utils.validation import (
+    check_policy_permissiveness,
+    validate_adom,
+    validate_package_name,
+    validate_policy_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +99,8 @@ async def create_package(
         ... )
     """
     try:
+        adom = validate_adom(adom)
+        name = validate_package_name(name)
         client = _get_client()
 
         package_settings = {
@@ -109,7 +117,8 @@ async def create_package(
         }
     except Exception as e:
         logger.error(f"Failed to create package {name}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -132,6 +141,8 @@ async def delete_package(
             - message: Status or error message
     """
     try:
+        adom = validate_adom(adom)
+        package = validate_package_name(package)
         client = _get_client()
         await client.delete_package(adom, package)
 
@@ -141,7 +152,8 @@ async def delete_package(
         }
     except Exception as e:
         logger.error(f"Failed to delete package {package}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -173,6 +185,9 @@ async def clone_package(
         ... )
     """
     try:
+        adom = validate_adom(adom)
+        package = validate_package_name(package)
+        new_name = validate_package_name(new_name)
         client = _get_client()
         await client.clone_package(adom, package, new_name)
 
@@ -183,7 +198,8 @@ async def clone_package(
         }
     except Exception as e:
         logger.error(f"Failed to clone package {package}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -218,6 +234,8 @@ async def assign_package(
         ... )
     """
     try:
+        adom = validate_adom(adom)
+        package = validate_package_name(package)
         client = _get_client()
         await client.assign_package(adom, package, devices)
 
@@ -227,7 +245,8 @@ async def assign_package(
         }
     except Exception as e:
         logger.error(f"Failed to assign package {package}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 # =============================================================================
@@ -273,6 +292,8 @@ async def list_firewall_policies(
         ... )
     """
     try:
+        adom = validate_adom(adom)
+        package = validate_package_name(package)
         client = _get_client()
 
         # Get total count first
@@ -298,7 +319,8 @@ async def list_firewall_policies(
         }
     except Exception as e:
         logger.error(f"Failed to list policies in {package}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -325,6 +347,8 @@ async def get_firewall_policy(
         >>> print(f"Policy name: {result['policy']['name']}")
     """
     try:
+        adom = validate_adom(adom)
+        package = validate_package_name(package)
         client = _get_client()
         policy = await client.get_firewall_policy(adom, package, policyid)
 
@@ -334,7 +358,8 @@ async def get_firewall_policy(
         }
     except Exception as e:
         logger.error(f"Failed to get policy {policyid}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -410,6 +435,9 @@ async def create_firewall_policy(
         logtraffic = "all"
 
     try:
+        adom = validate_adom(adom)
+        package = validate_package_name(package)
+        name = validate_policy_name(name)
         client = _get_client()
 
         policy: dict[str, Any] = {
@@ -443,7 +471,8 @@ async def create_firewall_policy(
         return response
     except Exception as e:
         logger.error(f"Failed to create policy {name}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -523,6 +552,10 @@ async def update_firewall_policy(
             safety_warning = safety_result.get("_safety_warning")
 
     try:
+        adom = validate_adom(adom)
+        package = validate_package_name(package)
+        if name is not None:
+            name = validate_policy_name(name)
         client = _get_client()
 
         data: dict[str, Any] = {}
@@ -571,7 +604,8 @@ async def update_firewall_policy(
         return response
     except Exception as e:
         logger.error(f"Failed to update policy {policyid}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -595,6 +629,8 @@ async def delete_firewall_policy(
             - message: Status or error message
     """
     try:
+        adom = validate_adom(adom)
+        package = validate_package_name(package)
         client = _get_client()
         await client.delete_firewall_policy(adom, package, policyid)
 
@@ -604,7 +640,8 @@ async def delete_firewall_policy(
         }
     except Exception as e:
         logger.error(f"Failed to delete policy {policyid}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -639,6 +676,8 @@ async def delete_firewall_policies_bulk(
         if not policyids:
             return {"status": "error", "message": "No policy IDs provided"}
 
+        adom = validate_adom(adom)
+        package = validate_package_name(package)
         client = _get_client()
         await client.delete_firewall_policies(adom, package, policyids)
 
@@ -649,7 +688,8 @@ async def delete_firewall_policies_bulk(
         }
     except Exception as e:
         logger.error(f"Failed to delete policies: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -688,6 +728,8 @@ async def move_firewall_policy(
         ... )
     """
     try:
+        adom = validate_adom(adom)
+        package = validate_package_name(package)
         client = _get_client()
         await client.move_firewall_policy(adom, package, policyid, target_policyid, position)
 
@@ -697,7 +739,8 @@ async def move_firewall_policy(
         }
     except Exception as e:
         logger.error(f"Failed to move policy {policyid}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -746,6 +789,8 @@ async def search_firewall_policies(
         ... )
     """
     try:
+        adom = validate_adom(adom)
+        package = validate_package_name(package)
         client = _get_client()
 
         # Build filter list
@@ -776,7 +821,8 @@ async def search_firewall_policies(
         }
     except Exception as e:
         logger.error(f"Failed to search policies: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 # =============================================================================
@@ -903,6 +949,8 @@ async def get_policy_services(
         >>> result = await get_policy_services("root", "default", 10, resolve=False)
     """
     try:
+        adom = validate_adom(adom)
+        package = validate_package_name(package)
         client = _get_client()
         policy = await client.get_firewall_policy(adom, package, policy_id)
 
@@ -949,7 +997,8 @@ async def get_policy_services(
         }
     except Exception as e:
         logger.error(f"Failed to get policy services for policy {policy_id}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 # =============================================================================
@@ -994,6 +1043,8 @@ async def preview_install(
         ...     preview = await get_preview_result(...)
     """
     try:
+        adom = validate_adom(adom)
+        package = validate_package_name(package)
         client = _get_client()
 
         result = await client.install_preview(
@@ -1010,7 +1061,8 @@ async def preview_install(
         }
     except Exception as e:
         logger.error(f"Failed to start preview: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -1034,6 +1086,7 @@ async def get_preview_result(
             - message: Error message if failed
     """
     try:
+        adom = validate_adom(adom)
         client = _get_client()
 
         result = await client.get_preview_result(adom, devices)
@@ -1044,4 +1097,5 @@ async def get_preview_result(
         }
     except Exception as e:
         logger.error(f"Failed to get preview result: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}

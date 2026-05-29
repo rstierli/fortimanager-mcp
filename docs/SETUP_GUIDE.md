@@ -93,7 +93,10 @@ The MCP server is configured via environment variables:
 # FortiManager Connection
 FORTIMANAGER_HOST=your-fmg-hostname
 FORTIMANAGER_API_TOKEN=your-api-token-here
-FORTIMANAGER_VERIFY_SSL=false
+# Keep TLS verification ON. If FortiManager uses a self-signed cert, import
+# its CA certificate (see "Trusting the FortiManager CA" below) instead of
+# disabling verification.
+FORTIMANAGER_VERIFY_SSL=true
 
 # Logging
 LOG_LEVEL=INFO
@@ -101,6 +104,35 @@ LOG_LEVEL=INFO
 # Tool mode: "full" (all 101 tools) or "dynamic" (discovery only)
 FMG_TOOL_MODE=full
 ```
+
+### Trusting the FortiManager CA (recommended for self-signed certs)
+
+FortiManager ships with a self-signed TLS certificate. Rather than turning off
+verification, import the FortiManager CA certificate so TLS validation keeps
+working and the connection stays protected against man-in-the-middle attacks:
+
+```bash
+# 1. Export the FortiManager CA cert (GUI: System Settings > Certificates,
+#    or fetch it directly):
+openssl s_client -connect your-fmg-hostname:443 -showcerts </dev/null 2>/dev/null \
+  | openssl x509 -outform PEM > fortimanager-ca.crt
+
+# 2a. Add it to the OS trust store (Linux example):
+sudo cp fortimanager-ca.crt /usr/local/share/ca-certificates/
+sudo update-ca-certificates
+
+# 2b. Or point Python's TLS at it via the requests/certifi bundle env var:
+export REQUESTS_CA_BUNDLE=/absolute/path/to/fortimanager-ca.crt
+export SSL_CERT_FILE=/absolute/path/to/fortimanager-ca.crt
+```
+
+With the CA trusted, keep `FORTIMANAGER_VERIFY_SSL=true`.
+
+> **Last resort only:** If you cannot import the CA, you may set
+> `FORTIMANAGER_VERIFY_SSL=false`. This **disables TLS verification and exposes
+> the connection to man-in-the-middle attacks** — use it only temporarily on a
+> trusted, isolated management network, never against production firewalls over
+> untrusted paths.
 
 ---
 
@@ -124,7 +156,7 @@ Edit `claude_desktop_config.json`:
       "env": {
         "FORTIMANAGER_HOST": "your-fmg-hostname",
         "FORTIMANAGER_API_TOKEN": "your-api-token-here",
-        "FORTIMANAGER_VERIFY_SSL": "false",
+        "FORTIMANAGER_VERIFY_SSL": "true",
         "LOG_LEVEL": "INFO"
       }
     }
@@ -144,7 +176,7 @@ npm install -g @anthropic-ai/claude-code
 claude mcp add fortimanager -s user \
   -e FORTIMANAGER_HOST=your-fmg-hostname \
   -e FORTIMANAGER_API_TOKEN=your-api-token \
-  -e FORTIMANAGER_VERIFY_SSL=false \
+  -e FORTIMANAGER_VERIFY_SSL=true \
   -- /path/to/fortimanager-mcp/.venv/bin/fortimanager-mcp
 
 # Verify connection
@@ -165,7 +197,7 @@ claude mcp list
     "env": {
       "FORTIMANAGER_HOST": "your-fmg-hostname",
       "FORTIMANAGER_API_TOKEN": "your-api-token",
-      "FORTIMANAGER_VERIFY_SSL": "false"
+      "FORTIMANAGER_VERIFY_SSL": "true"
     }
   }
 }
@@ -199,7 +231,9 @@ Docker allows you to run the MCP server without installing Python dependencies l
 ```bash
 FORTIMANAGER_HOST=your-fmg-hostname
 FORTIMANAGER_API_TOKEN=your-api-token
-FORTIMANAGER_VERIFY_SSL=false
+# Keep TLS verification on; import the FortiManager CA into the container
+# trust store for self-signed certs (see "Trusting the FortiManager CA").
+FORTIMANAGER_VERIFY_SSL=true
 LOG_LEVEL=INFO
 ```
 
@@ -224,7 +258,7 @@ docker run -d \
   --name fortimanager-mcp \
   -e FORTIMANAGER_HOST=your-fmg-hostname \
   -e FORTIMANAGER_API_TOKEN=your-api-token \
-  -e FORTIMANAGER_VERIFY_SSL=false \
+  -e FORTIMANAGER_VERIFY_SSL=true \
   -p 8000:8000 \
   fortimanager-mcp
 ```
@@ -244,7 +278,7 @@ source .venv/bin/activate
 # Set environment variables
 export FORTIMANAGER_HOST="your-fmg-hostname"
 export FORTIMANAGER_API_TOKEN="your-api-token"
-export FORTIMANAGER_VERIFY_SSL="false"
+export FORTIMANAGER_VERIFY_SSL="true"
 
 # Test connection and basic operations
 python3 -c "
@@ -295,7 +329,7 @@ cd fortimanager-mcp
 source .venv/bin/activate
 export FORTIMANAGER_HOST="your-fmg-hostname"
 export FORTIMANAGER_API_TOKEN="your-api-token"
-export FORTIMANAGER_VERIFY_SSL="false"
+export FORTIMANAGER_VERIFY_SSL="true"
 
 python3
 ```
@@ -358,7 +392,11 @@ curl -k https://your-fmg-hostname/jsonrpc
 
 2. **Check API token permissions**: Ensure JSON API Access is enabled
 
-3. **SSL Errors**: Set `FORTIMANAGER_VERIFY_SSL=false` for self-signed certs
+3. **SSL Errors**: For self-signed FortiManager certs, import the FortiManager
+   CA certificate into your trust store and keep `FORTIMANAGER_VERIFY_SSL=true`
+   (see "Trusting the FortiManager CA"). Disabling verification with
+   `FORTIMANAGER_VERIFY_SSL=false` is a last resort — it exposes the connection
+   to man-in-the-middle attacks.
 
 ### Authentication Errors
 

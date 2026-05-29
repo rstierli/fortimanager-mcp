@@ -3,7 +3,7 @@
 [![CI](https://github.com/rstierli/fortimanager-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/rstierli/fortimanager-mcp/actions/workflows/ci.yml)
 [![Python Version](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.2.2--beta-green)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.3.0-green)](CHANGELOG.md)
 [![FortiManager](https://img.shields.io/badge/FortiManager-7.0%20%7C%207.2%20%7C%207.4%20%7C%207.6-red)](README.md)
 
 A Model Context Protocol (MCP) server for FortiManager JSON-RPC API. This server enables AI assistants like Claude to interact with FortiManager for centralized firewall policy management, device provisioning, and network configuration.
@@ -101,7 +101,9 @@ services:
       - MCP_SERVER_HOST=0.0.0.0
       - MCP_SERVER_PORT=8000
       - FORTIMANAGER_HOST=your-fmg-hostname
-      - FORTIMANAGER_VERIFY_SSL=false
+      # Keep TLS verification on; import the FortiManager CA for self-signed
+      # certs. FORTIMANAGER_VERIFY_SSL=false disables MITM protection.
+      - FORTIMANAGER_VERIFY_SSL=true
       - DEFAULT_ADOM=root
       - FMG_TOOL_MODE=full
       - LOG_LEVEL=INFO
@@ -150,8 +152,11 @@ FORTIMANAGER_API_TOKEN=your-api-token-here
 # FORTIMANAGER_USERNAME=admin
 # FORTIMANAGER_PASSWORD=your-password
 
-# SSL Verification (set to false for self-signed certificates)
-FORTIMANAGER_VERIFY_SSL=false
+# SSL Verification — keep this TRUE. For self-signed FortiManager certs,
+# import the FortiManager CA into your trust store instead of disabling it
+# (see docs/SETUP_GUIDE.md "Trusting the FortiManager CA"). Setting this to
+# false disables TLS verification and exposes the connection to MITM attacks.
+FORTIMANAGER_VERIFY_SSL=true
 
 # Request Settings
 FORTIMANAGER_TIMEOUT=30
@@ -257,7 +262,7 @@ Add to your Claude Desktop configuration file:
       "env": {
         "FORTIMANAGER_HOST": "your-fmg-hostname",
         "FORTIMANAGER_API_TOKEN": "your-api-token",
-        "FORTIMANAGER_VERIFY_SSL": "false",
+        "FORTIMANAGER_VERIFY_SSL": "true",
         "LOG_LEVEL": "INFO"
       }
     }
@@ -279,7 +284,7 @@ Add to `~/.claude/mcp_servers.json`:
       "env": {
         "FORTIMANAGER_HOST": "your-fmg-hostname",
         "FORTIMANAGER_API_TOKEN": "your-api-token",
-        "FORTIMANAGER_VERIFY_SSL": "false",
+        "FORTIMANAGER_VERIFY_SSL": "true",
         "DEFAULT_ADOM": "root",
         "LOG_LEVEL": "INFO"
       }
@@ -383,7 +388,9 @@ services:
       - MCP_SERVER_HOST=0.0.0.0
       - MCP_SERVER_PORT=8000
       - FORTIMANAGER_HOST=your-fmg-hostname
-      - FORTIMANAGER_VERIFY_SSL=false
+      # Keep TLS verification on; import the FortiManager CA for self-signed
+      # certs. FORTIMANAGER_VERIFY_SSL=false disables MITM protection.
+      - FORTIMANAGER_VERIFY_SSL=true
       - MCP_ALLOWED_HOSTS=["mcp.example.com"]
       - DEFAULT_ADOM=root
       - FMG_TOOL_MODE=full
@@ -674,8 +681,12 @@ LOG_LEVEL=DEBUG fortimanager-mcp
 - Ensure the account has sufficient permissions
 
 **SSL Certificate Errors**
-- Set `FORTIMANAGER_VERIFY_SSL=false` for self-signed certificates
-- For production, use valid SSL certificates
+- For self-signed FortiManager certs, import the FortiManager CA certificate
+  into your trust store and keep `FORTIMANAGER_VERIFY_SSL=true`
+  (see [SETUP_GUIDE.md](docs/SETUP_GUIDE.md) → "Trusting the FortiManager CA")
+- For production, use valid SSL certificates signed by a trusted CA
+- Last resort only: `FORTIMANAGER_VERIFY_SSL=false` disables TLS verification
+  and exposes the connection to man-in-the-middle attacks — avoid in production
 
 **ADOM Locked**
 - Another user may have the ADOM locked
@@ -765,7 +776,8 @@ Integration tests require a real FortiManager instance and are not run in CI.
 # Set up environment
 export FORTIMANAGER_HOST=your-fmg-host
 export FORTIMANAGER_API_TOKEN=your-token
-export FORTIMANAGER_VERIFY_SSL=false
+# Keep verification on; import the FortiManager CA for self-signed certs.
+export FORTIMANAGER_VERIFY_SSL=true
 
 # Run integration tests (requires live FMG)
 pytest tests/integration/ -v

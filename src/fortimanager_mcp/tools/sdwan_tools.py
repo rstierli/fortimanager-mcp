@@ -8,10 +8,19 @@ Provides tools for managing SD-WAN templates (wanprof) including:
 Based on FNDN FortiManager 7.6.5 API specifications.
 """
 
+import logging
 from typing import Any
 
 from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_default_adom
+from fortimanager_mcp.utils.errors import client_safe_error
+from fortimanager_mcp.utils.validation import (
+    validate_adom,
+    validate_device_name,
+    validate_object_name,
+)
+
+logger = logging.getLogger(__name__)
 
 # =============================================================================
 # SD-WAN Template Operations
@@ -41,6 +50,7 @@ async def list_sdwan_templates(
         return {"error": "FortiManager client not connected"}
 
     try:
+        adom = validate_adom(adom)
         templates = await client.list_sdwan_templates(adom=adom)
         templates = templates[:limit] if templates else []
 
@@ -50,7 +60,9 @@ async def list_sdwan_templates(
             "sdwan_templates": templates,
         }
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"SD-WAN tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -72,10 +84,14 @@ async def get_sdwan_template(
         return {"error": "FortiManager client not connected"}
 
     try:
+        adom = validate_adom(adom)
+        name = validate_object_name(name, "SD-WAN template")
         template = await client.get_sdwan_template(adom=adom, name=name)
         return {"sdwan_template": template}
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"SD-WAN tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -102,6 +118,8 @@ async def create_sdwan_template(
         return {"error": "FortiManager client not connected"}
 
     try:
+        adom = validate_adom(adom)
+        name = validate_object_name(name, "SD-WAN template")
         template_data: dict[str, Any] = {
             "name": name,
             "type": "wanprof",
@@ -116,7 +134,9 @@ async def create_sdwan_template(
             "result": result,
         }
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"SD-WAN tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -140,6 +160,8 @@ async def delete_sdwan_template(
         return {"error": "FortiManager client not connected"}
 
     try:
+        adom = validate_adom(adom)
+        name = validate_object_name(name, "SD-WAN template")
         result = await client.delete_sdwan_template(adom=adom, name=name)
         return {
             "success": True,
@@ -147,7 +169,9 @@ async def delete_sdwan_template(
             "result": result,
         }
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"SD-WAN tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
 
 
 # =============================================================================
@@ -178,6 +202,9 @@ async def assign_sdwan_template(
         return {"error": "FortiManager client not connected"}
 
     try:
+        adom = validate_adom(adom)
+        template = validate_object_name(template, "SD-WAN template")
+        device = validate_device_name(device)
         scope = [{"name": device, "vdom": vdom}]
         result = await client.assign_sdwan_template(adom=adom, template=template, scope=scope)
         return {
@@ -186,7 +213,9 @@ async def assign_sdwan_template(
             "result": result,
         }
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"SD-WAN tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -210,6 +239,8 @@ async def assign_sdwan_template_bulk(
         return {"error": "FortiManager client not connected"}
 
     try:
+        adom = validate_adom(adom)
+        template = validate_object_name(template, "SD-WAN template")
         result = await client.assign_sdwan_template(adom=adom, template=template, scope=devices)
         return {
             "success": True,
@@ -217,7 +248,9 @@ async def assign_sdwan_template_bulk(
             "result": result,
         }
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"SD-WAN tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -243,6 +276,9 @@ async def unassign_sdwan_template(
         return {"error": "FortiManager client not connected"}
 
     try:
+        adom = validate_adom(adom)
+        template = validate_object_name(template, "SD-WAN template")
+        device = validate_device_name(device)
         scope = [{"name": device, "vdom": vdom}]
         result = await client.unassign_sdwan_template(adom=adom, template=template, scope=scope)
         return {
@@ -251,4 +287,6 @@ async def unassign_sdwan_template(
             "result": result,
         }
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"SD-WAN tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}

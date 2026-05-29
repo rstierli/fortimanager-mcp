@@ -22,6 +22,7 @@ from fortimanager_mcp.utils.errors import (
     TemplateError,
     TimeoutError,
     ValidationError,
+    client_safe_error,
     is_auth_error,
     is_duplicate_error,
     is_object_in_use_error,
@@ -271,6 +272,42 @@ class TestIsPermissionError:
         """Test returns False for unrelated error."""
         error = AuthenticationError("Bad password")
         assert is_permission_error(error) is False
+
+
+class TestClientSafeError:
+    """Tests for client_safe_error sanitizer (LOW 2: no endpoint leakage)."""
+
+    def test_strips_endpoint_suffix(self):
+        """parse_fmg_error appends '(endpoint: ...)' — must not leak to caller."""
+        err = parse_fmg_error(-4, "Object not found", url="GET /dvmdb/adom/root/device/FGT")
+        msg, code = client_safe_error(err)
+        assert "endpoint" not in msg
+        assert "/dvmdb" not in msg
+        assert code == "not_found"
+
+    def test_uses_mapped_message_for_known_code(self):
+        err = parse_fmg_error(-3, "raw body /pm/config/adom/root/obj/firewall/address/x")
+        msg, code = client_safe_error(err)
+        assert "/pm/config" not in msg
+        assert code == "permission_denied"
+
+    def test_scrubs_api_path_from_plain_exception(self):
+        err = Exception("failure at /pm/config/adom/root/pkg/default/firewall/policy/5")
+        msg, _ = client_safe_error(err)
+        assert "/pm/config" not in msg
+
+    def test_validation_error_message_preserved(self):
+        """ValueError (input validation) is caller-supplied, safe to surface."""
+        err = ValueError("Invalid ADOM name 'bad/name'")
+        msg, code = client_safe_error(err)
+        assert "Invalid ADOM name" in msg
+        assert code == "validation_error"
+
+    def test_runtime_error_message_preserved_no_path(self):
+        err = RuntimeError("FortiManager client not initialized")
+        msg, code = client_safe_error(err)
+        assert "not initialized" in msg
+        assert code == "internal_error"
 
 
 class TestIsAuthError:

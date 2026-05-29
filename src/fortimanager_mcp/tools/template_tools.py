@@ -8,10 +8,19 @@ Provides tools for managing provisioning templates including:
 Based on FNDN FortiManager 7.6.5 API specifications.
 """
 
+import logging
 from typing import Any
 
 from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_default_adom
+from fortimanager_mcp.utils.errors import client_safe_error
+from fortimanager_mcp.utils.validation import (
+    validate_adom,
+    validate_device_name,
+    validate_object_name,
+)
+
+logger = logging.getLogger(__name__)
 
 # =============================================================================
 # Provisioning Templates (General)
@@ -40,6 +49,7 @@ async def list_templates(
         return {"error": "FortiManager client not connected"}
 
     try:
+        adom = validate_adom(adom)
         templates = await client.list_templates(adom=adom)
         templates = templates[:limit] if templates else []
 
@@ -49,7 +59,9 @@ async def list_templates(
             "templates": templates,
         }
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"Template tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -71,10 +83,14 @@ async def get_template(
         return {"error": "FortiManager client not connected"}
 
     try:
+        adom = validate_adom(adom)
+        name = validate_object_name(name, "template")
         template = await client.get_template(adom=adom, name=name)
         return {"template": template}
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"Template tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
 
 
 # =============================================================================
@@ -104,6 +120,7 @@ async def list_system_templates(
         return {"error": "FortiManager client not connected"}
 
     try:
+        adom = validate_adom(adom)
         templates = await client.list_system_templates(adom=adom)
         templates = templates[:limit] if templates else []
 
@@ -113,7 +130,9 @@ async def list_system_templates(
             "templates": templates,
         }
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"Template tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -135,10 +154,14 @@ async def get_system_template(
         return {"error": "FortiManager client not connected"}
 
     try:
+        adom = validate_adom(adom)
+        name = validate_object_name(name, "template")
         template = await client.get_system_template(adom=adom, name=name)
         return {"template": template}
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"Template tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -164,6 +187,9 @@ async def assign_system_template(
         return {"error": "FortiManager client not connected"}
 
     try:
+        adom = validate_adom(adom)
+        template = validate_object_name(template, "template")
+        device = validate_device_name(device)
         scope = [{"name": device, "vdom": vdom}]
         result = await client.assign_system_template(adom=adom, template=template, scope=scope)
         return {
@@ -172,7 +198,9 @@ async def assign_system_template(
             "result": result,
         }
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"Template tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -196,6 +224,8 @@ async def assign_system_template_bulk(
         return {"error": "FortiManager client not connected"}
 
     try:
+        adom = validate_adom(adom)
+        template = validate_object_name(template, "template")
         result = await client.assign_system_template(adom=adom, template=template, scope=devices)
         return {
             "success": True,
@@ -203,7 +233,9 @@ async def assign_system_template_bulk(
             "result": result,
         }
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"Template tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -229,6 +261,9 @@ async def unassign_system_template(
         return {"error": "FortiManager client not connected"}
 
     try:
+        adom = validate_adom(adom)
+        template = validate_object_name(template, "template")
+        device = validate_device_name(device)
         scope = [{"name": device, "vdom": vdom}]
         result = await client.unassign_system_template(adom=adom, template=template, scope=scope)
         return {
@@ -237,7 +272,9 @@ async def unassign_system_template(
             "result": result,
         }
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"Template tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
 
 
 # =============================================================================
@@ -267,6 +304,7 @@ async def list_cli_template_groups(
         return {"error": "FortiManager client not connected"}
 
     try:
+        adom = validate_adom(adom)
         groups = await client.list_cli_template_groups(adom=adom)
         groups = groups[:limit] if groups else []
 
@@ -276,7 +314,9 @@ async def list_cli_template_groups(
             "cli_template_groups": groups,
         }
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"Template tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -298,10 +338,14 @@ async def get_cli_template_group(
         return {"error": "FortiManager client not connected"}
 
     try:
+        adom = validate_adom(adom)
+        name = validate_object_name(name, "CLI template group")
         group = await client.get_cli_template_group(adom=adom, name=name)
         return {"cli_template_group": group}
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"Template tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -325,6 +369,8 @@ async def create_cli_template_group(
         return {"error": "FortiManager client not connected"}
 
     try:
+        adom = validate_adom(adom)
+        name = validate_object_name(name, "CLI template group")
         group_data: dict[str, Any] = {"name": name}
         if description:
             group_data["description"] = description
@@ -336,7 +382,9 @@ async def create_cli_template_group(
             "result": result,
         }
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"Template tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -358,6 +406,8 @@ async def delete_cli_template_group(
         return {"error": "FortiManager client not connected"}
 
     try:
+        adom = validate_adom(adom)
+        name = validate_object_name(name, "CLI template group")
         result = await client.delete_cli_template_group(adom=adom, name=name)
         return {
             "success": True,
@@ -365,7 +415,9 @@ async def delete_cli_template_group(
             "result": result,
         }
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"Template tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
 
 
 # =============================================================================
@@ -396,6 +448,7 @@ async def list_template_groups(
         return {"error": "FortiManager client not connected"}
 
     try:
+        adom = validate_adom(adom)
         groups = await client.list_template_groups(adom=adom)
         groups = groups[:limit] if groups else []
 
@@ -405,7 +458,9 @@ async def list_template_groups(
             "template_groups": groups,
         }
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"Template tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -427,10 +482,14 @@ async def get_template_group(
         return {"error": "FortiManager client not connected"}
 
     try:
+        adom = validate_adom(adom)
+        name = validate_object_name(name, "template group")
         group = await client.get_template_group(adom=adom, name=name)
         return {"template_group": group}
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"Template tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -456,6 +515,9 @@ async def assign_template_group(
         return {"error": "FortiManager client not connected"}
 
     try:
+        adom = validate_adom(adom)
+        template_group = validate_object_name(template_group, "template group")
+        device = validate_device_name(device)
         scope = [{"name": device, "vdom": vdom}]
         result = await client.assign_template_group(
             adom=adom, template_group=template_group, scope=scope
@@ -466,7 +528,9 @@ async def assign_template_group(
             "result": result,
         }
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"Template tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
 
 
 # =============================================================================
@@ -499,6 +563,9 @@ async def validate_template(
         return {"error": "FortiManager client not connected"}
 
     try:
+        adom = validate_adom(adom)
+        template_group = validate_object_name(template_group, "template group")
+        device = validate_device_name(device)
         pkg = f"adom/{adom}/tmplgrp/{template_group}"
         scope = [{"name": device, "vdom": vdom}]
         result = await client.validate_template(adom=adom, pkg=pkg, scope=scope)
@@ -509,4 +576,6 @@ async def validate_template(
             "result": result,
         }
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"Template tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}

@@ -14,6 +14,8 @@ from typing import Any
 from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_default_adom
+from fortimanager_mcp.utils.errors import client_safe_error
+from fortimanager_mcp.utils.validation import validate_adom, validate_object_name
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +65,7 @@ async def list_addresses(
     """
     adom = adom or get_default_adom()
     try:
+        adom = validate_adom(adom)
         client = _get_client()
 
         filters = []
@@ -83,7 +86,8 @@ async def list_addresses(
         }
     except Exception as e:
         logger.error(f"Failed to list addresses: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -104,6 +108,8 @@ async def get_address(
             - message: Error message if failed
     """
     try:
+        adom = validate_adom(adom)
+        name = validate_object_name(name, "address")
         client = _get_client()
         address = await client.get_address(adom, name)
 
@@ -113,7 +119,8 @@ async def get_address(
         }
     except Exception as e:
         logger.error(f"Failed to get address {name}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -146,6 +153,8 @@ async def create_address_subnet(
         ... )
     """
     try:
+        adom = validate_adom(adom)
+        name = validate_object_name(name, "address")
         client = _get_client()
 
         # Parse subnet - handle both CIDR and space-separated formats
@@ -181,7 +190,8 @@ async def create_address_subnet(
         }
     except Exception as e:
         logger.error(f"Failed to create address {name}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -214,6 +224,8 @@ async def create_address_host(
         ... )
     """
     try:
+        adom = validate_adom(adom)
+        name = validate_object_name(name, "address")
         client = _get_client()
 
         address: dict[str, Any] = {
@@ -234,7 +246,8 @@ async def create_address_host(
         }
     except Exception as e:
         logger.error(f"Failed to create host address {name}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -268,6 +281,8 @@ async def create_address_fqdn(
         ... )
     """
     try:
+        adom = validate_adom(adom)
+        name = validate_object_name(name, "address")
         client = _get_client()
 
         address: dict[str, Any] = {
@@ -288,7 +303,8 @@ async def create_address_fqdn(
         }
     except Exception as e:
         logger.error(f"Failed to create FQDN address {name}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -323,6 +339,8 @@ async def create_address_range(
         ... )
     """
     try:
+        adom = validate_adom(adom)
+        name = validate_object_name(name, "address")
         client = _get_client()
 
         address: dict[str, Any] = {
@@ -344,7 +362,8 @@ async def create_address_range(
         }
     except Exception as e:
         logger.error(f"Failed to create IP range address {name}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -374,6 +393,10 @@ async def update_address(
             - message: Status or error message
     """
     try:
+        adom = validate_adom(adom)
+        name = validate_object_name(name, "address")
+        if new_name:
+            new_name = validate_object_name(new_name, "address")
         client = _get_client()
 
         data: dict[str, Any] = {}
@@ -406,7 +429,8 @@ async def update_address(
         }
     except Exception as e:
         logger.error(f"Failed to update address {name}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -428,6 +452,8 @@ async def delete_address(
             - message: Status or error message
     """
     try:
+        adom = validate_adom(adom)
+        name = validate_object_name(name, "address")
         client = _get_client()
         await client.delete_address(adom, name)
 
@@ -437,7 +463,8 @@ async def delete_address(
         }
     except Exception as e:
         logger.error(f"Failed to delete address {name}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 # =============================================================================
@@ -468,6 +495,7 @@ async def list_address_groups(
     """
     adom = adom or get_default_adom()
     try:
+        adom = validate_adom(adom)
         client = _get_client()
 
         filters = []
@@ -486,7 +514,8 @@ async def list_address_groups(
         }
     except Exception as e:
         logger.error(f"Failed to list address groups: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -507,6 +536,8 @@ async def get_address_group(
             - message: Error message if failed
     """
     try:
+        adom = validate_adom(adom)
+        name = validate_object_name(name, "address group")
         client = _get_client()
         group = await client.get_address_group(adom, name)
 
@@ -516,7 +547,8 @@ async def get_address_group(
         }
     except Exception as e:
         logger.error(f"Failed to get address group {name}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -549,6 +581,8 @@ async def create_address_group(
         ... )
     """
     try:
+        adom = validate_adom(adom)
+        name = validate_object_name(name, "address group")
         client = _get_client()
 
         group: dict[str, Any] = {
@@ -568,7 +602,8 @@ async def create_address_group(
         }
     except Exception as e:
         logger.error(f"Failed to create address group {name}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -592,6 +627,8 @@ async def update_address_group(
             - message: Status or error message
     """
     try:
+        adom = validate_adom(adom)
+        name = validate_object_name(name, "address group")
         client = _get_client()
 
         data: dict[str, Any] = {}
@@ -611,7 +648,8 @@ async def update_address_group(
         }
     except Exception as e:
         logger.error(f"Failed to update address group {name}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -633,6 +671,8 @@ async def delete_address_group(
             - message: Status or error message
     """
     try:
+        adom = validate_adom(adom)
+        name = validate_object_name(name, "address group")
         client = _get_client()
         await client.delete_address_group(adom, name)
 
@@ -642,7 +682,8 @@ async def delete_address_group(
         }
     except Exception as e:
         logger.error(f"Failed to delete address group {name}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 # =============================================================================
@@ -674,6 +715,7 @@ async def list_services(
     """
     adom = adom or get_default_adom()
     try:
+        adom = validate_adom(adom)
         client = _get_client()
 
         filters = []
@@ -694,7 +736,8 @@ async def list_services(
         }
     except Exception as e:
         logger.error(f"Failed to list services: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -715,6 +758,8 @@ async def get_service(
             - message: Error message if failed
     """
     try:
+        adom = validate_adom(adom)
+        name = validate_object_name(name, "service")
         client = _get_client()
         service = await client.get_service(adom, name)
 
@@ -724,7 +769,8 @@ async def get_service(
         }
     except Exception as e:
         logger.error(f"Failed to get service {name}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -783,6 +829,8 @@ async def create_service_tcp_udp(
         if not any([tcp_portrange, udp_portrange, sctp_portrange, udplite_portrange]):
             return {"status": "error", "message": "At least one port range required"}
 
+        adom = validate_adom(adom)
+        name = validate_object_name(name, "service")
         client = _get_client()
 
         # FMG protocol field = service TYPE category, not IP protocol number
@@ -818,7 +866,8 @@ async def create_service_tcp_udp(
         }
     except Exception as e:
         logger.error(f"Failed to create service {name}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -854,6 +903,8 @@ async def create_service_icmp(
         ... )
     """
     try:
+        adom = validate_adom(adom)
+        name = validate_object_name(name, "service")
         client = _get_client()
 
         service: dict[str, Any] = {
@@ -877,7 +928,8 @@ async def create_service_icmp(
         }
     except Exception as e:
         logger.error(f"Failed to create ICMP service {name}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -903,6 +955,8 @@ async def update_service(
             - message: Status or error message
     """
     try:
+        adom = validate_adom(adom)
+        name = validate_object_name(name, "service")
         client = _get_client()
 
         data: dict[str, Any] = {}
@@ -924,7 +978,8 @@ async def update_service(
         }
     except Exception as e:
         logger.error(f"Failed to update service {name}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -946,6 +1001,8 @@ async def delete_service(
             - message: Status or error message
     """
     try:
+        adom = validate_adom(adom)
+        name = validate_object_name(name, "service")
         client = _get_client()
         await client.delete_service(adom, name)
 
@@ -955,7 +1012,8 @@ async def delete_service(
         }
     except Exception as e:
         logger.error(f"Failed to delete service {name}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 # =============================================================================
@@ -983,6 +1041,7 @@ async def list_service_groups(
     """
     adom = adom or get_default_adom()
     try:
+        adom = validate_adom(adom)
         client = _get_client()
 
         filters = []
@@ -1001,7 +1060,8 @@ async def list_service_groups(
         }
     except Exception as e:
         logger.error(f"Failed to list service groups: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -1022,6 +1082,8 @@ async def get_service_group(
             - message: Error message if failed
     """
     try:
+        adom = validate_adom(adom)
+        name = validate_object_name(name, "service group")
         client = _get_client()
         group = await client.get_service_group(adom, name)
 
@@ -1031,7 +1093,8 @@ async def get_service_group(
         }
     except Exception as e:
         logger.error(f"Failed to get service group {name}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -1064,6 +1127,8 @@ async def create_service_group(
         ... )
     """
     try:
+        adom = validate_adom(adom)
+        name = validate_object_name(name, "service group")
         client = _get_client()
 
         group: dict[str, Any] = {
@@ -1083,7 +1148,8 @@ async def create_service_group(
         }
     except Exception as e:
         logger.error(f"Failed to create service group {name}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 @mcp.tool()
@@ -1105,6 +1171,8 @@ async def delete_service_group(
             - message: Status or error message
     """
     try:
+        adom = validate_adom(adom)
+        name = validate_object_name(name, "service group")
         client = _get_client()
         await client.delete_service_group(adom, name)
 
@@ -1114,7 +1182,8 @@ async def delete_service_group(
         }
     except Exception as e:
         logger.error(f"Failed to delete service group {name}: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
 
 
 # =============================================================================
@@ -1150,6 +1219,7 @@ async def search_objects(
         >>> result = await search_objects("root", "web")
     """
     try:
+        adom = validate_adom(adom)
         client = _get_client()
 
         filter_list = [["name", "contain", search_term]]
@@ -1172,4 +1242,5 @@ async def search_objects(
         }
     except Exception as e:
         logger.error(f"Failed to search objects: {e}")
-        return {"status": "error", "message": str(e)}
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}

@@ -5,7 +5,11 @@ services:
     environment:
       - FORTIMANAGER_HOST=${FORTIMANAGER_HOST}
       - FORTIMANAGER_API_TOKEN=${FORTIMANAGER_API_TOKEN}
-      - FORTIMANAGER_VERIFY_SSL=${FORTIMANAGER_VERIFY_SSL:-false}
+      # TLS verification stays ON by default. Import the FortiManager CA cert
+      # into the container trust store rather than disabling verification.
+      # WARNING: FORTIMANAGER_VERIFY_SSL=false disables TLS verification and
+      # exposes the connection to MITM — last resort on trusted networks only.
+      - FORTIMANAGER_VERIFY_SSL=${FORTIMANAGER_VERIFY_SSL:-true}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     volumes:
       - ./output:/app/output
