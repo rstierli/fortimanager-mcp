@@ -76,6 +76,62 @@ class TestClientConnection:
             mock_client_disconnected._ensure_connected()
 
 
+class TestVerifySSLWarning:
+    """`FORTIMANAGER_VERIFY_SSL=false` must surface a visible warning at connect
+    time so an operator running insecure cannot do so silently.
+    """
+
+    @pytest.mark.asyncio
+    async def test_warns_when_verify_ssl_disabled(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Connect with verify_ssl=False must emit a clear logger.warning."""
+        # Stub the FortiManager constructor so connect() doesn't try the network.
+        stub = MagicMock()
+        stub.login.return_value = (0, {"status": {"code": 0, "message": "OK"}})
+        monkeypatch.setattr("fortimanager_mcp.api.client.FortiManager", lambda *a, **kw: stub)
+
+        client = FortiManagerClient(host="test-fmg.example.com", api_token="t", verify_ssl=False)
+        # Skip version detection (it calls .get on the stub) — not what we're testing.
+        monkeypatch.setattr(FortiManagerClient, "_detect_version", lambda self: None)
+
+        caplog.clear()
+        with caplog.at_level("WARNING", logger="fortimanager_mcp.api.client"):
+            await client.connect()
+
+        msgs = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert any("FORTIMANAGER_VERIFY_SSL=false" in m for m in msgs), (
+            f"expected verify_ssl warning, got: {msgs}"
+        )
+        # Names the affected host so an operator can identify which connection.
+        assert any("test-fmg.example.com" in m for m in msgs)
+
+    @pytest.mark.asyncio
+    async def test_no_warning_when_verify_ssl_enabled(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Default verify_ssl=True path must NOT emit the verify_ssl warning."""
+        stub = MagicMock()
+        stub.login.return_value = (0, {"status": {"code": 0, "message": "OK"}})
+        monkeypatch.setattr("fortimanager_mcp.api.client.FortiManager", lambda *a, **kw: stub)
+        monkeypatch.setattr(FortiManagerClient, "_detect_version", lambda self: None)
+
+        client = FortiManagerClient(host="test-fmg.example.com", api_token="t", verify_ssl=True)
+
+        caplog.clear()
+        with caplog.at_level("WARNING", logger="fortimanager_mcp.api.client"):
+            await client.connect()
+
+        msgs = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert not any("FORTIMANAGER_VERIFY_SSL=false" in m for m in msgs), (
+            f"verify_ssl warning leaked on the secure path: {msgs}"
+        )
+
+
 class TestClientOperations:
     """Test client API operations."""
 

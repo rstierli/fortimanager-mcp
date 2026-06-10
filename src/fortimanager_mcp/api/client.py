@@ -105,6 +105,20 @@ class FortiManagerClient:
             logger.warning("Client already connected")
             return
 
+        if not self.verify_ssl:
+            # Visible nudge: FORTIMANAGER_VERIFY_SSL=false silently drops TLS
+            # verification, exposing the API token and every config push / script
+            # output to anyone in the connection path. Prefer importing the FMG
+            # CA cert into the system trust store and leaving verify on.
+            logger.warning(
+                "FORTIMANAGER_VERIFY_SSL=false: TLS certificate verification is "
+                "DISABLED for %s. API token and all configuration data are "
+                "exposed to anyone able to intercept this connection. Prefer "
+                "importing the FortiManager CA into the system trust store and "
+                "setting FORTIMANAGER_VERIFY_SSL=true.",
+                self.host,
+            )
+
         logger.info("Connecting to FortiManager")
 
         try:
