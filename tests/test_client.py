@@ -272,6 +272,172 @@ class TestEnsureConnectedReconnectOnce:
         assert mock_client_disconnected._reconnect_generation == gen_before + 1
 
 
+class TestExecuteResilient:
+    """`_execute_resilient` wraps an async factory with reconnect-once +
+    bounded transient-retry. Validated by injecting a synthetic factory and
+    asserting on attempt count + retry/reconnect calls.
+    """
+
+    @pytest.mark.asyncio
+    async def test_returns_immediately_on_success(self, mock_client: FortiManagerClient) -> None:
+        """A factory that succeeds on first attempt is invoked exactly once."""
+        calls = []
+
+        async def _factory() -> str:
+            calls.append("call")
+            return "ok"
+
+        result = await mock_client._execute_resilient(_factory)
+        assert result == "ok"
+        assert calls == ["call"]
+
+    @pytest.mark.asyncio
+    async def test_retries_transient_then_succeeds(self, mock_client: FortiManagerClient) -> None:
+        """A transient (code -1) failure is retried; second attempt succeeds.
+        Backoff is short-circuited by an injected sleeper.
+        """
+
+        class _CodedExc(Exception):
+            def __init__(self, code: int) -> None:
+                super().__init__("transient")
+                self.code = code
+
+        attempts = []
+        sleeps: list[float] = []
+
+        async def _factory() -> str:
+            attempts.append("call")
+            if len(attempts) == 1:
+                raise _CodedExc(-1)
+            return "ok"
+
+        async def _no_sleep(d: float) -> None:
+            sleeps.append(d)
+
+        result = await mock_client._execute_resilient(_factory, sleep=_no_sleep)
+        assert result == "ok"
+        assert len(attempts) == 2
+        # First retry uses _TRANSIENT_BACKOFF_BASE * 2^0 = 0.5
+        assert sleeps == [0.5]
+
+    @pytest.mark.asyncio
+    async def test_bounded_retries_then_raises_with_retries_attempted(
+        self, mock_client: FortiManagerClient
+    ) -> None:
+        """All transient retries exhausted: original exc raised with
+        ``retries_attempted`` annotation matching the actual retry count.
+        """
+
+        class _CodedExc(Exception):
+            def __init__(self, code: int) -> None:
+                super().__init__("transient")
+                self.code = code
+
+        attempts = []
+        sleeps: list[float] = []
+
+        async def _factory() -> None:
+            attempts.append("call")
+            raise _CodedExc(-1)
+
+        async def _no_sleep(d: float) -> None:
+            sleeps.append(d)
+
+        with pytest.raises(_CodedExc) as exc_info:
+            await mock_client._execute_resilient(_factory, sleep=_no_sleep)
+
+        # 1 initial + _TRANSIENT_RETRIES = 1 + 2 = 3 attempts
+        assert len(attempts) == 1 + mock_client._TRANSIENT_RETRIES
+        # retries_attempted equals number of retries actually performed
+        assert exc_info.value.retries_attempted == mock_client._TRANSIENT_RETRIES
+        # exponential backoff: 0.5, 1.0 (for _TRANSIENT_RETRIES=2)
+        assert sleeps == [0.5, 1.0]
+
+    @pytest.mark.asyncio
+    async def test_does_not_retry_validation_error(self, mock_client: FortiManagerClient) -> None:
+        """A validation error (code -5) is NOT transient -- surface immediately."""
+
+        class _CodedExc(Exception):
+            def __init__(self, code: int) -> None:
+                super().__init__("invalid")
+                self.code = code
+
+        attempts = []
+
+        async def _factory() -> None:
+            attempts.append("call")
+            raise _CodedExc(-5)
+
+        with pytest.raises(_CodedExc):
+            await mock_client._execute_resilient(_factory)
+
+        assert attempts == ["call"]
+
+    @pytest.mark.asyncio
+    async def test_session_error_triggers_reconnect_then_retry(
+        self,
+        mock_client: FortiManagerClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A session-gone error reconnects exactly once and retries the factory.
+        Second attempt succeeds; only ONE _force_reconnect call.
+        """
+        from fortimanager_mcp.utils.errors import AuthenticationError
+
+        reconnects = []
+
+        async def fake_force_reconnect(self_: FortiManagerClient) -> None:
+            reconnects.append("reconnect")
+
+        monkeypatch.setattr(FortiManagerClient, "_force_reconnect", fake_force_reconnect)
+
+        attempts: list[str] = []
+
+        async def _factory() -> str:
+            attempts.append("call")
+            if len(attempts) == 1:
+                raise AuthenticationError("session invalid")
+            return "ok"
+
+        result = await mock_client._execute_resilient(_factory)
+        assert result == "ok"
+        assert reconnects == ["reconnect"]
+        assert len(attempts) == 2
+
+    @pytest.mark.asyncio
+    async def test_repeated_session_error_does_not_loop(
+        self,
+        mock_client: FortiManagerClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """If the reconnect succeeds but the next attempt ALSO raises a session
+        error, we do NOT reconnect again -- we surface the error. Bounded.
+        """
+        from fortimanager_mcp.utils.errors import AuthenticationError
+
+        reconnects = []
+
+        async def fake_force_reconnect(self_: FortiManagerClient) -> None:
+            reconnects.append("reconnect")
+
+        monkeypatch.setattr(FortiManagerClient, "_force_reconnect", fake_force_reconnect)
+
+        attempts: list[str] = []
+
+        async def _factory() -> None:
+            attempts.append("call")
+            raise AuthenticationError("session invalid")
+
+        with pytest.raises(AuthenticationError):
+            await mock_client._execute_resilient(_factory)
+
+        # Exactly ONE reconnect happened. Initial attempt + one retry after
+        # the reconnect = 2 attempts. The second AuthenticationError is
+        # surfaced (no second reconnect).
+        assert reconnects == ["reconnect"]
+        assert len(attempts) == 2
+
+
 class TestClientOperations:
     """Test client API operations."""
 

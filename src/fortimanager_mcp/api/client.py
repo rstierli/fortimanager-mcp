@@ -5,6 +5,7 @@ Based on FNDN FortiManager 7.6.5 API specifications.
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from pyFMG.fortimgr import FortiManager
@@ -68,6 +69,9 @@ class FortiManagerClient:
     # FMG error codes worth a bounded transient retry.
     # -1 internal error / -11 task timeout.
     _TRANSIENT_ERROR_CODES = frozenset({-1, -11})
+    # Bounded transient retry: at most this many retries with exponential backoff.
+    _TRANSIENT_RETRIES = 2
+    _TRANSIENT_BACKOFF_BASE = 0.5  # seconds; doubled each retry
 
     def __init__(
         self,
@@ -429,6 +433,71 @@ class FortiManagerClient:
             return True
         return getattr(exc, "code", None) in self._RECONNECTABLE_ERROR_CODES
 
+    async def _execute_resilient(
+        self,
+        factory: Callable[[], Awaitable[Any]],
+        *,
+        sleep: Callable[[float], Awaitable[None]] | None = None,
+    ) -> Any:
+        """Run an async request factory with reconnect-once + transient retry.
+
+        A stale-session error triggers exactly one forced reconnect (re-login)
+        and a retry — this revives a session the appliance dropped while the
+        local client still believed it was connected. Transient FMG/network
+        errors are then retried up to ``_TRANSIENT_RETRIES`` with exponential
+        backoff. Validation, not-found, permission, ADOM-locked, and not-
+        connected errors (when never connected) are surfaced immediately so
+        callers can handle them.
+
+        The number of transient retries actually performed is annotated on the
+        finally-raised exception as ``retries_attempted`` (best-effort) so the
+        ``error_response()`` envelope can surface ``retry_count`` to a caller.
+        Reconnect attempts are not counted (they're a distinct recovery axis).
+
+        Tests inject ``sleep=`` to avoid real sleeps; production uses the real
+        ``asyncio.sleep``.
+        """
+        sleeper = sleep or asyncio.sleep
+        retries_left = self._TRANSIENT_RETRIES
+        reconnect_left = 1
+        attempt = 0
+        while True:
+            try:
+                return await factory()
+            except Exception as exc:
+                if reconnect_left > 0 and self._is_session_error(exc):
+                    reconnect_left -= 1
+                    logger.warning("FortiManager session invalid; reconnecting once and retrying")
+                    await self._force_reconnect()
+                    continue
+                if retries_left <= 0 or not self._is_transient_error(exc):
+                    # Best-effort annotation for the response envelope. Paths
+                    # that bypass this raise (force-reconnect failure, etc.)
+                    # carry no attribute and read back as 0 via getattr.
+                    exc.retries_attempted = attempt  # type: ignore[attr-defined]
+                    raise
+                retries_left -= 1
+                delay = self._TRANSIENT_BACKOFF_BASE * (2**attempt)
+                attempt += 1
+                logger.warning(f"Transient FortiManager error; retrying in {delay:.1f}s: {exc}")
+                await sleeper(delay)
+
+    async def _generic_request(self, verb: str, url: str, **kwargs: Any) -> Any:
+        """Run a standard pyfmg verb with bounded reconnect + transient-retry resilience.
+
+        The factory closes over the verb/url/kwargs and re-executes them on
+        each retry attempt, so a reconnect picks up a fresh pyfmg handle from
+        ``_ensure_connected()`` rather than reusing a stale one.
+        """
+
+        async def _factory() -> Any:
+            fmg = self._ensure_connected()
+            method = getattr(fmg, verb)
+            code, response = method(url, **kwargs)
+            return self._handle_response(code, response, f"{verb.upper()} {url}")
+
+        return await self._execute_resilient(_factory)
+
     async def _force_reconnect(self) -> None:
         """Drop stale connection state and reconnect (re-login), serialized.
 
@@ -466,40 +535,28 @@ class FortiManagerClient:
     # =========================================================================
 
     async def get(self, url: str, **kwargs: Any) -> Any:
-        """Execute GET request."""
-        fmg = self._ensure_connected()
-        code, response = fmg.get(url, **kwargs)
-        return self._handle_response(code, response, f"GET {url}")
+        """Execute GET request with bounded reconnect + transient-retry resilience."""
+        return await self._generic_request("get", url, **kwargs)
 
     async def add(self, url: str, **kwargs: Any) -> Any:
-        """Execute ADD request."""
-        fmg = self._ensure_connected()
-        code, response = fmg.add(url, **kwargs)
-        return self._handle_response(code, response, f"ADD {url}")
+        """Execute ADD request with bounded reconnect + transient-retry resilience."""
+        return await self._generic_request("add", url, **kwargs)
 
     async def set(self, url: str, **kwargs: Any) -> Any:
-        """Execute SET request."""
-        fmg = self._ensure_connected()
-        code, response = fmg.set(url, **kwargs)
-        return self._handle_response(code, response, f"SET {url}")
+        """Execute SET request with bounded reconnect + transient-retry resilience."""
+        return await self._generic_request("set", url, **kwargs)
 
     async def update(self, url: str, **kwargs: Any) -> Any:
-        """Execute UPDATE request."""
-        fmg = self._ensure_connected()
-        code, response = fmg.update(url, **kwargs)
-        return self._handle_response(code, response, f"UPDATE {url}")
+        """Execute UPDATE request with bounded reconnect + transient-retry resilience."""
+        return await self._generic_request("update", url, **kwargs)
 
     async def delete(self, url: str, **kwargs: Any) -> Any:
-        """Execute DELETE request."""
-        fmg = self._ensure_connected()
-        code, response = fmg.delete(url, **kwargs)
-        return self._handle_response(code, response, f"DELETE {url}")
+        """Execute DELETE request with bounded reconnect + transient-retry resilience."""
+        return await self._generic_request("delete", url, **kwargs)
 
     async def execute(self, url: str, **kwargs: Any) -> Any:
-        """Execute EXEC request."""
-        fmg = self._ensure_connected()
-        code, response = fmg.execute(url, **kwargs)
-        return self._handle_response(code, response, f"EXEC {url}")
+        """Execute EXEC request with bounded reconnect + transient-retry resilience."""
+        return await self._generic_request("execute", url, **kwargs)
 
     async def move(self, url: str, option: str, target: str) -> Any:
         """Execute MOVE request.
