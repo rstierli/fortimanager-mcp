@@ -8,8 +8,6 @@ Supports two modes:
 
 import hmac
 import logging
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -37,39 +35,6 @@ def get_fmg_client() -> FortiManagerClient | None:
     return _fmg_client
 
 
-@asynccontextmanager
-async def lifespan(server: FastMCP) -> AsyncIterator[None]:
-    """Manage server lifecycle - connect/disconnect FortiManager client."""
-    global _fmg_client
-
-    logger.info("FortiManager MCP Server starting...")
-
-    # Check if host is configured
-    if not settings.FORTIMANAGER_HOST:
-        logger.warning(
-            "FORTIMANAGER_HOST not configured. Set environment variables or .env file to connect."
-        )
-        _fmg_client = None
-        yield
-        return
-
-    # Initialize and connect client
-    try:
-        _fmg_client = FortiManagerClient.from_settings(settings)
-        await _fmg_client.connect()
-        logger.info("FortiManager client connected successfully")
-    except Exception as e:
-        logger.error(f"Failed to connect to FortiManager: {e}")
-        _fmg_client = None
-
-    yield
-
-    # Cleanup on shutdown
-    if _fmg_client:
-        await _fmg_client.disconnect()
-        logger.info("FortiManager client disconnected")
-
-
 # Configure transport security for reverse proxy deployments
 _transport_security = None
 if settings.MCP_ALLOWED_HOSTS:
@@ -77,11 +42,17 @@ if settings.MCP_ALLOWED_HOSTS:
         allowed_hosts=settings.MCP_ALLOWED_HOSTS,
     )
 
-# Create FastMCP server with lifespan
+# Create FastMCP server.
+#
+# Lifecycle ownership of the process-global ``_fmg_client`` is deliberately
+# held by exactly one path: ``run_http``'s ``app_lifespan`` in HTTP mode and
+# ``run_stdio`` in stdio mode. We do NOT pass a FastMCP ``lifespan`` here.
+# FastMCP runs its ``lifespan`` per request/session in stateless-HTTP-style
+# transports, which would connect-then-disconnect the shared client around
+# every call and drop the session out from under concurrent requests.
 mcp = FastMCP(
     "fortimanager-mcp",
     dependencies=["pyfmg", "pydantic-settings"],
-    lifespan=lifespan,
     transport_security=_transport_security,
 )
 
@@ -512,13 +483,53 @@ def main() -> None:
 
     if server_mode == "stdio":
         # Claude Desktop / stdio mode
-        mcp.run()
+        run_stdio()
     else:
         # HTTP mode for Docker/web
         logger.info(
             f"Starting MCP server in HTTP mode on {settings.MCP_SERVER_HOST}:{settings.MCP_SERVER_PORT}"
         )
         run_http()
+
+
+def run_stdio() -> None:
+    """Run MCP server in stdio mode for Claude Desktop / LM Studio.
+
+    Owns the FortiManager-client lifecycle for the server's full lifetime
+    (single-owner pattern — see the note next to ``mcp = FastMCP(...)``).
+    Connects once at startup; disconnects once at shutdown. A connection
+    failure logs a warning and yields anyway so the server still starts and
+    its tools can report ``fortimanager_connected: False`` cleanly.
+    """
+    import asyncio
+
+    async def stdio_main() -> None:
+        global _fmg_client
+
+        if settings.FORTIMANAGER_HOST:
+            logger.info("Initializing FortiManager connection")
+            _fmg_client = FortiManagerClient.from_settings(settings)
+            try:
+                await _fmg_client.connect()
+                logger.info("FortiManager connection established")
+            except Exception as e:
+                logger.warning(f"FortiManager connection failed: {e}. Server will still start.")
+                _fmg_client = None
+        else:
+            logger.warning(
+                "FORTIMANAGER_HOST not configured. "
+                "Set environment variables or .env file to connect."
+            )
+            _fmg_client = None
+
+        try:
+            await mcp.run_stdio_async()
+        finally:
+            logger.info("Closing FortiManager connection")
+            if _fmg_client:
+                await _fmg_client.disconnect()
+
+    asyncio.run(stdio_main())
 
 
 def run_http() -> None:
