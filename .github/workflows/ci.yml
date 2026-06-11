@@ -23,7 +23,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           version: "latest"
 
@@ -49,7 +49,7 @@ jobs:
           uv run pytest tests/ --cov=src/fortimanager_mcp --cov-report=xml --ignore=tests/integration
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@f2274c2c340e0c81c8f7dc407b2a477b8935f171 # v6
         if: matrix.python-version == '3.12'
         with:
           files: ./coverage.xml
@@ -66,7 +66,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           version: "latest"
 
@@ -82,3 +82,43 @@ jobs:
       - name: Check linting
         run: |
           uv run ruff check src/ tests/
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "latest"
+
+      - name: Install dependencies
+        run: |
+          uv venv
+          uv sync --all-extras
+
+      - name: Dependency vulnerability audit (pip-audit) — retry on transient PyPI errors
+        run: |
+          # pip-audit queries pypi.org which occasionally returns 503 transiently
+          # (observed on fortianalyzer-mcp CI 2026-06-11). Retry up to 3 times
+          # with 15s backoff before failing the build on a real finding.
+          for attempt in 1 2 3; do
+            if uv run --with pip-audit -- pip-audit --desc; then
+              exit 0
+            fi
+            if [ $attempt -lt 3 ]; then
+              echo "::warning::pip-audit attempt $attempt failed (likely transient PyPI error); retrying in 15s"
+              sleep 15
+            fi
+          done
+          exit 1
+
+      - name: Static security analysis (bandit)
+        run: |
+          uv run --with bandit -- bandit -r src/ -ll -ii

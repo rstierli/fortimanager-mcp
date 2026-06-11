@@ -566,7 +566,11 @@ async def validate_template(
         adom = validate_adom(adom)
         template_group = validate_object_name(template_group, "template group")
         device = validate_device_name(device)
-        pkg = f"adom/{adom}/tmplgrp/{template_group}"
+        # FortiManager API path for template-group (tmplgrp). Both adom and
+        # template_group are validated above. The "tmpl" substring trips
+        # bandit's hardcoded-tmp-directory heuristic — this is a URL fragment,
+        # not a temp directory.
+        pkg = f"adom/{adom}/tmplgrp/{template_group}"  # nosec B108
         scope = [{"name": device, "vdom": vdom}]
         result = await client.validate_template(adom=adom, pkg=pkg, scope=scope)
         return {
