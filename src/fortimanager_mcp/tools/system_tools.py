@@ -10,6 +10,15 @@ from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_default_adom
 from fortimanager_mcp.utils.errors import client_safe_error
+from fortimanager_mcp.utils.responses import error_response
+from fortimanager_mcp.utils.task_guard import (
+    MAX_TASK_POLL_FAILURES,
+    MAX_TASK_WAIT_TIMEOUT,
+    POLL_CALL_TIMEOUT,
+    TaskSlotsExhausted,
+    mark_task_done,
+    spawn_guarded,
+)
 from fortimanager_mcp.utils.validation import (
     validate_adom,
     validate_device_name,
@@ -416,7 +425,7 @@ async def wait_for_task(
 
     Args:
         task_id: Task ID number
-        timeout: Maximum wait time in seconds (default: 300)
+        timeout: Maximum wait time in seconds (default: 300, capped at 3600)
         poll_interval: Seconds between status checks (default: 5)
 
     Returns:
@@ -436,6 +445,12 @@ async def wait_for_task(
 
     try:
         client = _get_client()
+        # Deadline-bound the whole wait and each poll (bundle C of #11): a
+        # huge timeout must not park the request for hours, a poll_interval
+        # of 0 must not hot-loop, and one wedged poll must not eat the budget.
+        timeout = min(timeout, MAX_TASK_WAIT_TIMEOUT)
+        poll_interval = max(1, min(poll_interval, 60))
+        poll_failures_left = MAX_TASK_POLL_FAILURES
         start_time = asyncio.get_event_loop().time()
 
         while True:
@@ -447,7 +462,30 @@ async def wait_for_task(
                     "message": f"Task {task_id} timed out after {timeout} seconds",
                 }
 
-            task = await client.get_task(task_id)
+            try:
+                task = await asyncio.wait_for(
+                    client.get_task(task_id),
+                    timeout=min(POLL_CALL_TIMEOUT, max(1.0, timeout - elapsed)),
+                )
+            except TimeoutError:
+                # A wedged poll, not a task failure: re-poll on a shared
+                # budget. API errors are NOT retried here — get_task already
+                # retries transients internally before surfacing.
+                if poll_failures_left <= 0:
+                    return error_response(
+                        error="task_poll_failed",
+                        message=(
+                            f"Polling task {task_id} timed out {MAX_TASK_POLL_FAILURES + 1} "
+                            "times; giving up. The task itself may still be running on the "
+                            "FortiManager — retry wait_for_task or check get_task."
+                        ),
+                        operation="wait_for_task",
+                        task_id=task_id,
+                        completed=False,
+                    )
+                poll_failures_left -= 1
+                continue
+
             state = task.get("state", "").lower() if isinstance(task.get("state"), str) else ""
 
             # Handle numeric state values
@@ -457,6 +495,9 @@ async def wait_for_task(
 
             # Check if completed
             if state in ("done", "error", "cancelled"):
+                # Terminal state observed: release this task's spawn slot (a
+                # no-op for tasks not spawned through this server).
+                mark_task_done(task_id)
                 return {
                     "status": "success" if state == "done" else "error",
                     "task": task,
@@ -609,11 +650,14 @@ async def install_package(
 
         flags = ["preview"] if preview else ["none"]
 
-        result = await client.install_package(
-            adom=adom,
-            pkg=package,
-            scope=devices,
-            flags=flags,
+        result = await spawn_guarded(
+            "install_package",
+            lambda: client.install_package(
+                adom=adom,
+                pkg=package,
+                scope=devices,
+                flags=flags,
+            ),
         )
 
         task_id = result.get("task")
@@ -623,6 +667,14 @@ async def install_package(
             "preview": preview,
             "message": f"Installation {'preview ' if preview else ''}started, task ID: {task_id}",
         }
+    except TaskSlotsExhausted as e:
+        return error_response(
+            error="task_slots_exhausted",
+            message=e,
+            operation="install_package",
+            adom=adom,
+            package=package,
+        )
     except Exception as e:
         logger.error(f"Failed to install package {package}: {e}")
         msg, code = client_safe_error(e)
@@ -653,9 +705,12 @@ async def install_device_settings(
         adom = validate_adom(adom)
         client = _get_client()
 
-        result = await client.install_device(
-            adom=adom,
-            scope=devices,
+        result = await spawn_guarded(
+            "install_device_settings",
+            lambda: client.install_device(
+                adom=adom,
+                scope=devices,
+            ),
         )
 
         task_id = result.get("task")
@@ -664,6 +719,13 @@ async def install_device_settings(
             "task_id": task_id,
             "message": f"Device settings installation started, task ID: {task_id}",
         }
+    except TaskSlotsExhausted as e:
+        return error_response(
+            error="task_slots_exhausted",
+            message=e,
+            operation="install_device_settings",
+            adom=adom,
+        )
     except Exception as e:
         logger.error(f"Failed to install device settings: {e}")
         msg, code = client_safe_error(e)

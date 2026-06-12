@@ -12,6 +12,8 @@ from typing import Any
 from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_default_adom, get_settings
 from fortimanager_mcp.utils.errors import client_safe_error
+from fortimanager_mcp.utils.responses import error_response
+from fortimanager_mcp.utils.task_guard import TaskSlotsExhausted, spawn_guarded
 from fortimanager_mcp.utils.validation import (
     validate_adom,
     validate_device_name,
@@ -367,13 +369,24 @@ async def execute_script_on_device(
     try:
         # vdom: global means target is a device (not a VDOM)
         scope = [{"name": device, "vdom": "global"}]
-        result = await client.execute_script(adom=adom, script=script, scope=scope)
+        result = await spawn_guarded(
+            "execute_script_on_device",
+            lambda: client.execute_script(adom=adom, script=script, scope=scope),
+        )
         return {
             "success": True,
             "message": f"Script '{script}' execution started on device '{device}'",
             "task_id": result.get("task"),
             "result": result,
         }
+    except TaskSlotsExhausted as e:
+        return error_response(
+            error="task_slots_exhausted",
+            message=e,
+            operation="execute_script_on_device",
+            adom=adom,
+            device=device,
+        )
     except Exception as e:
         logger.error(f"Script tool operation failed: {e}")
         msg, code = client_safe_error(e)
@@ -416,7 +429,10 @@ async def execute_script_on_devices(
 
     try:
         scope = [{"name": device, "vdom": "global"} for device in devices]
-        result = await client.execute_script(adom=adom, script=script, scope=scope)
+        result = await spawn_guarded(
+            "execute_script_on_devices",
+            lambda: client.execute_script(adom=adom, script=script, scope=scope),
+        )
         return {
             "success": True,
             "message": f"Script '{script}' execution started on {len(devices)} devices",
@@ -424,6 +440,13 @@ async def execute_script_on_devices(
             "devices": devices,
             "result": result,
         }
+    except TaskSlotsExhausted as e:
+        return error_response(
+            error="task_slots_exhausted",
+            message=e,
+            operation="execute_script_on_devices",
+            adom=adom,
+        )
     except Exception as e:
         logger.error(f"Script tool operation failed: {e}")
         msg, code = client_safe_error(e)
@@ -467,13 +490,23 @@ async def execute_script_on_device_group(
     try:
         # No vdom attribute means it's a device group
         scope = [{"name": group}]
-        result = await client.execute_script(adom=adom, script=script, scope=scope)
+        result = await spawn_guarded(
+            "execute_script_on_device_group",
+            lambda: client.execute_script(adom=adom, script=script, scope=scope),
+        )
         return {
             "success": True,
             "message": f"Script '{script}' execution started on device group '{group}'",
             "task_id": result.get("task"),
             "result": result,
         }
+    except TaskSlotsExhausted as e:
+        return error_response(
+            error="task_slots_exhausted",
+            message=e,
+            operation="execute_script_on_device_group",
+            adom=adom,
+        )
     except Exception as e:
         logger.error(f"Script tool operation failed: {e}")
         msg, code = client_safe_error(e)
@@ -518,13 +551,24 @@ async def execute_script_on_package(
         return safety_error
 
     try:
-        result = await client.execute_script(adom=adom, script=script, package=package)
+        result = await spawn_guarded(
+            "execute_script_on_package",
+            lambda: client.execute_script(adom=adom, script=script, package=package),
+        )
         return {
             "success": True,
             "message": f"Script '{script}' execution started on package '{package}'",
             "task_id": result.get("task"),
             "result": result,
         }
+    except TaskSlotsExhausted as e:
+        return error_response(
+            error="task_slots_exhausted",
+            message=e,
+            operation="execute_script_on_package",
+            adom=adom,
+            package=package,
+        )
     except Exception as e:
         logger.error(f"Script tool operation failed: {e}")
         msg, code = client_safe_error(e)
