@@ -13,6 +13,7 @@ from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_settings
 from fortimanager_mcp.utils.errors import client_safe_error
+from fortimanager_mcp.utils.install_gate import record_preview
 from fortimanager_mcp.utils.responses import error_response
 from fortimanager_mcp.utils.task_guard import TaskSlotsExhausted, spawn_guarded
 from fortimanager_mcp.utils.validation import (
@@ -663,8 +664,10 @@ async def delete_firewall_policies_bulk(
 
     Returns:
         dict: Delete result with keys:
-            - status: "success" or "error"
+            - status: "success", "partial", or "error"
             - deleted_count: Number of policies deleted
+            - deleted: Policy IDs that were deleted
+            - failed: Per-item failures [{"policyid", "message", "error_code"}, ...]
             - message: Status or error message
 
     Example:
@@ -681,17 +684,38 @@ async def delete_firewall_policies_bulk(
         adom = validate_adom(adom)
         package = validate_package_name(package)
         client = _get_client()
-        await client.delete_firewall_policies(adom, package, policyids)
-
-        return {
-            "status": "success",
-            "deleted_count": len(policyids),
-            "message": f"Deleted {len(policyids)} policies",
-        }
     except Exception as e:
         logger.error(f"Failed to delete policies: {e}")
         msg, code = client_safe_error(e)
         return {"status": "error", "message": msg, "error_code": code}
+
+    # Per-item deletes so one bad ID doesn't abort (or mask) the rest. The
+    # previous single filtered DELETE reported len(policyids) as deleted no
+    # matter how many IDs actually matched (bundle D of #11).
+    deleted: list[int] = []
+    failed: list[dict[str, Any]] = []
+    for policyid in policyids:
+        try:
+            await client.delete_firewall_policy(adom, package, policyid)
+            deleted.append(policyid)
+        except Exception as e:
+            logger.error(f"Failed to delete policy {policyid}: {e}")
+            msg, code = client_safe_error(e)
+            failed.append({"policyid": policyid, "message": msg, "error_code": code})
+
+    if not failed:
+        status = "success"
+    elif deleted:
+        status = "partial"
+    else:
+        status = "error"
+    return {
+        "status": status,
+        "deleted_count": len(deleted),
+        "deleted": deleted,
+        "failed": failed,
+        "message": f"Deleted {len(deleted)} of {len(policyids)} policies",
+    }
 
 
 @mcp.tool()
@@ -1059,6 +1083,10 @@ async def preview_install(
         )
 
         task_id = result.get("task")
+        if task_id is not None:
+            # Record for the preview-before-install gate: install_package
+            # verifies this task finished before installing the same target.
+            record_preview(adom, package, devices, task_id)
         return {
             "status": "success",
             "task_id": task_id,

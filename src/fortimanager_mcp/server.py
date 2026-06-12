@@ -14,6 +14,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
 from fortimanager_mcp.api.client import FortiManagerClient
+from fortimanager_mcp.utils.adom_locks import release_held_locks
 from fortimanager_mcp.utils.config import get_settings
 
 # Get settings
@@ -527,6 +528,7 @@ def run_stdio() -> None:
         finally:
             logger.info("Closing FortiManager connection")
             if _fmg_client:
+                await release_held_locks(_fmg_client)
                 await _fmg_client.disconnect()
 
     asyncio.run(stdio_main())
@@ -658,6 +660,7 @@ def run_http() -> None:
             finally:
                 logger.info("Closing FortiManager connection")
                 if _fmg_client:
+                    await release_held_locks(_fmg_client)
                     await _fmg_client.disconnect()
 
     # Create Starlette app with health route, MCP mount, and auth middleware

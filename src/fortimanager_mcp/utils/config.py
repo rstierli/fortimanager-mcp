@@ -158,6 +158,14 @@ class Settings(BaseSettings):
         "a warning. 'disabled' allows all policies.",
     )
 
+    # Install Safety
+    FMG_INSTALL_SAFETY: Literal["strict", "warn", "disabled"] = Field(
+        default="strict",
+        description="Preview-before-install gate. 'strict' refuses install_package without "
+        "a verified preview_install for the same ADOM/package/device set. 'warn' installs "
+        "but returns a warning. 'disabled' skips the gate.",
+    )
+
     # Testing Configuration
     TEST_ADOM: str = Field(
         default="root",
