@@ -98,6 +98,14 @@ class Settings(BaseSettings):
         description="Bearer token for HTTP auth. If set, all HTTP requests (except /health) must include Authorization: Bearer <token>",
     )
 
+    MCP_ALLOW_NO_AUTH: bool = Field(
+        default=False,
+        description="Explicit opt-out to run the HTTP transport WITHOUT authentication when "
+        "MCP_AUTH_TOKEN is unset. Default False = fail closed: the HTTP server refuses to start "
+        "without a token, so destructive tools are never exposed unauthenticated. Only enable on "
+        "a trusted, isolated bind (e.g. 127.0.0.1 behind a gateway).",
+    )
+
     # MCP Allowed Hosts (for reverse proxy / Docker deployments)
     MCP_ALLOWED_HOSTS: list[str] = Field(
         default_factory=list,

@@ -532,8 +532,41 @@ def run_stdio() -> None:
     asyncio.run(stdio_main())
 
 
+def _ensure_http_auth_or_die() -> None:
+    """Fail closed: refuse to expose the HTTP transport without authentication.
+
+    The HTTP server fronts the full tool surface (including destructive device
+    add/delete, policy install, and script execution on managed devices), so it
+    must never run unauthenticated. Require ``MCP_AUTH_TOKEN`` unless the
+    operator explicitly opts out with ``MCP_ALLOW_NO_AUTH=true`` (only safe on
+    a trusted, isolated bind such as 127.0.0.1 behind a gateway), in which case
+    we log a CRITICAL warning.
+
+    Raises ``SystemExit`` when no token is configured and the opt-out is not set.
+    """
+    if settings.MCP_AUTH_TOKEN:
+        return
+    if not settings.MCP_ALLOW_NO_AUTH:
+        raise SystemExit(
+            "FATAL: refusing to start the HTTP transport without MCP_AUTH_TOKEN -- every "
+            "tool (including device add/delete, policy install, and script execution on "
+            "managed devices) would be exposed unauthenticated. Set a token (e.g. "
+            "`openssl rand -hex 32`), or set MCP_ALLOW_NO_AUTH=true to explicitly run "
+            "without auth (not recommended; only safe on a trusted, isolated bind such "
+            "as 127.0.0.1 behind a gateway)."
+        )
+    logger.critical(
+        "MCP_ALLOW_NO_AUTH=true: HTTP transport is running WITHOUT authentication on "
+        "%s:%s -- every tool is exposed to anyone who can reach this port.",
+        settings.MCP_SERVER_HOST,
+        settings.MCP_SERVER_PORT,
+    )
+
+
 def run_http() -> None:
     """Run MCP server in HTTP mode with Starlette wrapper and optional auth."""
+    _ensure_http_auth_or_die()
+
     from collections.abc import AsyncIterator
     from contextlib import asynccontextmanager
 
@@ -576,7 +609,9 @@ def run_http() -> None:
                 await self.app(scope, receive, send)
                 return
 
-            # Skip auth if no token configured (backwards compatible)
+            # No token => unauthenticated mode. run_http() only reaches here when
+            # the operator explicitly set MCP_ALLOW_NO_AUTH=true (otherwise it
+            # refuses to start), so this is an acknowledged, logged opt-out.
             token = settings.MCP_AUTH_TOKEN
             if not token:
                 await self.app(scope, receive, send)
