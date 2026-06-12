@@ -110,17 +110,25 @@ class TestPackageTools:
 
     @pytest.mark.asyncio
     async def test_install_package_returns_task(
-        self, mock_client_configured: FortiManagerClient
+        self, mock_client_configured: FortiManagerClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Test package installation returns task ID."""
+        """Test package installation returns task ID (gate disabled here;
+        the preview-before-install gate has its own tests in test_fmg_safety)."""
         from fortimanager_mcp.tools import system_tools
+        from fortimanager_mcp.utils.config import get_settings
 
-        with patch.object(system_tools, "get_fmg_client", return_value=mock_client_configured):
-            result = await system_tools.install_package(
-                adom="root",
-                package="default",
-                devices=[{"name": "FGT-01", "vdom": "root"}],
-            )
+        monkeypatch.setenv("FORTIMANAGER_HOST", "test.example.com")
+        monkeypatch.setenv("FMG_INSTALL_SAFETY", "disabled")
+        get_settings.cache_clear()
+        try:
+            with patch.object(system_tools, "get_fmg_client", return_value=mock_client_configured):
+                result = await system_tools.install_package(
+                    adom="root",
+                    package="default",
+                    devices=[{"name": "FGT-01", "vdom": "root"}],
+                )
+        finally:
+            get_settings.cache_clear()
 
         assert result["status"] == "success"
         assert "task_id" in result

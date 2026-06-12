@@ -8,8 +8,15 @@ from typing import Any
 
 from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.server import get_fmg_client, mcp
-from fortimanager_mcp.utils.config import get_default_adom
+from fortimanager_mcp.utils.adom_locks import record_lock, record_unlock
+from fortimanager_mcp.utils.config import get_default_adom, get_settings
 from fortimanager_mcp.utils.errors import client_safe_error
+from fortimanager_mcp.utils.install_gate import (
+    PREVIEW_VALIDITY_TTL,
+    consume_preview,
+    find_preview,
+    task_state,
+)
 from fortimanager_mcp.utils.responses import error_response
 from fortimanager_mcp.utils.task_guard import (
     MAX_TASK_POLL_FAILURES,
@@ -600,6 +607,39 @@ async def get_package(
 # =============================================================================
 
 
+async def _check_install_preview(
+    client: FortiManagerClient,
+    adom: str,
+    package: str,
+    devices: list[dict[str, str]],
+) -> str | None:
+    """Verify a usable preview exists for this install target.
+
+    Returns ``None`` when a recorded preview's task finished successfully,
+    otherwise a human-readable description of what is missing.
+    """
+    preview_task = find_preview(adom, package, devices)
+    if preview_task is None:
+        return (
+            "no preview_install is on record for this package/device set "
+            f"(previews expire after {int(PREVIEW_VALIDITY_TTL // 60)} minutes)"
+        )
+    try:
+        task = await client.get_task(preview_task)
+    except Exception as e:
+        logger.warning(f"Could not verify preview task {preview_task}: {e}")
+        return f"preview task {preview_task} could not be verified"
+    state = task_state(task)
+    if state == "done":
+        return None
+    if state in ("pending", "running"):
+        return (
+            f"preview task {preview_task} has not finished yet (state: {state}) — "
+            "wait_for_task first"
+        )
+    return f"preview task {preview_task} ended in state '{state}'"
+
+
 @mcp.tool()
 async def install_package(
     adom: str,
@@ -612,6 +652,11 @@ async def install_package(
     Deploys firewall policies and configurations from a policy package
     to the specified devices. This is an asynchronous operation -
     use wait_for_task() to monitor completion.
+
+    By default (FMG_INSTALL_SAFETY=strict) a real install requires a
+    verified preview first: run preview_install for the same ADOM, package,
+    and devices, wait for its task to finish, then install. Each preview
+    authorizes one install.
 
     Args:
         adom: ADOM name
@@ -648,6 +693,30 @@ async def install_package(
         package = validate_package_name(package)
         client = _get_client()
 
+        # Preview-before-install gate (bundle D of #11): a real install needs
+        # a verified preview_install for the same ADOM/package/device set,
+        # unless FMG_INSTALL_SAFETY says otherwise.
+        gate_warning: str | None = None
+        gate_mode = get_settings().FMG_INSTALL_SAFETY
+        if not preview and gate_mode != "disabled":
+            gate_problem = await _check_install_preview(client, adom, package, devices)
+            if gate_problem:
+                if gate_mode == "strict":
+                    return error_response(
+                        error="preview_required",
+                        message=(
+                            f"Refusing to install package '{package}': {gate_problem}. "
+                            "Run preview_install, wait_for_task, and review "
+                            "get_preview_result first — or set FMG_INSTALL_SAFETY=warn/"
+                            "disabled to override."
+                        ),
+                        operation="install_package",
+                        adom=adom,
+                        package=package,
+                        recommendation="preview_install",
+                    )
+                gate_warning = f"Installing without a verified preview: {gate_problem}"
+
         flags = ["preview"] if preview else ["none"]
 
         result = await spawn_guarded(
@@ -660,13 +729,21 @@ async def install_package(
             ),
         )
 
+        if not preview:
+            # The preview that authorized this install is spent: the next
+            # install needs a fresh one (the package may change in between).
+            consume_preview(adom, package, devices)
+
         task_id = result.get("task")
-        return {
+        response = {
             "status": "success",
             "task_id": task_id,
             "preview": preview,
             "message": f"Installation {'preview ' if preview else ''}started, task ID: {task_id}",
         }
+        if gate_warning:
+            response["warning"] = gate_warning
+        return response
     except TaskSlotsExhausted as e:
         return error_response(
             error="task_slots_exhausted",
@@ -764,6 +841,9 @@ async def lock_adom(adom: str) -> dict[str, Any]:
         adom = validate_adom(adom)
         client = _get_client()
         await client.lock_adom(adom)
+        # Track the lock so a still-held one is released at server shutdown
+        # instead of blocking other admins until the FMG session times out.
+        record_lock(adom)
         return {
             "status": "success",
             "message": f"ADOM '{adom}' locked successfully",
@@ -793,6 +873,7 @@ async def unlock_adom(adom: str) -> dict[str, Any]:
         adom = validate_adom(adom)
         client = _get_client()
         await client.unlock_adom(adom)
+        record_unlock(adom)
         return {
             "status": "success",
             "message": f"ADOM '{adom}' unlocked successfully",

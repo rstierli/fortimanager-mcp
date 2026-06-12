@@ -5,6 +5,17 @@ All notable changes to FortiManager MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] - 2026-06-11
+
+FMG-specific safety additions (bundle D of [#11](https://github.com/rstierli/fortimanager-mcp/issues/11)): preview-before-install gate, ADOM workspace-lock tracking with shutdown release, and per-item bulk delete reporting. 421 unit tests pass.
+
+### Added
+- **Preview-before-install gate** (`utils/install_gate.py` + `FMG_INSTALL_SAFETY`). By default (`strict`) `install_package` refuses a real install unless a `preview_install` for the same ADOM + package + device set is on record and its FMG task finished successfully (verified live via `get_task` at install time). Previews expire after 30 minutes and are single-use — each authorizes exactly one install, because the package may change in between. `warn` installs but returns a warning; `disabled` restores previous behavior. Same setting shape as `FMG_SCRIPT_SAFETY` / `FMG_POLICY_SAFETY`. `install_package(preview=True)` is itself a dry run and bypasses the gate. **Upgrade note:** agents that installed without previewing must now run `preview_install` + `wait_for_task` first, or the operator sets `FMG_INSTALL_SAFETY=warn`/`disabled`.
+- **ADOM workspace-lock tracking + shutdown release** (`utils/adom_locks.py`). `lock_adom`/`unlock_adom` now track which ADOMs this server locked; at server shutdown (both lifecycle owners) any still-held lock is released best-effort — shielded, bounded by 5s per unlock — before the client disconnects, so an agent that errored out between lock and unlock doesn't leave the ADOM blocking other admins. Deliberately **no** auto-unlock on individual tool failure: the agent may be mid-workflow (lock → change → retry → commit → unlock) and yanking the lock would discard the workspace session it is still using.
+
+### Changed
+- **`delete_firewall_policies_bulk` reports per-item results.** Previously one filtered DELETE reported `len(policyids)` as deleted no matter how many IDs actually matched, and one bad ID failed the whole call opaquely. Now each policy is deleted individually and the response carries `status: success|partial|error`, `deleted` (IDs), and `failed` (`{policyid, message, error_code}` per item).
+
 ## [1.6.0] - 2026-06-12
 
 Async-task contract (bundle C of [#11](https://github.com/rstierli/fortimanager-mcp/issues/11)): anti-exhaustion guards for the FMG task lifecycle — bounded concurrent task spawns, deadline-bounded status polls, and a shared poll-recovery budget. Adapted from the FortiAnalyzer MCP's logsearch guards ([fortianalyzer-mcp#18](https://github.com/rstierli/fortianalyzer-mcp/pull/18)). 400 unit tests pass.

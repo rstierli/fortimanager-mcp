@@ -230,16 +230,28 @@ class TestSpawnSitesAreGuarded:
     """The exhausted error envelope reaches callers of the wired tools."""
 
     @pytest.mark.asyncio
-    async def test_install_package_returns_envelope_when_exhausted(self) -> None:
+    async def test_install_package_returns_envelope_when_exhausted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from fortimanager_mcp.utils.config import get_settings
+
         for i in range(TASK_CONCURRENCY_LIMIT):
             await spawn_guarded("install_package", lambda i=i: _submit_task(i))
 
+        # Disable the preview-before-install gate: this test is about the
+        # task-slot budget, which is checked after the gate.
+        monkeypatch.setenv("FORTIMANAGER_HOST", "test.example.com")
+        monkeypatch.setenv("FMG_INSTALL_SAFETY", "disabled")
+        get_settings.cache_clear()
         client = MagicMock()
         client.install_package = AsyncMock()
-        with patch.object(system_tools, "get_fmg_client", return_value=client):
-            result = await system_tools.install_package(
-                adom="root", package="default", devices=[{"name": "FGT1", "vdom": "root"}]
-            )
+        try:
+            with patch.object(system_tools, "get_fmg_client", return_value=client):
+                result = await system_tools.install_package(
+                    adom="root", package="default", devices=[{"name": "FGT1", "vdom": "root"}]
+                )
+        finally:
+            get_settings.cache_clear()
 
         assert result["status"] == "error"
         assert result["error"] == "task_slots_exhausted"
