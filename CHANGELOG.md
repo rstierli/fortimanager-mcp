@@ -5,6 +5,18 @@ All notable changes to FortiManager MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-06-11
+
+Async-task contract (bundle C of [#11](https://github.com/rstierli/fortimanager-mcp/issues/11)): anti-exhaustion guards for the FMG task lifecycle — bounded concurrent task spawns, deadline-bounded status polls, and a shared poll-recovery budget. Adapted from the FortiAnalyzer MCP's logsearch guards ([fortianalyzer-mcp#18](https://github.com/rstierli/fortianalyzer-mcp/pull/18)). 400 unit tests pass.
+
+### Added
+- **Shared in-flight task budget** (`utils/task_guard.py`). The seven task-spawning tools (`install_package`, `install_device_settings`, `preview_install`, `execute_script_on_device/devices/device_group/package`) now share one in-process budget of `TASK_CONCURRENCY_LIMIT = 5` concurrent FMG tasks, so a caller cannot slam the FMG with 20 parallel installs. The slot is reserved *before* the submit is awaited (racing spawns cannot overshoot), bound to the returned task id, and released when `wait_for_task` observes a terminal state — or reclaimed after `TASK_SLOT_TTL` (30 min) for callers that never poll. When the budget is full the tool fails fast with a structured `task_slots_exhausted` envelope naming the in-flight kinds, rather than queueing the MCP request.
+- **Deadline-bounded task polling in `wait_for_task`.** Each `get_task` poll is bounded by `asyncio.wait_for` (`POLL_CALL_TIMEOUT = 30s`), the overall wait is clamped to `MAX_TASK_WAIT_TIMEOUT = 3600s`, and `poll_interval` is clamped to `[1, 60]` so a 0 interval cannot hot-loop. Wedged polls re-poll on a shared budget of `MAX_TASK_POLL_FAILURES = 3` (the FMG analog of FAZ's `MAX_SEARCH_REISSUES`), then surface a structured `task_poll_failed` envelope. Persistent API errors still surface immediately — `get_task` already retries transients internally, so re-polling those here would be wrong.
+
+### Notes (FMG adaptations of the FAZ pattern)
+- **No automatic cleanup-cancel of FMG tasks.** FAZ cancels an orphaned logsearch (read-only, single-use tid). An FMG task is a config-mutating install or script run: auto-cancelling one mid-flight because the *poll* was aborted risks a half-applied install, which is worse than letting the task finish unobserved. Exhaustion protection comes from the slot TTL instead.
+- The `assign_*` bulk operations named in #11 turn out to be synchronous (no task id in their responses), so they need no guard. The guard is one `spawn_guarded(...)` wrapper per call site if other spawn sites (e.g. dvm `create_task`-flag tools, `validate_template`) should be added later.
+
 ## [1.5.0] - 2026-06-12
 
 Fail closed: the streamable-HTTP transport now refuses to start without `MCP_AUTH_TOKEN` unless the operator explicitly opts out with `MCP_ALLOW_NO_AUTH=true`. Forward-port of [fortianalyzer-mcp#25](https://github.com/rstierli/fortianalyzer-mcp/pull/25); completes bundle B of [#11](https://github.com/rstierli/fortimanager-mcp/issues/11). 428 unit tests pass.

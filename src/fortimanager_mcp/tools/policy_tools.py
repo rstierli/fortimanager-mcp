@@ -13,6 +13,8 @@ from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_settings
 from fortimanager_mcp.utils.errors import client_safe_error
+from fortimanager_mcp.utils.responses import error_response
+from fortimanager_mcp.utils.task_guard import TaskSlotsExhausted, spawn_guarded
 from fortimanager_mcp.utils.validation import (
     check_policy_permissiveness,
     validate_adom,
@@ -1047,10 +1049,13 @@ async def preview_install(
         package = validate_package_name(package)
         client = _get_client()
 
-        result = await client.install_preview(
-            adom=adom,
-            scope=devices,
-            flags=["json"],
+        result = await spawn_guarded(
+            "preview_install",
+            lambda: client.install_preview(
+                adom=adom,
+                scope=devices,
+                flags=["json"],
+            ),
         )
 
         task_id = result.get("task")
@@ -1059,6 +1064,14 @@ async def preview_install(
             "task_id": task_id,
             "message": f"Preview started, task ID: {task_id}",
         }
+    except TaskSlotsExhausted as e:
+        return error_response(
+            error="task_slots_exhausted",
+            message=e,
+            operation="preview_install",
+            adom=adom,
+            package=package,
+        )
     except Exception as e:
         logger.error(f"Failed to start preview: {e}")
         msg, code = client_safe_error(e)
