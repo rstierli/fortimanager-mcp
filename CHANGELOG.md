@@ -5,6 +5,13 @@ All notable changes to FortiManager MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.1] - 2026-06-12
+
+Preview-gate revision fingerprinting — closes the TOCTOU window between preview and install ([#25](https://github.com/rstierli/fortimanager-mcp/issues/25)). 434 unit tests pass.
+
+### Fixed
+- **A package edited between preview and install no longer deploys unreviewed changes under the old preview's authorization.** `preview_install` now captures the package's revision counter (the package object's `obj ver` field — verified live against FMG 7.6.7: increments on policy add, modify, and delete) at preview time; `install_package` compares it at install time. On mismatch the install is refused with a new `preview_stale` error naming both revisions, and the stale record is expired so the next attempt cleanly reports "no preview on record". The revision is read *before* the preview is submitted, so a change racing the preview task itself fails toward re-preview, never toward a stale pass. When `obj ver` is unavailable at preview time (older builds, transient fetch failure) the record carries no revision and the gate degrades to v1.7.0 behavior (TTL + single-use); a recorded revision that cannot be re-verified at install time refuses in `strict` mode. Live-verified end-to-end: hidden policy edit between preview and install → `preview_stale` (revision 8 → 9); fresh preview → install passes.
+
 ## [1.7.0] - 2026-06-12
 
 FMG-specific safety additions (bundle D of [#11](https://github.com/rstierli/fortimanager-mcp/issues/11)): preview-before-install gate, ADOM workspace-lock tracking with shutdown release, and per-item bulk delete reporting. 421 unit tests pass.

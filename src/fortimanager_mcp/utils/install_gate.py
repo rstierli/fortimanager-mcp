@@ -17,9 +17,17 @@ Behavior is governed by ``FMG_INSTALL_SAFETY`` (same shape as
 
 A recorded preview is only honored when its FMG task finished successfully
 (verified live via ``get_task`` at install time), is younger than
-``PREVIEW_VALIDITY_TTL``, and matches the exact device scope. It is consumed
-by the install that uses it: the next install needs a fresh preview, because
-the package may have changed in between.
+``PREVIEW_VALIDITY_TTL``, matches the exact device scope, and the package's
+revision counter is unchanged since the preview (issue
+`#25 <https://github.com/rstierli/fortimanager-mcp/issues/25>`_ — without the
+revision check, a package edited *between* preview and install would deploy
+unreviewed changes under the old preview's authorization). It is consumed by
+the install that uses it: the next install needs a fresh preview.
+
+The revision counter is the package object's ``obj ver`` field (verified live
+against FMG 7.6.7: increments on policy add, modify, and delete). When the
+field is unavailable at preview time the record carries no revision and the
+gate degrades to v1.7.0 behavior (TTL + single-use only).
 
 This is ephemeral process state and assumes the server runs as a single
 process (uvicorn with no workers), like the global client itself.
@@ -36,7 +44,8 @@ logger = logging.getLogger(__name__)
 # hand; short enough that yesterday's preview cannot bless today's install.
 PREVIEW_VALIDITY_TTL = 1800.0
 
-# (adom, package, scope_key) -> {"task_id": int, "recorded_at": float}
+# (adom, package, scope_key) ->
+#     {"task_id": int, "recorded_at": float, "revision": int | None}
 _PREVIEWS: dict[tuple[str, str, str], dict[str, Any]] = {}
 
 
@@ -45,12 +54,39 @@ def _scope_key(devices: list[dict[str, str]]) -> str:
     return ",".join(sorted(f"{d.get('name', '')}/{d.get('vdom', 'root')}" for d in devices))
 
 
-def record_preview(adom: str, package: str, devices: list[dict[str, str]], task_id: int) -> None:
-    """Record a successfully submitted preview task for this install target."""
+async def package_revision(client: Any, adom: str, package: str) -> int | None:
+    """Fetch the package's revision counter (``obj ver``), or None.
+
+    Returns None when the fetch fails or the field is absent (older builds);
+    callers decide what that means — preview-time None degrades the gate to
+    TTL + single-use, install-time None (with a recorded revision) refuses.
+    """
+    try:
+        pkg = await client.get_package(adom, package)
+    except Exception as e:
+        logger.warning(f"Could not fetch revision of package '{package}': {e}")
+        return None
+    rev = pkg.get("obj ver") if isinstance(pkg, dict) else None
+    return rev if isinstance(rev, int) else None
+
+
+def record_preview(
+    adom: str,
+    package: str,
+    devices: list[dict[str, str]],
+    task_id: int,
+    revision: int | None = None,
+) -> None:
+    """Record a successfully submitted preview task for this install target.
+
+    ``revision`` is the package's ``obj ver`` captured at preview time; None
+    disables the revision comparison for this record.
+    """
     key = (adom, package, _scope_key(devices))
     _PREVIEWS[key] = {
         "task_id": task_id,
         "recorded_at": asyncio.get_event_loop().time(),
+        "revision": revision,
     }
 
 
@@ -69,6 +105,20 @@ def find_preview(adom: str, package: str, devices: list[dict[str, str]]) -> int 
         return None
     task_id: int = entry["task_id"]
     return task_id
+
+
+def recorded_revision(adom: str, package: str, devices: list[dict[str, str]]) -> int | None:
+    """The package revision captured when this target's preview was recorded.
+
+    None when no record exists or the record carries no revision (preview-time
+    fetch failed, or the build exposes no ``obj ver``). Does not TTL-check —
+    call ``find_preview`` first.
+    """
+    entry = _PREVIEWS.get((adom, package, _scope_key(devices)))
+    if entry is None:
+        return None
+    revision: int | None = entry.get("revision")
+    return revision
 
 
 def consume_preview(adom: str, package: str, devices: list[dict[str, str]]) -> None:

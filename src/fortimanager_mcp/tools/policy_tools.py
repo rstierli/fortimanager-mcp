@@ -13,7 +13,7 @@ from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_settings
 from fortimanager_mcp.utils.errors import client_safe_error
-from fortimanager_mcp.utils.install_gate import record_preview
+from fortimanager_mcp.utils.install_gate import package_revision, record_preview
 from fortimanager_mcp.utils.responses import error_response
 from fortimanager_mcp.utils.task_guard import TaskSlotsExhausted, spawn_guarded
 from fortimanager_mcp.utils.validation import (
@@ -1073,6 +1073,13 @@ async def preview_install(
         package = validate_package_name(package)
         client = _get_client()
 
+        # Capture the package revision BEFORE submitting the preview (#25):
+        # if the package changes between this read and the preview task's own
+        # read, the recorded revision is older and the install gate fails
+        # safe (forces a re-preview) instead of passing a stale one. None
+        # (fetch failed / field absent) degrades the gate to TTL + single-use.
+        revision = await package_revision(client, adom, package)
+
         result = await spawn_guarded(
             "preview_install",
             lambda: client.install_preview(
@@ -1085,8 +1092,9 @@ async def preview_install(
         task_id = result.get("task")
         if task_id is not None:
             # Record for the preview-before-install gate: install_package
-            # verifies this task finished before installing the same target.
-            record_preview(adom, package, devices, task_id)
+            # verifies this task finished — and the package is unchanged —
+            # before installing the same target.
+            record_preview(adom, package, devices, task_id, revision=revision)
         return {
             "status": "success",
             "task_id": task_id,

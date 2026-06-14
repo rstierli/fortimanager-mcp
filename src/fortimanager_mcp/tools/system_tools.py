@@ -15,6 +15,8 @@ from fortimanager_mcp.utils.install_gate import (
     PREVIEW_VALIDITY_TTL,
     consume_preview,
     find_preview,
+    package_revision,
+    recorded_revision,
     task_state,
 )
 from fortimanager_mcp.utils.responses import error_response
@@ -612,32 +614,56 @@ async def _check_install_preview(
     adom: str,
     package: str,
     devices: list[dict[str, str]],
-) -> str | None:
+) -> tuple[str, str] | None:
     """Verify a usable preview exists for this install target.
 
-    Returns ``None`` when a recorded preview's task finished successfully,
-    otherwise a human-readable description of what is missing.
+    Returns ``None`` when a recorded preview's task finished successfully and
+    the package is unchanged since the preview, otherwise an
+    ``(error_code, problem)`` pair describing what is missing.
     """
     preview_task = find_preview(adom, package, devices)
     if preview_task is None:
         return (
+            "preview_required",
             "no preview_install is on record for this package/device set "
-            f"(previews expire after {int(PREVIEW_VALIDITY_TTL // 60)} minutes)"
+            f"(previews expire after {int(PREVIEW_VALIDITY_TTL // 60)} minutes)",
         )
     try:
         task = await client.get_task(preview_task)
     except Exception as e:
         logger.warning(f"Could not verify preview task {preview_task}: {e}")
-        return f"preview task {preview_task} could not be verified"
+        return ("preview_required", f"preview task {preview_task} could not be verified")
     state = task_state(task)
-    if state == "done":
-        return None
     if state in ("pending", "running"):
         return (
+            "preview_required",
             f"preview task {preview_task} has not finished yet (state: {state}) — "
-            "wait_for_task first"
+            "wait_for_task first",
         )
-    return f"preview task {preview_task} ended in state '{state}'"
+    if state != "done":
+        return ("preview_required", f"preview task {preview_task} ended in state '{state}'")
+
+    # Revision check (issue #25): the package must be unchanged since the
+    # preview, or its diff no longer describes what would be installed.
+    previewed_rev = recorded_revision(adom, package, devices)
+    if previewed_rev is not None:
+        current_rev = await package_revision(client, adom, package)
+        if current_rev is None:
+            return (
+                "preview_required",
+                f"the revision of package '{package}' could not be verified against the preview",
+            )
+        if current_rev != previewed_rev:
+            # The recorded preview no longer describes this package: expire it
+            # so the next attempt reports "no preview on record".
+            consume_preview(adom, package, devices)
+            return (
+                "preview_stale",
+                f"package '{package}' changed since the preview (revision "
+                f"{previewed_rev} -> {current_rev}) — its diff no longer describes "
+                "what would be installed; run preview_install again",
+            )
+    return None
 
 
 @mcp.tool()
@@ -656,7 +682,9 @@ async def install_package(
     By default (FMG_INSTALL_SAFETY=strict) a real install requires a
     verified preview first: run preview_install for the same ADOM, package,
     and devices, wait for its task to finish, then install. Each preview
-    authorizes one install.
+    authorizes one install, and only while the package is unchanged — if the
+    package was edited after the preview, the install is refused
+    (preview_stale) and a fresh preview is required.
 
     Args:
         adom: ADOM name
@@ -699,11 +727,12 @@ async def install_package(
         gate_warning: str | None = None
         gate_mode = get_settings().FMG_INSTALL_SAFETY
         if not preview and gate_mode != "disabled":
-            gate_problem = await _check_install_preview(client, adom, package, devices)
-            if gate_problem:
+            gate_result = await _check_install_preview(client, adom, package, devices)
+            if gate_result:
+                gate_error, gate_problem = gate_result
                 if gate_mode == "strict":
                     return error_response(
-                        error="preview_required",
+                        error=gate_error,
                         message=(
                             f"Refusing to install package '{package}': {gate_problem}. "
                             "Run preview_install, wait_for_task, and review "

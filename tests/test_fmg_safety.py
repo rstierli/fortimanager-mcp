@@ -260,3 +260,97 @@ class TestBulkDeletePartialSuccess:
         client = _client()
         result = await self._bulk(client, [])
         assert result["status"] == "error"
+
+
+class TestPreviewRevisionGate:
+    """Revision fingerprinting closes the TOCTOU between preview and install
+    (issue #25): a package edited after the preview must force a re-preview.
+    """
+
+    @pytest.mark.asyncio
+    async def test_preview_install_records_revision(self) -> None:
+        client = _client(
+            install_preview={"return_value": {"task": 9}},
+            get_package={"return_value": {"name": "default", "obj ver": 5}},
+        )
+        with patch.object(policy_tools, "get_fmg_client", return_value=client):
+            result = await policy_tools.preview_install(
+                adom="root", package="default", devices=DEVICES
+            )
+        assert result["status"] == "success"
+        assert install_gate.recorded_revision("root", "default", DEVICES) == 5
+
+    @pytest.mark.asyncio
+    async def test_unchanged_revision_installs(self) -> None:
+        install_gate.record_preview("root", "default", DEVICES, 7, revision=5)
+        client = _client(
+            install_package={"return_value": {"task": 2}},
+            get_task={"return_value": {"state": 4}},
+            get_package={"return_value": {"obj ver": 5}},
+        )
+        result = await _install(client)
+        assert result["status"] == "success"
+
+    @pytest.mark.asyncio
+    async def test_changed_revision_refuses_stale_and_expires(self) -> None:
+        install_gate.record_preview("root", "default", DEVICES, 7, revision=5)
+        client = _client(
+            install_package={"return_value": {"task": 2}},
+            get_task={"return_value": {"state": 4}},
+            get_package={"return_value": {"obj ver": 6}},  # edited since preview
+        )
+        result = await _install(client)
+        assert result["status"] == "error"
+        assert result["error"] == "preview_stale"
+        assert "changed since the preview" in result["message"]
+        assert "5 -> 6" in result["message"]
+        client.install_package.assert_not_called()
+        # The stale record is expired: the next attempt reports no preview.
+        assert install_gate.find_preview("root", "default", DEVICES) is None
+        second = await _install(client)
+        assert second["error"] == "preview_required"
+
+    @pytest.mark.asyncio
+    async def test_legacy_record_without_revision_installs(self) -> None:
+        """A record carrying no revision (fetch failed at preview time, or an
+        older build without `obj ver`) degrades to TTL + single-use."""
+        install_gate.record_preview("root", "default", DEVICES, 7)
+        client = _client(
+            install_package={"return_value": {"task": 2}},
+            get_task={"return_value": {"state": 4}},
+        )
+        result = await _install(client)
+        assert result["status"] == "success"
+        client.get_package.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unverifiable_revision_refuses_in_strict(self) -> None:
+        """Recorded revision exists but the install-time fetch fails: strict
+        mode must refuse rather than install unverified."""
+        install_gate.record_preview("root", "default", DEVICES, 7, revision=5)
+        client = _client(
+            install_package={"return_value": {"task": 2}},
+            get_task={"return_value": {"state": 4}},
+            get_package={"side_effect": RuntimeError("connection lost")},
+        )
+        result = await _install(client)
+        assert result["status"] == "error"
+        assert result["error"] == "preview_required"
+        assert "could not be verified" in result["message"]
+        client.install_package.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_warn_mode_installs_stale_with_warning(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("FMG_INSTALL_SAFETY", "warn")
+        get_settings.cache_clear()
+        install_gate.record_preview("root", "default", DEVICES, 7, revision=5)
+        client = _client(
+            install_package={"return_value": {"task": 2}},
+            get_task={"return_value": {"state": 4}},
+            get_package={"return_value": {"obj ver": 6}},
+        )
+        result = await _install(client)
+        assert result["status"] == "success"
+        assert "changed since the preview" in result["warning"]
