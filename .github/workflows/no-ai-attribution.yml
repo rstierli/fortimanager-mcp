@@ -1,0 +1,53 @@
+name: No AI Attribution
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    name: Scan PR for AI attribution
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Scan commit messages and PR body
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -e
+          # Forbidden patterns: AI attribution trailers and marketing strings.
+          # Match Anthropic-side identifiers (Claude, Anthropic, noreply@anthropic.com)
+          # and other common AI-tool markers users explicitly disable.
+          forbidden='Co-[Aa]uthored-[Bb]y:.*[Cc]laude|Co-[Aa]uthored-[Bb]y:.*[Aa]nthropic|noreply@anthropic\.com|Generated with [Cc]laude|🤖 Generated with'
+          fail=0
+
+          echo "=== Scanning commit messages in ${BASE_SHA}..${HEAD_SHA} ==="
+          commits_out=$(git log --format='commit %H%n%B%n---' "${BASE_SHA}..${HEAD_SHA}")
+          if echo "$commits_out" | grep -nE "$forbidden"; then
+            echo "::error::Commit message contains AI attribution. Strip the offending trailer (e.g. 'Co-Authored-By: Claude ...') and force-push."
+            fail=1
+          else
+            echo "Commit messages: clean."
+          fi
+
+          echo ""
+          echo "=== Scanning PR description ==="
+          if [ -n "$PR_BODY" ] && echo "$PR_BODY" | grep -nE "$forbidden"; then
+            echo "::error::PR description contains AI attribution. Edit the description and remove the offending text."
+            fail=1
+          else
+            echo "PR description: clean."
+          fi
+
+          if [ "$fail" -ne 0 ]; then
+            echo ""
+            echo "Forbidden patterns: ${forbidden}"
+            exit 1
+          fi
