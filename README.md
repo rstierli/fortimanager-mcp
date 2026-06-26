@@ -185,6 +185,11 @@ DEFAULT_ADOM=root
 # Examples: ["mcp.example.com"], ["10.1.5.62:8000"], or wildcard ["10.1.5.62:*"]
 # MCP_ALLOWED_HOSTS=["mcp.example.com"]
 
+# Streamable HTTP transport mode (optional - stateful by default)
+# Set true behind a load balancer / multiple replicas, or a proxy that does not
+# preserve the Mcp-Session-Id header, so each request is handled independently.
+# MCP_STATELESS_HTTP=true
+
 # Safety Guardrails (optional - strict by default)
 # FMG_SCRIPT_SAFETY=strict    # Block dangerous CLI commands in scripts (factory-reset, reboot, etc.)
 # FMG_POLICY_SAFETY=strict    # Block overly permissive policies (srcaddr=all + dstaddr=all + accept)
@@ -370,6 +375,14 @@ MCP Client → HTTPS → Reverse Proxy (Traefik/nginx) → HTTP → MCP Containe
    ```
 
 3. **Secrets management** — Keep API tokens and auth tokens in an `env_file` (`.env`), not inline in `docker-compose.yml`.
+
+4. **MCP_STATELESS_HTTP** — When the server runs behind a load balancer or as multiple replicas (or behind a proxy that does not preserve the `Mcp-Session-Id` header), enable stateless mode so each request is self-contained and no sticky sessions are required:
+
+   ```bash
+   MCP_STATELESS_HTTP=true
+   ```
+
+   Leave it unset (stateful, the default) for single-instance deployments. Stateless mode disables server-initiated streaming that relies on a persistent session.
 
 **Example with Traefik:**
 

@@ -5,6 +5,13 @@ All notable changes to FortiManager MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] - 2026-06-26
+
+Opt-in stateless Streamable HTTP transport for multi-replica / load-balanced deployments. 438 unit tests pass.
+
+### Added
+- **`MCP_STATELESS_HTTP` setting (default `false`).** Runs the Streamable HTTP transport's session manager in stateless mode so the server can sit behind a load balancer / run as multiple replicas when the fronting proxy does not preserve the `Mcp-Session-Id` header. Default `false` preserves the current session-persistent behavior — no change for existing single-instance deployments. Wired through to `FastMCP(stateless_http=...)`; the process-global FortiManager client lifecycle (owned by `run_http`'s `app_lifespan` / `run_stdio`) is unaffected in either mode. Tradeoff: stateless mode keeps no per-session state across requests, so server-initiated streaming that relies on a persistent session is unavailable — enable only when fronting the server with a load balancer/proxy that cannot pin sessions.
+
 ## [1.7.1] - 2026-06-14
 
 Preview-gate revision fingerprinting — closes the TOCTOU window between preview and install ([#25](https://github.com/rstierli/fortimanager-mcp/issues/25)). 434 unit tests pass.

@@ -35,3 +35,19 @@ class TestSettings:
 
         settings = Settings()
         assert settings.FORTIMANAGER_HOST == "fmg.example.com"
+
+    def test_stateless_http_defaults_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Stateless HTTP is opt-in: default preserves stateful session behavior."""
+        monkeypatch.setenv("FORTIMANAGER_HOST", "test-fmg.example.com")
+        monkeypatch.delenv("MCP_STATELESS_HTTP", raising=False)
+
+        settings = Settings()
+        assert settings.MCP_STATELESS_HTTP is False
+
+    def test_stateless_http_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """MCP_STATELESS_HTTP=true enables stateless streamable-HTTP transport."""
+        monkeypatch.setenv("FORTIMANAGER_HOST", "test-fmg.example.com")
+        monkeypatch.setenv("MCP_STATELESS_HTTP", "true")
+
+        settings = Settings()
+        assert settings.MCP_STATELESS_HTTP is True

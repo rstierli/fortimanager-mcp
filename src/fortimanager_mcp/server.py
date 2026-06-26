@@ -54,6 +54,7 @@ if settings.MCP_ALLOWED_HOSTS:
 mcp = FastMCP(
     "fortimanager-mcp",
     dependencies=["pyfmg", "pydantic-settings"],
+    stateless_http=settings.MCP_STATELESS_HTTP,
     transport_security=_transport_security,
 )
 

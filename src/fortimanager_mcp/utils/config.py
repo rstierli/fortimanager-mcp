@@ -113,6 +113,16 @@ class Settings(BaseSettings):
         "Comma-separated in env var. localhost/127.0.0.1 always allowed by SDK.",
     )
 
+    # MCP Streamable HTTP Transport Mode
+    MCP_STATELESS_HTTP: bool = Field(
+        default=False,
+        description="Run the Streamable HTTP transport in stateless mode. Default False keeps "
+        "per-session state (the client must echo the Mcp-Session-Id header). Set True when the "
+        "server runs behind a load balancer / multiple replicas, or a proxy that does not "
+        "preserve the session id, so each request is handled independently. Tradeoff: disables "
+        "server-initiated streaming that relies on a persistent session.",
+    )
+
     # Tool Loading Mode
     FMG_TOOL_MODE: Literal["full", "dynamic"] = Field(
         default="full",
