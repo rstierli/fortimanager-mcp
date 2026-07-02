@@ -185,9 +185,10 @@ class TestServiceTools:
         assert result["name"] == "custom-http"
 
     @pytest.mark.asyncio
-    async def test_create_service_tcp_udp_sends_protocol_5(self) -> None:
-        """TCP/UDP/SCTP services must be created with protocol=5, the integer
-        enum FMG accepts (verified live: 15 is rejected as invalid)."""
+    async def test_create_service_tcp_udp_sends_protocol_15(self) -> None:
+        """TCP/UDP/SCTP services must be created with protocol=15, the integer
+        enum FMG accepts (verified live on 7.6.7 and 8.0.0: 5 is rejected as
+        invalid)."""
         from unittest.mock import AsyncMock
 
         client = MagicMock()
@@ -202,7 +203,7 @@ class TestServiceTools:
 
         assert result["status"] == "success"
         _adom, service = client.create_service.await_args.args
-        assert service["protocol"] == 5
+        assert service["protocol"] == 15
 
     @pytest.mark.asyncio
     async def test_create_service_icmp_sends_integer_protocol(self) -> None:

@@ -7,12 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.9.0] - 2026-07-03
 
-Correctness and hardening batch from a full code review + security audit, plus follow-ups verified against a live FortiManager. 492 unit tests pass.
+Correctness and hardening batch from a full code review + security audit, plus follow-ups verified against a live FortiManager. 493 unit tests pass.
 
 ### Fixed (live-FMG follow-ups)
 
-- **`create_service_tcp_udp` was rejected by FortiManager and now uses the correct protocol enum.** Verified live on FMG 7.6.7: `firewall service custom` uses an integer `protocol` enum (TCP/UDP/SCTP=5, ICMP=1, ICMP6=6, IP=2). The tool sent `protocol=15`, which the FMG rejects with `prop[protocol]: option empty or invalid`, so no TCP/UDP/SCTP service could be created; it now sends `5`.
-- **Service parsing handles the real integer enum.** `_extract_service_details` previously only recognized `15` for TCP/UDP and the string `"ICMP"`, so real services were misclassified (a TCP service read back as category "IP", an ICMP service lost its type). It now classifies across every observed representation: integers 1/2/5/6, their string forms, the string aliases, and the legacy 15.
+- **`create_service_tcp_udp` uses the integer `protocol` enum value FortiManager accepts for port-based services.** Verified live on FMG 7.6.7 and 8.0.0: `firewall service custom` stores `protocol` as an integer enum where TCP/UDP/SCTP=15 (ICMP=1); every predefined port-based service (HTTP/HTTPS/DNS/SSH/ALL_TCP) reads back 15, and a create with `5` or the `"TCP/UDP/SCTP"` string is rejected with `prop[protocol]: option empty or invalid`. The tool sends `15`.
+- **Service parsing handles the real integer enum.** `_extract_service_details` previously only recognized `15` for TCP/UDP and the string `"ICMP"`, so an ICMP service (stored as integer `1`) lost its type. It now classifies across every observed representation: the TCP/UDP/SCTP value `15`, ICMP `1`, their string aliases, and the alternate `5` encoding some builds may surface.
 - **`create_service_icmp` sends the integer protocol code.** Now sends `protocol: 1` instead of the string `"ICMP"`. The string was accepted (FMG coerces the alias, storing 1), so this is a consistency change matching the integer approach used elsewhere rather than a behavior fix.
 - **API-token connections verify reachability at connect time.** pyfmg's apikey "login" makes no network call, so a bad token or an unreachable FMG went undetected and `/health` reported `fortimanager_connected: true` against a dead FMG. Token-mode `connect()` now probes `/sys/status` once and fails closed if it errors or returns a non-zero code. Session (username/password) auth already round-trips in login and is unchanged.
 
