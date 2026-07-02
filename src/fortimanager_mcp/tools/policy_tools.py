@@ -872,10 +872,10 @@ def _extract_service_details(service_data: dict[str, Any]) -> dict[str, Any]:
         "protocol": service_data.get("protocol", ""),
     }
 
-    # FMG returns the service protocol as an integer enum (verified live against
-    # FMG 7.6.7 and 8.0.0: TCP/UDP/SCTP=15, ICMP=1). Some endpoints/versions may
-    # surface the string alias or the alternate 5 encoding instead, so match
-    # every observed representation rather than a single value.
+    # FMG returns the service protocol as an integer enum whose TCP/UDP/SCTP
+    # code is version-dependent (verified live: FMG 7.6.6=5, 7.6.7/8.0=15;
+    # ICMP=1, ICMP6=6, IP=2 across all). Some endpoints also surface the string
+    # alias, so match every observed representation rather than a single value.
     protocol = service_data.get("protocol", "")
     protocol_key = str(protocol).upper()
     tcp_udp = {"5", "15", "TCP/UDP/SCTP"}
