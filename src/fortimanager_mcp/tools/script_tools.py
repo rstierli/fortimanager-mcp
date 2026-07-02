@@ -24,36 +24,57 @@ from fortimanager_mcp.utils.validation import (
 
 logger = logging.getLogger(__name__)
 
-# Script types whose commands can be assembled at runtime (Tcl), so static
-# regex screening of their content is meaningless. Blocked under strict safety.
-# "tclgrp" is precautionary: it is not in the documented type enum (cli, tcl,
-# cligrp, jinja), but FMG performs no server-side validation of the type field
-# (verified live: arbitrary type strings are stored with code 0), so client-side
-# screening is the only layer that can catch a Tcl payload hidden under it.
+# FMG performs no server-side validation of the type field (verified live:
+# arbitrary type strings are stored with code 0), so under strict safety the
+# type is allowlisted client-side — the only layer that can refuse a payload
+# filed under a Tcl or invented type. Documented types whose stored content
+# the static screen can inspect are allowed; Tcl types are refused because
+# their commands are assembled at runtime; anything else is refused because
+# there is no way to vouch for how the executor will interpret it. "jinja"
+# can also compose text at render time but is a core provisioning workflow,
+# so it stays allowed with the content screen running on the template body.
+SCREENABLE_SCRIPT_TYPES = {"cli", "cligrp", "jinja"}
 UNSCREENABLE_SCRIPT_TYPES = {"tcl", "tclgrp"}
 
 
 def _check_script_type_safety(script_type: str | None) -> dict[str, Any] | None:
-    """Block script types that defeat static content screening.
+    """Enforce the strict-safety script-type allowlist.
 
-    Under strict safety, Tcl scripts (tcl, tclgrp) are rejected because their
-    commands can be built dynamically at execution time — the regex content
-    check cannot see what they will actually run.
+    Under strict safety only the documented, content-screenable types (cli,
+    cligrp, jinja) pass. Tcl types are rejected because their commands can be
+    built dynamically at execution time — the regex content check cannot see
+    what they will actually run — and unrecognized types are rejected because
+    FMG stores the type field unvalidated. ``None`` means the caller is not
+    setting a type (update without a type change) and is skipped; an empty
+    string (stored script whose type cannot be read) fails closed.
 
     Returns error dict if blocked, None if OK.
     """
     settings = get_settings()
     if settings.FMG_SCRIPT_SAFETY != "strict":
         return None
+    if script_type is None:
+        return None
 
-    if script_type and script_type.lower() in UNSCREENABLE_SCRIPT_TYPES:
+    normalized = script_type.lower()
+    if normalized in SCREENABLE_SCRIPT_TYPES:
+        return None
+
+    if normalized in UNSCREENABLE_SCRIPT_TYPES:
         logger.warning(f"Script blocked — unscreenable script type: {script_type}")
         return {
             "error": f"Script type '{script_type}' cannot be safety-screened because its "
             "commands can be assembled at runtime. "
             "Set FMG_SCRIPT_SAFETY=disabled to override.",
         }
-    return None
+
+    logger.warning(f"Script blocked — unrecognized script type: {script_type!r}")
+    return {
+        "error": f"Script type '{script_type}' is not a recognized screenable type "
+        "(cli, cligrp, jinja). FortiManager stores the type field unvalidated, so "
+        "unrecognized types cannot be safety-screened. "
+        "Set FMG_SCRIPT_SAFETY=disabled to override.",
+    }
 
 
 def _check_script_safety(content: str) -> dict[str, Any] | None:
