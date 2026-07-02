@@ -296,7 +296,7 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
         """
         # Import tools module dynamically
         try:
-            from fortimanager_mcp import tools
+            import importlib
 
             # Allowlist of valid tool names (auto-generated from tool modules)
             _TOOL_MODULES = {
@@ -417,13 +417,16 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
                 },
             }
 
-            # Find the tool function via allowlist
+            # Find the tool function via allowlist. In dynamic mode the tool
+            # submodules are never imported at startup, so a package-attribute
+            # lookup would always miss — import the owning module on first use
+            # (registration side effects are harmless; the initial tools/list
+            # already went out with only the discovery tools).
             tool_func = None
             for module_name, allowed_names in _TOOL_MODULES.items():
                 if tool_name in allowed_names:
-                    module = getattr(tools, module_name, None)
-                    if module:
-                        tool_func = getattr(module, tool_name, None)
+                    module = importlib.import_module(f"fortimanager_mcp.tools.{module_name}")
+                    tool_func = getattr(module, tool_name, None)
                     break
 
             if not tool_func:
@@ -584,7 +587,7 @@ def run_http() -> None:
     # Health check endpoint
     async def health_endpoint(request: Request) -> JSONResponse:
         """HTTP health check endpoint for Docker health checks."""
-        is_connected = _fmg_client is not None
+        is_connected = _fmg_client is not None and _fmg_client.is_connected
         return JSONResponse(
             {
                 "status": "healthy",
