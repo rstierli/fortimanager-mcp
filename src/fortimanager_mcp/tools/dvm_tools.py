@@ -13,6 +13,7 @@ from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_default_adom
 from fortimanager_mcp.utils.errors import client_safe_error
 from fortimanager_mcp.utils.validation import (
+    ValidationError,
     validate_adom,
     validate_device_name,
 )
@@ -208,6 +209,12 @@ async def search_devices(
         if os_version_filter:
             filters.append(["os_ver", "contain", os_version_filter])
         if connection_status:
+            # Reject typos/unexpected values instead of silently treating any
+            # non-"up" string as "down".
+            if connection_status.lower() not in ("up", "down"):
+                raise ValidationError(
+                    f"Invalid connection_status '{connection_status}'. Must be 'up' or 'down'."
+                )
             status_val = 1 if connection_status.lower() == "up" else 2
             filters.append(["conn_status", "==", status_val])
 
@@ -326,14 +333,19 @@ async def add_device(
             flags=flags,
         )
 
-        # Sanitize: strip credentials before returning
-        device_config_safe = {
-            k: v for k, v in device_config.items() if k not in ("adm_pass", "adm_passwd")
+        # Sanitize: strip credentials before returning. FMG may echo the
+        # submitted device object back (including plaintext credentials), so
+        # sanitize that dict too rather than trusting it.
+        echoed = result.get("device")
+        device_safe = {
+            k: v
+            for k, v in (echoed if isinstance(echoed, dict) else device_config).items()
+            if k not in ("adm_pass", "adm_passwd")
         }
 
         return {
             "status": "success",
-            "device": result.get("device", device_config_safe),
+            "device": device_safe,
             "task_id": result.get("taskid"),
             "message": f"Device {name} added successfully",
         }
@@ -513,6 +525,13 @@ async def add_devices_bulk(
             return {"status": "error", "message": "No devices provided"}
 
         adom = validate_adom(adom)
+
+        # Validate each caller-supplied device name before building the payload
+        # (parity with single-device add_device and delete_devices_bulk).
+        devices = [
+            {**device, "name": validate_device_name(device.get("name") or "")} for device in devices
+        ]
+
         client = _get_client()
 
         result = await client.add_device_list(
