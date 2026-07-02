@@ -1,13 +1,14 @@
 """Configuration management for FortiManager MCP server."""
 
+import json
 import logging
 import stat
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 # Compute project root (3 levels up from this file: utils -> fortimanager_mcp -> src -> project)
 _PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
@@ -107,10 +108,11 @@ class Settings(BaseSettings):
     )
 
     # MCP Allowed Hosts (for reverse proxy / Docker deployments)
-    MCP_ALLOWED_HOSTS: list[str] = Field(
+    MCP_ALLOWED_HOSTS: Annotated[list[str], NoDecode] = Field(
         default_factory=list,
         description="Additional allowed Host header values for DNS rebinding protection. "
-        "Comma-separated in env var. localhost/127.0.0.1 always allowed by SDK.",
+        'Accepts a comma-separated list (host1,host2) or a JSON array (["host1"]) in the '
+        "env var. localhost/127.0.0.1 always allowed by SDK.",
     )
 
     # MCP Streamable HTTP Transport Mode
@@ -191,6 +193,24 @@ class Settings(BaseSettings):
         default=False,
         description="Skip write operations in tests",
     )
+
+    @field_validator("MCP_ALLOWED_HOSTS", mode="before")
+    @classmethod
+    def parse_allowed_hosts(cls, v: object) -> object:
+        """Accept both comma-separated and JSON-array env values.
+
+        ``NoDecode`` disables pydantic-settings' JSON-only decoding for this
+        field, so the raw env string arrives here; without this, the
+        comma-separated form would crash settings load with a SettingsError.
+        """
+        if isinstance(v, str):
+            raw = v.strip()
+            if not raw:
+                return []
+            if raw.startswith("["):
+                return json.loads(raw)
+            return [host.strip() for host in raw.split(",") if host.strip()]
+        return v
 
     @field_validator("FORTIMANAGER_HOST")
     @classmethod

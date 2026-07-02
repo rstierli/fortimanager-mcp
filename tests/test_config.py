@@ -51,3 +51,29 @@ class TestSettings:
 
         settings = Settings()
         assert settings.MCP_STATELESS_HTTP is True
+
+    def test_allowed_hosts_comma_separated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Comma-separated MCP_ALLOWED_HOSTS parses instead of crashing settings load."""
+        monkeypatch.setenv("FORTIMANAGER_HOST", "test-fmg.example.com")
+        monkeypatch.setenv("MCP_ALLOWED_HOSTS", "mcp.example.com, alt.example.com:8000")
+
+        settings = Settings()
+        assert settings.MCP_ALLOWED_HOSTS == ["mcp.example.com", "alt.example.com:8000"]
+
+    def test_allowed_hosts_json_array(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """JSON-array MCP_ALLOWED_HOSTS (README form) still parses."""
+        monkeypatch.setenv("FORTIMANAGER_HOST", "test-fmg.example.com")
+        monkeypatch.setenv("MCP_ALLOWED_HOSTS", '["mcp.example.com", "10.1.5.62:*"]')
+
+        settings = Settings()
+        assert settings.MCP_ALLOWED_HOSTS == ["mcp.example.com", "10.1.5.62:*"]
+
+    def test_allowed_hosts_single_value_and_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A single bare host works; an empty value means no extra hosts."""
+        monkeypatch.setenv("FORTIMANAGER_HOST", "test-fmg.example.com")
+
+        monkeypatch.setenv("MCP_ALLOWED_HOSTS", "10.1.5.62:*")
+        assert Settings().MCP_ALLOWED_HOSTS == ["10.1.5.62:*"]
+
+        monkeypatch.setenv("MCP_ALLOWED_HOSTS", "")
+        assert Settings().MCP_ALLOWED_HOSTS == []
