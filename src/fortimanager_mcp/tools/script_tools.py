@@ -26,6 +26,10 @@ logger = logging.getLogger(__name__)
 
 # Script types whose commands can be assembled at runtime (Tcl), so static
 # regex screening of their content is meaningless. Blocked under strict safety.
+# "tclgrp" is precautionary: it is not in the documented type enum (cli, tcl,
+# cligrp, jinja), but FMG performs no server-side validation of the type field
+# (verified live: arbitrary type strings are stored with code 0), so client-side
+# screening is the only layer that can catch a Tcl payload hidden under it.
 UNSCREENABLE_SCRIPT_TYPES = {"tcl", "tclgrp"}
 
 
