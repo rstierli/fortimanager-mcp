@@ -847,11 +847,13 @@ async def create_service_tcp_udp(
         name = validate_object_name(name, "service")
         client = _get_client()
 
-        # FMG protocol field = service TYPE category, not IP protocol number
-        # 15 = TCP/UDP/SCTP service type (covers all port-based services)
-        # The actual protocol is determined by which portrange fields are set
-        # Verified: TFTP (UDP-only, port 69) uses protocol=15 with empty tcp-portrange
-        protocol = 15
+        # FMG stores the service protocol as an integer enum, not an IP protocol
+        # number. 5 = TCP/UDP/SCTP, covering all port-based services; the actual
+        # transport is set by which portrange fields are present. Verified live
+        # against FMG 7.6.7: every predefined port-based service stores
+        # protocol=5, and a create with the previously-used 15 is rejected with
+        # "prop[protocol]: option empty or invalid".
+        protocol = 5
 
         service: dict[str, Any] = {
             "name": name,

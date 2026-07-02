@@ -185,6 +185,26 @@ class TestServiceTools:
         assert result["name"] == "custom-http"
 
     @pytest.mark.asyncio
+    async def test_create_service_tcp_udp_sends_protocol_5(self) -> None:
+        """TCP/UDP/SCTP services must be created with protocol=5, the integer
+        enum FMG accepts (verified live: 15 is rejected as invalid)."""
+        from unittest.mock import AsyncMock
+
+        client = MagicMock()
+        client.create_service = AsyncMock(return_value={})
+
+        with patch("fortimanager_mcp.tools.object_tools.get_fmg_client", return_value=client):
+            result = await object_tools.create_service_tcp_udp(
+                adom="root",
+                name="custom-web",
+                tcp_portrange="8080",
+            )
+
+        assert result["status"] == "success"
+        _adom, service = client.create_service.await_args.args
+        assert service["protocol"] == 5
+
+    @pytest.mark.asyncio
     async def test_create_service_icmp_sends_integer_protocol(self) -> None:
         """ICMP services must be created with the integer enum FMG stores
         (protocol=1, verified live), not the string "ICMP"."""
