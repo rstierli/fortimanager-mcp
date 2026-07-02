@@ -15,6 +15,15 @@ Behavior is governed by ``FMG_INSTALL_SAFETY`` (same shape as
 - ``warn``: install proceeds, but the response carries a warning.
 - ``disabled``: previous behavior, no gate.
 
+Scope note: FortiManager's ``/securityconsole/install/preview`` is
+*device*-scoped -- it takes ``adom`` + ``scope`` (devices) but no ``pkg``
+parameter, so the preview reflects whatever is pending for those devices, not
+one named package in isolation. The package binding here is therefore enforced
+by this gate, not by the preview API: the record is keyed by
+``(adom, package, scope)`` and additionally fingerprinted by the package's
+revision counter, so an install of a given package is only authorized by a
+preview recorded for that same package whose content has not changed since.
+
 A recorded preview is only honored when its FMG task finished successfully
 (verified live via ``get_task`` at install time), is younger than
 ``PREVIEW_VALIDITY_TTL``, matches the exact device scope, and the package's
