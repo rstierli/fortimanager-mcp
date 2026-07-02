@@ -792,8 +792,9 @@ def validate_filename(filename: str) -> str:
         if char in basename and char != ".":  # Allow single dot for extension
             raise ValidationError(f"Invalid character '{char}' in filename")
 
-    # Validate with pattern: alphanumeric, underscore, hyphen, dot, space
-    if not re.match(r"^[\w\-. ]+$", basename):
+    # Validate with pattern: alphanumeric, underscore, hyphen, dot, space.
+    # fullmatch (not match with $) so a trailing newline cannot slip through.
+    if not re.fullmatch(r"[\w\-. ]+", basename):
         raise ValidationError(f"Invalid filename: {basename}")
 
     return basename
@@ -804,33 +805,47 @@ def validate_filename(filename: str) -> str:
 # =============================================================================
 
 # Dangerous FortiOS CLI commands and high-impact config changes that must be
-# blocked. FortiOS allows abbreviated commands (e.g., "exec" for "execute"),
-# so patterns handle both forms. Matching is case-insensitive and runs against
-# whitespace-normalized content so attackers can't bypass via odd spacing/case.
+# blocked. FortiOS accepts any unambiguous command-prefix abbreviation, so a
+# bare "exec"/"execute" pattern is bypassable via "ex"/"exe", and "config
+# system"/"config router" via "conf sys"/"conf rout". The keyword fragments
+# below match every valid shortening of each token. Matching is
+# case-insensitive and runs against whitespace-normalized content so attackers
+# can't bypass via odd spacing/case either.
+#
+# Each fragment expands to the keyword and all of its accepted abbreviations:
+#   _EXEC   -> ex, exe, exec, execu, execut, execute
+#   _CONFIG -> conf, confi, config
+#   _SYSTEM -> sys, syst, syste, system
+#   _ROUTER -> rout, route, router
+_EXEC = r"ex(?:e(?:c(?:u(?:te?)?)?)?)?"
+_CONFIG = r"conf(?:i(?:g)?)?"
+_SYSTEM = r"sys(?:t(?:e(?:m)?)?)?"
+_ROUTER = r"rout(?:e(?:r)?)?"
+
 DANGEROUS_SCRIPT_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     # --- Destructive / availability-impacting exec commands ---
     # Factory reset (with and without hyphen)
-    (re.compile(r"\bexec(?:ute)?\s+factory-?reset\b", re.IGNORECASE), "factory-reset"),
-    (re.compile(r"\bexec(?:ute)?\s+factoryreset\b", re.IGNORECASE), "factoryreset"),
+    (re.compile(rf"\b{_EXEC}\s+factory-?reset\b", re.IGNORECASE), "factory-reset"),
+    (re.compile(rf"\b{_EXEC}\s+factoryreset\b", re.IGNORECASE), "factoryreset"),
     # Reboot
-    (re.compile(r"\bexec(?:ute)?\s+reboot\b", re.IGNORECASE), "reboot"),
+    (re.compile(rf"\b{_EXEC}\s+reboot\b", re.IGNORECASE), "reboot"),
     # Shutdown
-    (re.compile(r"\bexec(?:ute)?\s+shutdown\b", re.IGNORECASE), "shutdown"),
+    (re.compile(rf"\b{_EXEC}\s+shutdown\b", re.IGNORECASE), "shutdown"),
     # Format disk
-    (re.compile(r"\bexec(?:ute)?\s+format\b", re.IGNORECASE), "format"),
+    (re.compile(rf"\b{_EXEC}\s+format\b", re.IGNORECASE), "format"),
     # Erase disk (with and without hyphen)
-    (re.compile(r"\bexec(?:ute)?\s+erase-?disk\b", re.IGNORECASE), "erase-disk"),
+    (re.compile(rf"\b{_EXEC}\s+erase-?disk\b", re.IGNORECASE), "erase-disk"),
     # --- High-impact config changes an attacker would use ---
     # Adding/modifying admin accounts (backdoor admin)
-    (re.compile(r"\bconfig\s+system\s+admin\b", re.IGNORECASE), "config-system-admin"),
+    (re.compile(rf"\b{_CONFIG}\s+{_SYSTEM}\s+admin\b", re.IGNORECASE), "config-system-admin"),
     # Permissive firewall rule (action accept on any policy)
     (re.compile(r"\bset\s+action\s+accept\b", re.IGNORECASE), "set-action-accept"),
     # Disabling logging (under any log config block)
     (re.compile(r"\bset\s+status\s+disable\b", re.IGNORECASE), "set-status-disable"),
     # Changing DNS resolver configuration
-    (re.compile(r"\bconfig\s+system\s+dns\b", re.IGNORECASE), "config-system-dns"),
+    (re.compile(rf"\b{_CONFIG}\s+{_SYSTEM}\s+dns\b", re.IGNORECASE), "config-system-dns"),
     # Changing static/router config (routes)
-    (re.compile(r"\bconfig\s+router\s+static\b", re.IGNORECASE), "config-router-static"),
+    (re.compile(rf"\b{_CONFIG}\s+{_ROUTER}\s+static\b", re.IGNORECASE), "config-router-static"),
 ]
 
 

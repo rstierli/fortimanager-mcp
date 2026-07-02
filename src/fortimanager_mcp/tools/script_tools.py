@@ -24,6 +24,33 @@ from fortimanager_mcp.utils.validation import (
 
 logger = logging.getLogger(__name__)
 
+# Script types whose commands can be assembled at runtime (Tcl), so static
+# regex screening of their content is meaningless. Blocked under strict safety.
+UNSCREENABLE_SCRIPT_TYPES = {"tcl", "tclgrp"}
+
+
+def _check_script_type_safety(script_type: str | None) -> dict[str, Any] | None:
+    """Block script types that defeat static content screening.
+
+    Under strict safety, Tcl scripts (tcl, tclgrp) are rejected because their
+    commands can be built dynamically at execution time — the regex content
+    check cannot see what they will actually run.
+
+    Returns error dict if blocked, None if OK.
+    """
+    settings = get_settings()
+    if settings.FMG_SCRIPT_SAFETY != "strict":
+        return None
+
+    if script_type and script_type.lower() in UNSCREENABLE_SCRIPT_TYPES:
+        logger.warning(f"Script blocked — unscreenable script type: {script_type}")
+        return {
+            "error": f"Script type '{script_type}' cannot be safety-screened because its "
+            "commands can be assembled at runtime. "
+            "Set FMG_SCRIPT_SAFETY=disabled to override.",
+        }
+    return None
+
 
 def _check_script_safety(content: str) -> dict[str, Any] | None:
     """Check script content for dangerous commands based on safety config.
@@ -75,8 +102,15 @@ async def _check_stored_script_safety(client: Any, adom: str, script: str) -> di
         }
 
     content = ""
+    stored_type = ""
     if isinstance(stored, dict):
         content = stored.get("content") or ""
+        stored_type = stored.get("type") or ""
+
+    type_error = _check_script_type_safety(str(stored_type))
+    if type_error:
+        return type_error
+
     if not isinstance(content, str):
         content = str(content)
 
@@ -197,6 +231,9 @@ async def create_script(
         Created script details
     """
     # Safety check before creating
+    type_error = _check_script_type_safety(script_type)
+    if type_error:
+        return type_error
     safety_error = _check_script_safety(content)
     if safety_error:
         return safety_error
@@ -251,6 +288,10 @@ async def update_script(
     Returns:
         Updated script details
     """
+    # Block unscreenable script types (e.g. Tcl) when they are being set
+    type_error = _check_script_type_safety(script_type)
+    if type_error:
+        return type_error
     # Safety check if content is being updated
     if content is not None:
         safety_error = _check_script_safety(content)
