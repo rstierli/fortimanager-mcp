@@ -187,6 +187,22 @@ class FortiManagerClient:
                 error_msg = response.get("status", {}).get("message", "Login failed")
                 raise AuthenticationError(f"FortiManager login failed: {error_msg}")
 
+            # With an API token, pyfmg's login() performs no network round-trip
+            # (it just stores the key), so an unreachable FMG or a bad token is
+            # not detected until the first real request -- which would leave
+            # connect() reporting success and /health reporting connected while
+            # nothing actually works. Probe once here so both reflect reality.
+            # Session (username/password) auth already round-trips in login().
+            if self.api_token:
+                vcode, vresp = await self._run_fmg_call(self._fmg.get, "/sys/status")
+                if vcode != 0:
+                    detail = (
+                        vresp.get("status", {}).get("message", "verification failed")
+                        if isinstance(vresp, dict)
+                        else str(vresp)
+                    )
+                    raise ConnectionError(f"FortiManager token verification failed: {detail}")
+
             self._connected = True
             self._ever_connected = True
             logger.info("Successfully connected to FortiManager")

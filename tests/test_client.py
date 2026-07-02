@@ -90,6 +90,8 @@ class TestVerifySSLWarning:
         # Stub the FortiManager constructor so connect() doesn't try the network.
         stub = MagicMock()
         stub.login.return_value = (0, {"status": {"code": 0, "message": "OK"}})
+        # Token-auth connect() probes /sys/status to confirm reachability.
+        stub.get.return_value = (0, {"status": {"code": 0}})
         monkeypatch.setattr("fortimanager_mcp.api.client.FortiManager", lambda *a, **kw: stub)
 
         client = FortiManagerClient(host="test-fmg.example.com", api_token="t", verify_ssl=False)
@@ -116,6 +118,8 @@ class TestVerifySSLWarning:
         """Default verify_ssl=True path must NOT emit the verify_ssl warning."""
         stub = MagicMock()
         stub.login.return_value = (0, {"status": {"code": 0, "message": "OK"}})
+        # Token-auth connect() probes /sys/status to confirm reachability.
+        stub.get.return_value = (0, {"status": {"code": 0}})
         monkeypatch.setattr("fortimanager_mcp.api.client.FortiManager", lambda *a, **kw: stub)
         monkeypatch.setattr(FortiManagerClient, "_detect_version", lambda self: None)
 
@@ -1096,3 +1100,68 @@ class TestMoveResilience:
         args, kwargs = mock_fmg_instance.move.call_args
         assert args == ("/pm/config/x", {"option": "after", "target": "7"})
         assert kwargs == {}
+
+
+class TestTokenAuthLivenessProbe:
+    """API-token login is a no-op network-wise in pyfmg, so connect() probes
+    /sys/status once to confirm the FMG is actually reachable before reporting
+    connected -- otherwise /health would show connected against a dead FMG."""
+
+    @pytest.mark.asyncio
+    async def test_token_connect_probes_sys_status(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        stub = MagicMock()
+        stub.login.return_value = (0, {"status": {"code": 0}})
+        stub.get.return_value = (0, {"status": {"code": 0}})
+        monkeypatch.setattr("fortimanager_mcp.api.client.FortiManager", lambda *a, **kw: stub)
+
+        client = FortiManagerClient(host="fmg.example.com", api_token="t")
+        await client.connect()
+
+        assert client.is_connected
+        stub.get.assert_called_once()
+        assert stub.get.call_args.args[0] == "/sys/status"
+
+    @pytest.mark.asyncio
+    async def test_token_connect_fails_when_probe_errors(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Unreachable FMG: the probe raises, so connect() fails instead of
+        falsely reporting connected."""
+        stub = MagicMock()
+        stub.login.return_value = (0, {"status": {"code": 0}})
+        stub.get.side_effect = OSError("connection refused")
+        monkeypatch.setattr("fortimanager_mcp.api.client.FortiManager", lambda *a, **kw: stub)
+
+        client = FortiManagerClient(host="fmg.example.com", api_token="t")
+        with pytest.raises(ConnectionError):
+            await client.connect()
+        assert not client.is_connected
+
+    @pytest.mark.asyncio
+    async def test_token_connect_fails_when_probe_returns_error_code(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A non-zero status from the probe (e.g. token lacks access) also fails
+        the connect rather than reporting connected."""
+        stub = MagicMock()
+        stub.login.return_value = (0, {"status": {"code": 0}})
+        stub.get.return_value = (-11, {"status": {"message": "No permission for the resource"}})
+        monkeypatch.setattr("fortimanager_mcp.api.client.FortiManager", lambda *a, **kw: stub)
+
+        client = FortiManagerClient(host="fmg.example.com", api_token="t")
+        with pytest.raises(ConnectionError):
+            await client.connect()
+        assert not client.is_connected
+
+    @pytest.mark.asyncio
+    async def test_session_connect_does_not_probe(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Username/password login already round-trips, so no extra probe."""
+        stub = MagicMock()
+        stub.login.return_value = (0, {"status": {"code": 0}})
+        monkeypatch.setattr("fortimanager_mcp.api.client.FortiManager", lambda *a, **kw: stub)
+
+        client = FortiManagerClient(host="fmg.example.com", username="admin", password="pw")
+        await client.connect()
+
+        assert client.is_connected
+        stub.get.assert_not_called()
