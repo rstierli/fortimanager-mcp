@@ -426,7 +426,8 @@ def is_duplicate_error(error: Exception) -> bool:
         True if error indicates duplicate entry
     """
     if isinstance(error, FortiManagerMCPError):
-        if error.code == -6:
+        # -2 "Object already exists" per ERROR_CODE_MAP (verified live).
+        if error.code == -2:
             return True
     if isinstance(error, ObjectError):
         msg = str(error).lower()
@@ -444,7 +445,9 @@ def is_permission_error(error: Exception) -> bool:
         True if error is permission-related
     """
     if isinstance(error, FortiManagerMCPError):
-        if error.code == -3:
+        # -11 no permission / stale session, -10147 no write permission,
+        # per ERROR_CODE_MAP (verified live). -3 is not-found, not permission.
+        if error.code in (-11, -10147):
             return True
     return isinstance(error, PermissionError)
 
@@ -459,6 +462,8 @@ def is_auth_error(error: Exception) -> bool:
         True if error is authentication-related
     """
     if isinstance(error, FortiManagerMCPError):
-        if error.code in (-2, -20, -21):
+        # -22 login fail per ERROR_CODE_MAP (verified live). -2 is a
+        # duplicate-object error, not an auth failure.
+        if error.code == -22:
             return True
     return isinstance(error, AuthenticationError)

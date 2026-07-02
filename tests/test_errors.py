@@ -236,10 +236,15 @@ class TestIsObjectInUseError:
 class TestIsDuplicateError:
     """Tests for is_duplicate_error function."""
 
-    def test_with_code_minus_6(self):
-        """Test detection by error code -6."""
-        error = FortiManagerMCPError("Error", code=-6)
+    def test_with_code_minus_2(self):
+        """Test detection by error code -2 (object already exists)."""
+        error = FortiManagerMCPError("Error", code=-2)
         assert is_duplicate_error(error) is True
+
+    def test_code_minus_6_is_not_duplicate(self):
+        """-6 is 'invalid URL' per ERROR_CODE_MAP, not a duplicate."""
+        error = FortiManagerMCPError("Error", code=-6)
+        assert is_duplicate_error(error) is False
 
     def test_with_already_exists_message(self):
         """Test detection by 'already exists' message."""
@@ -260,10 +265,20 @@ class TestIsDuplicateError:
 class TestIsPermissionError:
     """Tests for is_permission_error function."""
 
-    def test_with_code_minus_3(self):
-        """Test detection by error code -3."""
-        error = FortiManagerMCPError("Error", code=-3)
+    def test_with_code_minus_11(self):
+        """Test detection by error code -11 (no permission / stale session)."""
+        error = FortiManagerMCPError("Error", code=-11)
         assert is_permission_error(error) is True
+
+    def test_with_code_minus_10147(self):
+        """Test detection by error code -10147 (no write permission)."""
+        error = FortiManagerMCPError("Error", code=-10147)
+        assert is_permission_error(error) is True
+
+    def test_code_minus_3_is_not_permission(self):
+        """-3 is 'object does not exist' per ERROR_CODE_MAP, not permission."""
+        error = FortiManagerMCPError("Error", code=-3)
+        assert is_permission_error(error) is False
 
     def test_with_permission_error_instance(self):
         """Test detection by PermissionError type."""
@@ -315,20 +330,15 @@ class TestClientSafeError:
 class TestIsAuthError:
     """Tests for is_auth_error function."""
 
-    def test_with_code_minus_2(self):
-        """Test detection by error code -2."""
+    def test_with_code_minus_22(self):
+        """Test detection by error code -22 (login fail)."""
+        error = FortiManagerMCPError("Error", code=-22)
+        assert is_auth_error(error) is True
+
+    def test_code_minus_2_is_not_auth(self):
+        """-2 is 'object already exists' per ERROR_CODE_MAP, not auth."""
         error = FortiManagerMCPError("Error", code=-2)
-        assert is_auth_error(error) is True
-
-    def test_with_code_minus_20(self):
-        """Test detection by error code -20."""
-        error = FortiManagerMCPError("Error", code=-20)
-        assert is_auth_error(error) is True
-
-    def test_with_code_minus_21(self):
-        """Test detection by error code -21."""
-        error = FortiManagerMCPError("Error", code=-21)
-        assert is_auth_error(error) is True
+        assert is_auth_error(error) is False
 
     def test_with_authentication_error_instance(self):
         """Test detection by AuthenticationError type."""
