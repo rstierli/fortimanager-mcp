@@ -872,9 +872,17 @@ def _extract_service_details(service_data: dict[str, Any]) -> dict[str, Any]:
         "protocol": service_data.get("protocol", ""),
     }
 
-    # TCP/UDP/SCTP services (protocol == 15 means TCP/UDP/SCTP type)
+    # FMG returns the service protocol as an integer enum (verified live against
+    # FMG 7.6.7: TCP/UDP/SCTP=5, ICMP=1, ICMP6=6, IP=2). Some endpoints/versions
+    # surface the string alias instead, and the legacy code assumed 15 for
+    # TCP/UDP, so match every observed representation rather than a single value.
     protocol = service_data.get("protocol", "")
-    if protocol == 15 or str(protocol) == "15":
+    protocol_key = str(protocol).upper()
+    tcp_udp = {"5", "15", "TCP/UDP/SCTP"}
+    icmp = {"1", "ICMP"}
+    icmp6 = {"6", "ICMP6"}
+
+    if protocol_key in tcp_udp:
         ports: dict[str, str] = {}
         for key in ("tcp-portrange", "udp-portrange", "sctp-portrange"):
             value = service_data.get(key)
@@ -882,8 +890,8 @@ def _extract_service_details(service_data: dict[str, Any]) -> dict[str, Any]:
                 ports[key] = value
         details["ports"] = ports
         details["category"] = "TCP/UDP/SCTP"
-    elif str(protocol).upper() == "ICMP":
-        details["category"] = "ICMP"
+    elif protocol_key in icmp or protocol_key in icmp6:
+        details["category"] = "ICMP6" if protocol_key in icmp6 else "ICMP"
         if "icmptype" in service_data:
             details["icmp_type"] = service_data["icmptype"]
         if "icmpcode" in service_data:

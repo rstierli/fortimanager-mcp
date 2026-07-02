@@ -184,6 +184,27 @@ class TestServiceTools:
         assert result["status"] == "success"
         assert result["name"] == "custom-http"
 
+    @pytest.mark.asyncio
+    async def test_create_service_icmp_sends_integer_protocol(self) -> None:
+        """ICMP services must be created with the integer enum FMG stores
+        (protocol=1, verified live), not the string "ICMP"."""
+        from unittest.mock import AsyncMock
+
+        client = MagicMock()
+        client.create_service = AsyncMock(return_value={})
+
+        with patch("fortimanager_mcp.tools.object_tools.get_fmg_client", return_value=client):
+            result = await object_tools.create_service_icmp(
+                adom="root",
+                name="custom-ping",
+                icmp_type=8,
+            )
+
+        assert result["status"] == "success"
+        _adom, service = client.create_service.await_args.args
+        assert service["protocol"] == 1
+        assert service["icmptype"] == 8
+
 
 class TestInputValidationRejection:
     """HIGH 1: malformed identifiers must be rejected before any API call."""

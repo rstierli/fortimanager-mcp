@@ -921,9 +921,15 @@ async def create_service_icmp(
         name = validate_object_name(name, "service")
         client = _get_client()
 
+        # FMG stores the service protocol as an integer enum, not a string.
+        # 1 = ICMP (verified live against FMG 7.6.7: every predefined ICMP
+        # service -- ping, all-icmp, TIMESTAMP -- reads back with protocol=1).
+        # Sending the "ICMP" string relied on FMG's alias coercion; the integer
+        # is the canonical stored code and matches create_service_tcp_udp's
+        # integer approach.
         service: dict[str, Any] = {
             "name": name,
-            "protocol": "ICMP",
+            "protocol": 1,
         }
 
         if icmp_type is not None:

@@ -573,3 +573,50 @@ class TestResolveServiceSafety:
             )
 
         assert result["status"] == "error"
+
+
+class TestServiceProtocolParsing:
+    """_extract_service_details must classify by the integer protocol enum FMG
+    actually returns (verified live on FMG 7.6.7: TCP/UDP/SCTP=5, ICMP=1,
+    ICMP6=6, IP=2), while staying backward-compatible with the string aliases
+    and the legacy 15 some paths/versions produce."""
+
+    def test_tcp_udp_integer_5(self) -> None:
+        d = policy_tools._extract_service_details(
+            {"name": "all_tcp", "protocol": 5, "tcp-portrange": ["1-65535"]}
+        )
+        assert d["category"] == "TCP/UDP/SCTP"
+        assert d["ports"]["tcp-portrange"] == ["1-65535"]
+
+    def test_tcp_udp_legacy_15(self) -> None:
+        d = policy_tools._extract_service_details(
+            {"name": "custom", "protocol": 15, "tcp-portrange": "8080"}
+        )
+        assert d["category"] == "TCP/UDP/SCTP"
+
+    def test_icmp_integer_1(self) -> None:
+        d = policy_tools._extract_service_details(
+            {"name": "ping", "protocol": 1, "icmptype": 8, "icmpcode": 0}
+        )
+        assert d["category"] == "ICMP"
+        assert d["icmp_type"] == 8
+        assert d["icmp_code"] == 0
+
+    def test_icmp_string_alias(self) -> None:
+        d = policy_tools._extract_service_details(
+            {"name": "ping", "protocol": "ICMP", "icmptype": 8}
+        )
+        assert d["category"] == "ICMP"
+        assert d["icmp_type"] == 8
+
+    def test_icmp6_integer_6(self) -> None:
+        d = policy_tools._extract_service_details({"name": "ping6", "protocol": 6, "icmptype": 128})
+        assert d["category"] == "ICMP6"
+        assert d["icmp_type"] == 128
+
+    def test_ip_integer_2(self) -> None:
+        d = policy_tools._extract_service_details(
+            {"name": "GRE", "protocol": 2, "protocol-number": 47}
+        )
+        assert d["category"] == "IP"
+        assert d["protocol_number"] == 47
