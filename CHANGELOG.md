@@ -7,12 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.9.0] - 2026-07-03
 
-Correctness and hardening batch from a full code review + security audit. 473 unit tests pass.
+Correctness and hardening batch from a full code review + security audit, plus follow-ups verified against a live FortiManager. 492 unit tests pass.
+
+### Fixed (live-FMG follow-ups)
+
+- **Service objects are parsed and created using the integer protocol enum FMG actually stores.** Verified live on FMG 7.6.7: `firewall service custom` returns `protocol` as an integer (TCP/UDP/SCTP=5, ICMP=1, ICMP6=6, IP=2). `_extract_service_details` previously only recognized `15` for TCP/UDP and the string `"ICMP"`, so real services were misclassified (a TCP service read back as category "IP", an ICMP service lost its type). It now classifies across every observed representation: integers 1/2/5/6, their string forms, the string aliases, and the legacy 15. `create_service_icmp` now sends `protocol: 1` instead of the string `"ICMP"`, matching the stored code and the integer approach `create_service_tcp_udp` already uses.
+- **API-token connections verify reachability at connect time.** pyfmg's apikey "login" makes no network call, so a bad token or an unreachable FMG went undetected and `/health` reported `fortimanager_connected: true` against a dead FMG. Token-mode `connect()` now probes `/sys/status` once and fails closed if it errors or returns a non-zero code. Session (username/password) auth already round-trips in login and is unchanged.
+
+### Documented
+
+- **The preview-before-install gate's package binding is enforced by the gate, not the preview API.** FortiManager's `/securityconsole/install/preview` is device-scoped (`adom` + `scope`, no `pkg` parameter), so a preview reflects whatever is pending for those devices. `install_gate` makes this explicit: the package binding comes from the record key `(adom, package, scope)` plus the package revision fingerprint, so an install is only authorized by a preview recorded for that same package with unchanged content.
 
 ### Fixed
 - **Every FortiManager API call no longer blocks the event loop.** pyfmg is a synchronous requests-based library; login/logout/get/add/set/update/delete/execute/move now run via `asyncio.to_thread` under a serializing lock (the shared pyfmg session is not thread-safe). Concurrent MCP sessions, `/health`, and retry backoffs stay responsive during slow FMG round-trips, and `wait_for_task`'s documented `POLL_CALL_TIMEOUT` bound is actually enforceable.
 - **Dynamic mode (`FMG_TOOL_MODE=dynamic`) could never execute any tool.** `execute_fortimanager_tool` looked tool modules up as package attributes, but dynamic mode never imports them, so every call returned "Tool not found". The owning module is now imported on first use.
-- **`move()` / `move_firewall_policy` gets the same reconnect-once + transient-retry resilience as every other verb** — it previously bypassed `_execute_resilient`, so a routine policy reorder on an idle-dropped session hard-failed with a raw -11.
+- **`move()` / `move_firewall_policy` gets the same reconnect-once + transient-retry resilience as every other verb.** It previously bypassed `_execute_resilient`, so a routine policy reorder on an idle-dropped session hard-failed with a raw -11.
 - **`MCP_ALLOWED_HOSTS` accepts the comma-separated form its own description promised.** Previously only a JSON array parsed; `host1,host2` crashed settings load (and therefore server startup) with a `SettingsError`. Both forms now work.
 - **`is_permission_error` / `is_auth_error` / `is_duplicate_error` matched FMG error codes contradicting the verified `ERROR_CODE_MAP`** (-3 is not-found, not permission; -2 is duplicate, not auth; -6 is invalid URL, not duplicate). Corrected to -11/-10147, -22, and -2 respectively; tests updated to match.
 - **Service resolution in `get_policy_services` no longer recurses forever on a circular service-group reference**, and permission/connection failures during lookup now surface as tool errors instead of being mislabeled "service not found".
