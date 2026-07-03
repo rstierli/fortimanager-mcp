@@ -81,15 +81,25 @@ async def _tcp_udp_protocol(client: FortiManagerClient, adom: str) -> int:
             return proto
 
     # Naming-agnostic fallback: scan the service list for any port-based entry.
+    # fields bounds the payload; large ADOMs return hundreds of full objects.
     try:
-        for svc in await client.list_services(adom=adom):
+        services = await client.list_services(
+            adom=adom,
+            fields=["name", "protocol", "tcp-portrange", "udp-portrange", "sctp-portrange"],
+        )
+        for svc in services:
             proto = _port_based_protocol(svc)
             if proto is not None:
                 _TCP_UDP_PROTOCOL_CACHE[adom] = proto
                 return proto
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"TCP/UDP protocol scan of ADOM '{adom}' failed: {e}")
 
+    logger.warning(
+        f"Could not detect the TCP/UDP service protocol code for ADOM '{adom}'; "
+        f"using {_TCP_UDP_PROTOCOL_FALLBACK}. On builds that use a different code "
+        "(e.g. FMG 7.6.6 uses 5) service creation may be rejected."
+    )
     return _TCP_UDP_PROTOCOL_FALLBACK
 
 
