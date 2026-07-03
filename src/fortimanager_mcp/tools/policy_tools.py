@@ -12,13 +12,14 @@ from typing import Any
 from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_settings
-from fortimanager_mcp.utils.errors import client_safe_error
+from fortimanager_mcp.utils.errors import ResourceNotFoundError, client_safe_error
 from fortimanager_mcp.utils.install_gate import package_revision, record_preview
 from fortimanager_mcp.utils.responses import error_response
 from fortimanager_mcp.utils.task_guard import TaskSlotsExhausted, spawn_guarded
 from fortimanager_mcp.utils.validation import (
     check_policy_permissiveness,
     validate_adom,
+    validate_move_position,
     validate_package_name,
     validate_policy_name,
 )
@@ -756,6 +757,7 @@ async def move_firewall_policy(
     try:
         adom = validate_adom(adom)
         package = validate_package_name(package)
+        position = validate_move_position(position)
         client = _get_client()
         await client.move_firewall_policy(adom, package, policyid, target_policyid, position)
 
@@ -898,40 +900,52 @@ async def _resolve_single_service(
     client: Any,
     adom: str,
     service_name: str,
+    _seen: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     """Resolve a single service name to its definition.
 
-    Tries service custom first, then service group. Returns an
-    error entry if neither is found.
+    Tries service custom first, then service group. Returns an error entry
+    if neither exists. Only not-found errors fall through to the next lookup;
+    real failures (permission, connection) propagate to the caller instead of
+    being mislabeled as "not found". ``_seen`` carries the group names already
+    being resolved on this path so a circular group reference terminates
+    instead of recursing forever.
     """
+    if service_name in _seen:
+        return {
+            "name": service_name,
+            "type": "group",
+            "error": f"Circular group reference: '{service_name}' is already being resolved",
+        }
+
     # Try as individual service first
     try:
         svc = await client.get_service(adom, service_name)
         return _extract_service_details(svc)
-    except Exception:
+    except ResourceNotFoundError:
         pass
 
     # Try as service group
     try:
         group = await client.get_service_group(adom, service_name)
-        members = group.get("member", [])
-        # Recursively resolve group members
-        resolved_members = []
-        if members:
-            tasks = [_resolve_single_service(client, adom, m) for m in members]
-            resolved_members = list(await asyncio.gather(*tasks))
+    except ResourceNotFoundError:
         return {
             "name": service_name,
-            "type": "group",
-            "members": resolved_members,
+            "type": "unknown",
+            "error": f"Service '{service_name}' not found as custom service or group",
         }
-    except Exception:
-        pass
 
+    members = group.get("member", [])
+    # Recursively resolve group members
+    resolved_members = []
+    if members:
+        child_seen = _seen | {service_name}
+        tasks = [_resolve_single_service(client, adom, m, child_seen) for m in members]
+        resolved_members = list(await asyncio.gather(*tasks))
     return {
         "name": service_name,
-        "type": "unknown",
-        "error": f"Service '{service_name}' not found as custom service or group",
+        "type": "group",
+        "members": resolved_members,
     }
 
 

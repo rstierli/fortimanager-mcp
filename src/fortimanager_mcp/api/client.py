@@ -112,6 +112,11 @@ class FortiManagerClient:
         # a waiter detect that a peer already reconnected while it blocked.
         self._reconnect_lock = asyncio.Lock()
         self._reconnect_generation = 0
+        # pyfmg is a synchronous requests-based library and its session is not
+        # thread-safe, so every pyfmg call runs in a worker thread (keeping the
+        # event loop responsive) but under this lock (keeping calls serialized,
+        # matching the single-session semantics the FMG expects).
+        self._request_lock = asyncio.Lock()
 
         logger.info(f"Initialized FortiManager client for {self.host}")
 
@@ -176,7 +181,7 @@ class FortiManagerClient:
                     "No authentication provided. Set API token or username/password."
                 )
 
-            code, response = self._fmg.login()
+            code, response = await self._run_fmg_call(self._fmg.login)
 
             if code != 0:
                 error_msg = response.get("status", {}).get("message", "Login failed")
@@ -200,7 +205,7 @@ class FortiManagerClient:
         logger.info("Disconnecting from FortiManager")
 
         try:
-            self._fmg.logout()
+            await self._run_fmg_call(self._fmg.logout)
         except Exception as e:
             logger.warning(f"Logout failed: {e}")
         finally:
@@ -387,6 +392,20 @@ class FortiManagerClient:
             return self._SCRIPT_TARGET_MAP[value]
         return value
 
+    async def _run_fmg_call(self, func: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+        """Run a synchronous pyfmg call without blocking the event loop.
+
+        pyfmg does blocking ``requests`` I/O, so the call is offloaded to a
+        worker thread; the lock keeps calls serialized because the shared
+        pyfmg session is not thread-safe. If an outer ``asyncio.wait_for``
+        cancels the await, the worker thread finishes in the background —
+        the lock is released at cancellation, which is acceptable: the next
+        call re-checks connection state and the FMG treats each JSON-RPC
+        request independently.
+        """
+        async with self._request_lock:
+            return await asyncio.to_thread(func, *args, **kwargs)
+
     def _ensure_connected(self) -> FortiManager:
         """Ensure client is connected and return pyfmg instance."""
         if not self._connected or not self._fmg:
@@ -503,7 +522,7 @@ class FortiManagerClient:
         async def _factory() -> Any:
             fmg = self._ensure_connected()
             method = getattr(fmg, verb)
-            code, response = method(url, **kwargs)
+            code, response = await self._run_fmg_call(method, url, **kwargs)
             return self._handle_response(code, response, f"{verb.upper()} {url}")
 
         return await self._execute_resilient(_factory)
@@ -569,17 +588,23 @@ class FortiManagerClient:
         return await self._generic_request("execute", url, **kwargs)
 
     async def move(self, url: str, option: str, target: str) -> Any:
-        """Execute MOVE request.
+        """Execute MOVE request with bounded reconnect + transient-retry resilience.
 
         Args:
             url: The URL of the object to move
             option: "before" or "after"
             target: Target object ID (as string)
         """
-        fmg = self._ensure_connected()
-        # Pass as dict in args (not kwargs) so it merges at top level, not in 'data'
-        code, response = fmg.move(url, {"option": option, "target": target})
-        return self._handle_response(code, response, f"MOVE {url}")
+
+        async def _factory() -> Any:
+            fmg = self._ensure_connected()
+            # Pass as dict in args (not kwargs) so it merges at top level, not in 'data'
+            code, response = await self._run_fmg_call(
+                fmg.move, url, {"option": option, "target": target}
+            )
+            return self._handle_response(code, response, f"MOVE {url}")
+
+        return await self._execute_resilient(_factory)
 
     # =========================================================================
     # System Status (from sys.json)

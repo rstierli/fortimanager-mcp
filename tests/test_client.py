@@ -1045,3 +1045,54 @@ class TestScriptTargetMapping:
 
         params = mock_fmg_instance.get.call_args.kwargs
         assert params["filter"] == [["target", "weird_op", "remote_device"]]
+
+
+class TestMoveResilience:
+    """`move()` must get the same reconnect-once + retry treatment as the
+    other verbs (it previously bypassed `_execute_resilient` entirely)."""
+
+    @pytest.mark.asyncio
+    async def test_move_reconnects_on_stale_session(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A stale-session (-11) response on move triggers one reconnect and a retry."""
+        reconnects: list[str] = []
+
+        async def fake_force_reconnect(self_: FortiManagerClient) -> None:
+            reconnects.append("reconnect")
+
+        monkeypatch.setattr(FortiManagerClient, "_force_reconnect", fake_force_reconnect)
+
+        mock_fmg_instance.move.side_effect = [
+            (-11, {"status": {"message": "No permission for the resource"}}),
+            (0, {"status": {"message": "OK"}}),
+        ]
+
+        result = await mock_client.move(
+            "/pm/config/adom/root/pkg/default/firewall/policy/10",
+            option="before",
+            target="5",
+        )
+
+        assert result == {"status": {"message": "OK"}}
+        assert reconnects == ["reconnect"]
+        assert mock_fmg_instance.move.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_move_passes_option_target_as_positional_dict(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+    ) -> None:
+        """Option/target must merge at the datagram top level (positional dict),
+        not inside 'data' (kwargs)."""
+        mock_fmg_instance.move.return_value = (0, {})
+
+        await mock_client.move("/pm/config/x", option="after", target="7")
+
+        args, kwargs = mock_fmg_instance.move.call_args
+        assert args == ("/pm/config/x", {"option": "after", "target": "7"})
+        assert kwargs == {}

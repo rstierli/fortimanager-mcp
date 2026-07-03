@@ -34,6 +34,14 @@ This security policy covers the MCP server code in this repository. It does NOT 
 - The MCP protocol (report to the MCP specification maintainers)
 - Third-party dependencies (report to their respective maintainers)
 
+## Dependency auditing
+
+CI runs `pip-audit` against project dependencies on every build. The `pyfmg`
+dependency is installed via a VCS direct reference and is pinned to a full
+commit SHA, which is tamper-resistant and reproducible but not covered by
+`pip-audit` (it skips VCS references). Its upstream is therefore monitored
+manually, and the pinned commit is reviewed before any bump.
+
 ## Security Best Practices
 
 When using this MCP server:

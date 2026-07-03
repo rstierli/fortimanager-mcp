@@ -268,7 +268,7 @@ class TestSpawnSitesAreGuarded:
         client = MagicMock()
         client.execute_script = AsyncMock()
         # Stored-script safety check runs before the spawn; give it a benign body.
-        client.get_script = AsyncMock(return_value={"content": "get system status"})
+        client.get_script = AsyncMock(return_value={"type": "cli", "content": "get system status"})
         with patch.object(script_tools, "get_fmg_client", return_value=client):
             result = await script_tools.execute_script_on_device(
                 adom="root", script="audit", device="FGT1"

@@ -5,6 +5,30 @@ All notable changes to FortiManager MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Correctness and hardening batch from a full code review + security audit. 473 unit tests pass.
+
+### Fixed
+- **Every FortiManager API call no longer blocks the event loop.** pyfmg is a synchronous requests-based library; login/logout/get/add/set/update/delete/execute/move now run via `asyncio.to_thread` under a serializing lock (the shared pyfmg session is not thread-safe). Concurrent MCP sessions, `/health`, and retry backoffs stay responsive during slow FMG round-trips, and `wait_for_task`'s documented `POLL_CALL_TIMEOUT` bound is actually enforceable.
+- **Dynamic mode (`FMG_TOOL_MODE=dynamic`) could never execute any tool.** `execute_fortimanager_tool` looked tool modules up as package attributes, but dynamic mode never imports them, so every call returned "Tool not found". The owning module is now imported on first use.
+- **`move()` / `move_firewall_policy` gets the same reconnect-once + transient-retry resilience as every other verb** — it previously bypassed `_execute_resilient`, so a routine policy reorder on an idle-dropped session hard-failed with a raw -11.
+- **`MCP_ALLOWED_HOSTS` accepts the comma-separated form its own description promised.** Previously only a JSON array parsed; `host1,host2` crashed settings load (and therefore server startup) with a `SettingsError`. Both forms now work.
+- **`is_permission_error` / `is_auth_error` / `is_duplicate_error` matched FMG error codes contradicting the verified `ERROR_CODE_MAP`** (-3 is not-found, not permission; -2 is duplicate, not auth; -6 is invalid URL, not duplicate). Corrected to -11/-10147, -22, and -2 respectively; tests updated to match.
+- **Service resolution in `get_policy_services` no longer recurses forever on a circular service-group reference**, and permission/connection failures during lookup now surface as tool errors instead of being mislabeled "service not found".
+- **`/health` reports the client's actual connection state** instead of merely whether the client object exists.
+- **`add_device` sanitizes the FMG-echoed device object**, so a response echoing the submitted config can no longer leak `adm_pass` back to the caller.
+- **`search_devices` rejects invalid `connection_status` values** instead of silently treating any non-"up" string (including typos) as "down".
+- **`validate_filename` rejects a trailing newline** (`$`-anchored match replaced with `fullmatch`).
+
+### Security
+- **Script-safety patterns now cover FortiOS command-prefix abbreviations** (`ex`/`exe`/`execu…` for `execute`, `conf sys`/`conf rout` for the config stanzas), which previously bypassed the strict-mode denylist. Script types are now **allowlisted** under `FMG_SCRIPT_SAFETY=strict` at create, update, and execute time: only the documented content-screenable types (`cli`, `cligrp`, `jinja`) pass; Tcl types (`tcl`, `tclgrp`) are refused because their commands can be assembled at runtime, and unrecognized types are refused because FortiManager stores the `type` field without any server-side validation (verified live: arbitrary type strings are accepted with code 0), so a Tcl payload could otherwise be filed under an invented type. A stored script whose type cannot be read fails closed at execute time. The screen remains defense-in-depth; a least-privilege FMG API account is the primary control.
+- **All GitHub Actions pinned to full commit SHAs** (previously mutable `@vN` tags); Docker publish now emits provenance attestations (`mode=max`) and an SBOM; the `uv` builder image is version-pinned instead of `:latest`.
+- **Input validation wired into object tools**: IPv4/subnet/FQDN validation on address creation, position validation on policy move, device-name validation on bulk device add (parity with the single-device and bulk-delete paths).
+
+### Changed
+- CI's pip-audit step documents that the git-pinned pyfmg dependency is out of its scope (VCS direct references are skipped); SECURITY.md gained a "Dependency auditing" section describing how pyfmg is tracked.
+
 ## [1.8.0] - 2026-07-01
 
 Opt-in stateless Streamable HTTP transport for multi-replica / load-balanced deployments. 438 unit tests pass.

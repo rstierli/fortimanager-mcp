@@ -15,7 +15,13 @@ from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_default_adom
 from fortimanager_mcp.utils.errors import client_safe_error
-from fortimanager_mcp.utils.validation import validate_adom, validate_object_name
+from fortimanager_mcp.utils.validation import (
+    validate_adom,
+    validate_fqdn,
+    validate_ipv4_address,
+    validate_ipv4_subnet,
+    validate_object_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +161,10 @@ async def create_address_subnet(
     try:
         adom = validate_adom(adom)
         name = validate_object_name(name, "address")
+        if "/" in subnet or " " in subnet:
+            subnet = validate_ipv4_subnet(subnet)
+        else:
+            subnet = validate_ipv4_address(subnet)
         client = _get_client()
 
         # Parse subnet - handle both CIDR and space-separated formats
@@ -226,6 +236,7 @@ async def create_address_host(
     try:
         adom = validate_adom(adom)
         name = validate_object_name(name, "address")
+        ip = validate_ipv4_address(ip)
         client = _get_client()
 
         address: dict[str, Any] = {
@@ -283,6 +294,7 @@ async def create_address_fqdn(
     try:
         adom = validate_adom(adom)
         name = validate_object_name(name, "address")
+        fqdn = validate_fqdn(fqdn)
         client = _get_client()
 
         address: dict[str, Any] = {
@@ -341,6 +353,8 @@ async def create_address_range(
     try:
         adom = validate_adom(adom)
         name = validate_object_name(name, "address")
+        start_ip = validate_ipv4_address(start_ip)
+        end_ip = validate_ipv4_address(end_ip)
         client = _get_client()
 
         address: dict[str, Any] = {

@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from fortimanager_mcp.tools import policy_tools
+from fortimanager_mcp.utils.errors import PermissionError, ResourceNotFoundError
 from tests.conftest import MOCK_POLICIES
 
 
@@ -219,12 +220,12 @@ class TestGetPolicyServices:
                 raise service_errors[name]
             if name in services:
                 return services[name]
-            raise Exception(f"Object not found: {name}")
+            raise ResourceNotFoundError(f"Object not found: {name}", code=-3)
 
         async def mock_get_service_group(adom: str, name: str):
             if name in service_groups:
                 return service_groups[name]
-            raise Exception(f"Object not found: {name}")
+            raise ResourceNotFoundError(f"Object not found: {name}", code=-3)
 
         client.get_service = mock_get_service
         client.get_service_group = mock_get_service_group
@@ -507,3 +508,68 @@ class TestGetPolicyServices:
 
         assert result["status"] == "success"
         assert result["services"][0]["category"] == "wildcard"
+
+
+class TestResolveServiceSafety:
+    """Guard rails on service resolution: circular groups terminate and real
+    errors are surfaced rather than mislabeled as not-found."""
+
+    def _client_with_groups(self, groups: dict[str, list[str]]) -> MagicMock:
+        client = MagicMock()
+
+        async def mock_get_service(adom: str, name: str):
+            raise ResourceNotFoundError(f"Object not found: {name}", code=-3)
+
+        async def mock_get_service_group(adom: str, name: str):
+            if name in groups:
+                return {"name": name, "member": groups[name]}
+            raise ResourceNotFoundError(f"Object not found: {name}", code=-3)
+
+        client.get_service = mock_get_service
+        client.get_service_group = mock_get_service_group
+        return client
+
+    @pytest.mark.asyncio
+    async def test_circular_group_reference_terminates(self) -> None:
+        """A group cycle (A -> B -> A) resolves with a circular-reference marker
+        instead of recursing forever."""
+        client = self._client_with_groups({"GroupA": ["GroupB"], "GroupB": ["GroupA"]})
+
+        result = await policy_tools._resolve_single_service(client, "root", "GroupA")
+
+        assert result["type"] == "group"
+        inner = result["members"][0]
+        assert inner["name"] == "GroupB"
+        assert inner["members"][0]["name"] == "GroupA"
+        assert "Circular group reference" in inner["members"][0]["error"]
+
+    @pytest.mark.asyncio
+    async def test_self_referencing_group_terminates(self) -> None:
+        client = self._client_with_groups({"GroupA": ["GroupA"]})
+
+        result = await policy_tools._resolve_single_service(client, "root", "GroupA")
+
+        assert result["type"] == "group"
+        assert "Circular group reference" in result["members"][0]["error"]
+
+    @pytest.mark.asyncio
+    async def test_permission_error_propagates_not_swallowed(self) -> None:
+        """A permission failure on lookup must surface as a tool error, not be
+        reported as 'service not found'."""
+        mock_client = MagicMock()
+        mock_client.get_firewall_policy = AsyncMock(
+            return_value={"policyid": 7, "name": "P", "service": ["HTTP"]}
+        )
+        mock_client.get_service = AsyncMock(
+            side_effect=PermissionError("No permission for the resource", code=-11)
+        )
+
+        with patch(
+            "fortimanager_mcp.tools.policy_tools.get_fmg_client",
+            return_value=mock_client,
+        ):
+            result = await policy_tools.get_policy_services(
+                adom="root", package="default", policy_id=7
+            )
+
+        assert result["status"] == "error"

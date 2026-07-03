@@ -718,6 +718,11 @@ class TestValidateFilename:
         with pytest.raises(ValidationError):
             validate_filename(filename)
 
+    def test_rejects_trailing_newline(self):
+        """A trailing newline must not slip past the pattern (fullmatch, not $)."""
+        with pytest.raises(ValidationError):
+            validate_filename("evil\n")
+
 
 # =============================================================================
 # Interface Validation Tests
