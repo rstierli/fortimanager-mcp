@@ -1,3 +1,3 @@
 """FortiManager MCP Server - Model Context Protocol server for FortiManager API."""
 
-__version__ = "1.8.0"
+__version__ = "1.9.0"
