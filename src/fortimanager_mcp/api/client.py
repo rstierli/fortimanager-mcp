@@ -187,6 +187,22 @@ class FortiManagerClient:
                 error_msg = response.get("status", {}).get("message", "Login failed")
                 raise AuthenticationError(f"FortiManager login failed: {error_msg}")
 
+            # With an API token, pyfmg's login() performs no network round-trip
+            # (it just stores the key), so an unreachable FMG or a bad token is
+            # not detected until the first real request -- which would leave
+            # connect() reporting success and /health reporting connected while
+            # nothing actually works. Probe once here so both reflect reality.
+            # Session (username/password) auth already round-trips in login().
+            if self.api_token:
+                vcode, vresp = await self._run_fmg_call(self._fmg.get, "/sys/status")
+                if vcode != 0:
+                    detail = (
+                        vresp.get("status", {}).get("message", "verification failed")
+                        if isinstance(vresp, dict)
+                        else str(vresp)
+                    )
+                    raise ConnectionError(f"FortiManager token verification failed: {detail}")
+
             self._connected = True
             self._ever_connected = True
             logger.info("Successfully connected to FortiManager")
@@ -397,14 +413,48 @@ class FortiManagerClient:
 
         pyfmg does blocking ``requests`` I/O, so the call is offloaded to a
         worker thread; the lock keeps calls serialized because the shared
-        pyfmg session is not thread-safe. If an outer ``asyncio.wait_for``
-        cancels the await, the worker thread finishes in the background —
-        the lock is released at cancellation, which is acceptable: the next
-        call re-checks connection state and the FMG treats each JSON-RPC
-        request independently.
+        pyfmg session is not thread-safe.
+
+        Cancellation (e.g. an outer ``asyncio.wait_for`` timeout) cannot
+        interrupt the worker thread. Releasing the lock at that point would
+        let the next call start a second thread on the same session while the
+        orphan is still using it, so instead lock ownership is handed to the
+        in-flight call: the cancelled caller returns immediately (preserving
+        the timeout bound) and the thread's completion callback releases the
+        lock, making any follow-up call queue until the session is idle again.
         """
-        async with self._request_lock:
-            return await asyncio.to_thread(func, *args, **kwargs)
+        await self._request_lock.acquire()
+        handed_off = False
+        try:
+            worker = asyncio.ensure_future(asyncio.to_thread(func, *args, **kwargs))
+            try:
+                return await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                if worker.done():
+                    # Completed just as the cancel landed: consume the outcome
+                    # so a failed result does not warn, then propagate.
+                    if not worker.cancelled():
+                        worker.exception()
+                    raise
+                handed_off = True
+                worker.add_done_callback(self._release_after_orphaned_call)
+                raise
+        finally:
+            if not handed_off:
+                self._request_lock.release()
+
+    def _release_after_orphaned_call(self, worker: "asyncio.Task[Any]") -> None:
+        """Release the request lock once an abandoned worker thread finishes.
+
+        Retrieves the worker's outcome so a failed orphan does not emit an
+        "exception was never retrieved" warning; the caller that abandoned it
+        already surfaced its own timeout/cancellation to the user.
+        """
+        if not worker.cancelled():
+            exc = worker.exception()
+            if exc is not None:
+                logger.debug(f"Abandoned FortiManager call failed after cancellation: {exc}")
+        self._request_lock.release()
 
     def _ensure_connected(self) -> FortiManager:
         """Ensure client is connected and return pyfmg instance."""

@@ -34,6 +34,75 @@ def _get_client() -> FortiManagerClient:
     return client
 
 
+# firewall service custom "protocol" is an integer enum whose code for
+# TCP/UDP/SCTP is NOT stable across FMG schema versions. Verified live: FMG
+# 7.6.6 (build 3654) uses 5, while 7.6.7 (build 3737) and 8.0.0 use 15, and each
+# version rejects the other's value with "prop[protocol]: option empty or
+# invalid". A hardcoded constant therefore breaks service creation on one
+# version or another, so the value is discovered per ADOM from a predefined
+# port-based service the appliance itself ships -- that object's own protocol
+# code is by definition the one this ADOM accepts -- and cached. (ICMP=1 is
+# stable across every tested version, so create_service_icmp keeps sending 1.)
+_TCP_UDP_PROTOCOL_CACHE: dict[str, int] = {}
+# Only used if no predefined port-based service can be read; current builds = 15.
+_TCP_UDP_PROTOCOL_FALLBACK = 15
+# Predefined port-based services present in every ADOM; names vary by build/case.
+_TCP_UDP_PROBE_SERVICES = ("ALL_TCP", "all_tcp", "HTTPS", "HTTP", "DNS")
+
+
+def _port_based_protocol(service: Any) -> int | None:
+    """Return an int protocol from a service only if it is port-based."""
+    if not isinstance(service, dict):
+        return None
+    proto = service.get("protocol")
+    has_ports = any(service.get(k) for k in ("tcp-portrange", "udp-portrange", "sctp-portrange"))
+    return proto if isinstance(proto, int) and has_ports else None
+
+
+async def _tcp_udp_protocol(client: FortiManagerClient, adom: str) -> int:
+    """Return the integer protocol enum this ADOM uses for TCP/UDP/SCTP.
+
+    Discovered from a predefined port-based service (see the module note on the
+    cache) and cached per ADOM, so create_service_tcp_udp sends the value the
+    target FMG version actually accepts instead of a hardcoded guess.
+    """
+    cached = _TCP_UDP_PROTOCOL_CACHE.get(adom)
+    if cached is not None:
+        return cached
+
+    # Cheap path: sample a few well-known predefined services by name.
+    for probe in _TCP_UDP_PROBE_SERVICES:
+        try:
+            proto = _port_based_protocol(await client.get_service(adom, probe))
+        except Exception:
+            proto = None
+        if proto is not None:
+            _TCP_UDP_PROTOCOL_CACHE[adom] = proto
+            return proto
+
+    # Naming-agnostic fallback: scan the service list for any port-based entry.
+    # fields bounds the payload; large ADOMs return hundreds of full objects.
+    try:
+        services = await client.list_services(
+            adom=adom,
+            fields=["name", "protocol", "tcp-portrange", "udp-portrange", "sctp-portrange"],
+        )
+        for svc in services:
+            proto = _port_based_protocol(svc)
+            if proto is not None:
+                _TCP_UDP_PROTOCOL_CACHE[adom] = proto
+                return proto
+    except Exception as e:
+        logger.debug(f"TCP/UDP protocol scan of ADOM '{adom}' failed: {e}")
+
+    logger.warning(
+        f"Could not detect the TCP/UDP service protocol code for ADOM '{adom}'; "
+        f"using {_TCP_UDP_PROTOCOL_FALLBACK}. On builds that use a different code "
+        "(e.g. FMG 7.6.6 uses 5) service creation may be rejected."
+    )
+    return _TCP_UDP_PROTOCOL_FALLBACK
+
+
 # =============================================================================
 # Address Objects
 # =============================================================================
@@ -847,11 +916,9 @@ async def create_service_tcp_udp(
         name = validate_object_name(name, "service")
         client = _get_client()
 
-        # FMG protocol field = service TYPE category, not IP protocol number
-        # 15 = TCP/UDP/SCTP service type (covers all port-based services)
-        # The actual protocol is determined by which portrange fields are set
-        # Verified: TFTP (UDP-only, port 69) uses protocol=15 with empty tcp-portrange
-        protocol = 15
+        # The TCP/UDP/SCTP protocol enum code is version-dependent (see
+        # _tcp_udp_protocol), so discover it for this ADOM rather than hardcode.
+        protocol = await _tcp_udp_protocol(client, adom)
 
         service: dict[str, Any] = {
             "name": name,
@@ -921,9 +988,15 @@ async def create_service_icmp(
         name = validate_object_name(name, "service")
         client = _get_client()
 
+        # FMG stores the service protocol as an integer enum, not a string.
+        # 1 = ICMP (verified live against FMG 7.6.7: every predefined ICMP
+        # service -- ping, all-icmp, TIMESTAMP -- reads back with protocol=1).
+        # Sending the "ICMP" string relied on FMG's alias coercion; the integer
+        # is the canonical stored code and matches create_service_tcp_udp's
+        # integer approach.
         service: dict[str, Any] = {
             "name": name,
-            "protocol": "ICMP",
+            "protocol": 1,
         }
 
         if icmp_type is not None:

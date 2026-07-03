@@ -184,6 +184,91 @@ class TestServiceTools:
         assert result["status"] == "success"
         assert result["name"] == "custom-http"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stored_protocol", [15, 5])
+    async def test_create_service_tcp_udp_uses_detected_protocol(self, stored_protocol) -> None:
+        """The TCP/UDP/SCTP protocol enum is version-dependent (verified live:
+        FMG 7.6.6 uses 5, 7.6.7/8.0 use 15), so the tool must send whatever the
+        ADOM's own predefined services use, discovered at runtime, not a
+        hardcoded guess."""
+        from unittest.mock import AsyncMock
+
+        object_tools._TCP_UDP_PROTOCOL_CACHE.clear()
+        client = MagicMock()
+        client.get_service = AsyncMock(
+            return_value={
+                "name": "ALL_TCP",
+                "protocol": stored_protocol,
+                "tcp-portrange": ["1-65535"],
+            }
+        )
+        client.create_service = AsyncMock(return_value={})
+
+        with patch("fortimanager_mcp.tools.object_tools.get_fmg_client", return_value=client):
+            result = await object_tools.create_service_tcp_udp(
+                adom="root",
+                name="custom-web",
+                tcp_portrange="8080",
+            )
+
+        assert result["status"] == "success"
+        _adom, service = client.create_service.await_args.args
+        assert service["protocol"] == stored_protocol
+
+    @pytest.mark.asyncio
+    async def test_tcp_udp_protocol_detects_via_list_scan(self) -> None:
+        """When the named probes miss, detection scans the service list and
+        skips non-port-based entries (e.g. ICMP) to find the code."""
+        from unittest.mock import AsyncMock
+
+        object_tools._TCP_UDP_PROTOCOL_CACHE.clear()
+        client = MagicMock()
+        client.get_service = AsyncMock(side_effect=Exception("not found"))
+        client.list_services = AsyncMock(
+            return_value=[
+                {"name": "some-icmp", "protocol": 1, "icmptype": 8},
+                {"name": "some-tcp", "protocol": 5, "tcp-portrange": ["1234"]},
+            ]
+        )
+
+        proto = await object_tools._tcp_udp_protocol(client, "adom-scan")
+        assert proto == 5
+
+    @pytest.mark.asyncio
+    async def test_tcp_udp_protocol_falls_back_when_undetectable(self) -> None:
+        """If nothing port-based can be read, fall back to the current-build
+        value rather than failing the create."""
+        from unittest.mock import AsyncMock
+
+        object_tools._TCP_UDP_PROTOCOL_CACHE.clear()
+        client = MagicMock()
+        client.get_service = AsyncMock(side_effect=Exception("not found"))
+        client.list_services = AsyncMock(return_value=[])
+
+        proto = await object_tools._tcp_udp_protocol(client, "adom-empty")
+        assert proto == object_tools._TCP_UDP_PROTOCOL_FALLBACK
+
+    @pytest.mark.asyncio
+    async def test_create_service_icmp_sends_integer_protocol(self) -> None:
+        """ICMP services must be created with the integer enum FMG stores
+        (protocol=1, verified live), not the string "ICMP"."""
+        from unittest.mock import AsyncMock
+
+        client = MagicMock()
+        client.create_service = AsyncMock(return_value={})
+
+        with patch("fortimanager_mcp.tools.object_tools.get_fmg_client", return_value=client):
+            result = await object_tools.create_service_icmp(
+                adom="root",
+                name="custom-ping",
+                icmp_type=8,
+            )
+
+        assert result["status"] == "success"
+        _adom, service = client.create_service.await_args.args
+        assert service["protocol"] == 1
+        assert service["icmptype"] == 8
+
 
 class TestInputValidationRejection:
     """HIGH 1: malformed identifiers must be rejected before any API call."""

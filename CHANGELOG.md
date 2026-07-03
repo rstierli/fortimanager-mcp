@@ -5,6 +5,22 @@ All notable changes to FortiManager MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Follow-ups to v1.9.0, verified against live FortiManager appliances (7.6.6, 7.6.7, 8.0.0). 496 unit tests pass.
+
+### Fixed (live-FMG follow-ups)
+
+- **`create_service_tcp_udp` now detects the version-specific `protocol` enum instead of hardcoding it.** `firewall service custom` stores `protocol` as an integer enum whose TCP/UDP/SCTP code changed between FMG builds: verified live, 7.6.6 (build 3654) uses `5` while 7.6.7 (build 3737) and 8.0.0 use `15`, and each version rejects the other's value with `prop[protocol]: option empty or invalid`. A hardcoded constant broke service creation on one version or the other, so the tool now discovers the code per ADOM from a predefined port-based service the appliance ships (its own code is by definition the one that ADOM accepts) and caches it, falling back to `15` only if none can be read.
+- **Service parsing handles the real integer enum.** `_extract_service_details` previously only recognized `15` for TCP/UDP and the string `"ICMP"`, so an ICMP service (stored as integer `1`) lost its type and a `5`-encoded TCP service (7.6.6) read back as category "IP". It now classifies across every observed representation: TCP/UDP/SCTP `5` and `15`, ICMP `1`, ICMP6 `6`, IP `2`, and their string aliases.
+- **`create_service_icmp` sends the integer protocol code.** Now sends `protocol: 1` instead of the string `"ICMP"`. The string was accepted (FMG coerces the alias, storing 1), so this is a consistency change matching the integer approach used elsewhere rather than a behavior fix.
+- **API-token connections verify reachability at connect time.** pyfmg's apikey "login" makes no network call, so a bad token or an unreachable FMG went undetected and `/health` reported `fortimanager_connected: true` against a dead FMG. Token-mode `connect()` now probes `/sys/status` once and fails closed if it errors or returns a non-zero code. Session (username/password) auth already round-trips in login and is unchanged.
+- **A cancelled FMG call no longer lets a second call run on the shared pyfmg session concurrently.** pyfmg's `requests.Session` is not thread-safe and a worker thread cannot be interrupted, so when an outer `asyncio.wait_for` cancels a call, `_run_fmg_call` now hands lock ownership to the in-flight worker: the cancelled caller returns immediately (preserving the timeout bound) and the worker's completion callback releases the lock, so any follow-up call queues until the session is idle. Closes the concurrency window raised in the v1.9.0 review.
+
+### Documented
+
+- **The preview-before-install gate's package binding is enforced by the gate, not the preview API.** FortiManager's `/securityconsole/install/preview` is device-scoped (`adom` + `scope`, no `pkg` parameter), so a preview reflects whatever is pending for those devices. `install_gate` makes this explicit: the package binding comes from the record key `(adom, package, scope)` plus the package revision fingerprint, so an install is only authorized by a preview recorded for that same package with unchanged content.
+
 ## [1.9.0] - 2026-07-03
 
 Correctness and hardening batch from a full code review + security audit. 473 unit tests pass.
