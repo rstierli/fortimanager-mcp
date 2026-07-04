@@ -1,5 +1,6 @@
 """Tests for object_tools module."""
 
+from collections.abc import Iterator
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -152,6 +153,14 @@ class TestAddressGroupTools:
 class TestServiceTools:
     """Test service object tools."""
 
+    @pytest.fixture(autouse=True)
+    def _fresh_protocol_cache(self) -> Iterator[None]:
+        """Isolate the per-ADOM protocol cache: clear before AND after each
+        test so no test depends on (or leaks) detection results."""
+        object_tools._TCP_UDP_PROTOCOL_CACHE.clear()
+        yield
+        object_tools._TCP_UDP_PROTOCOL_CACHE.clear()
+
     @pytest.mark.asyncio
     async def test_list_services_success(
         self,
@@ -193,7 +202,6 @@ class TestServiceTools:
         hardcoded guess."""
         from unittest.mock import AsyncMock
 
-        object_tools._TCP_UDP_PROTOCOL_CACHE.clear()
         client = MagicMock()
         client.get_service = AsyncMock(
             return_value={
@@ -221,7 +229,6 @@ class TestServiceTools:
         skips non-port-based entries (e.g. ICMP) to find the code."""
         from unittest.mock import AsyncMock
 
-        object_tools._TCP_UDP_PROTOCOL_CACHE.clear()
         client = MagicMock()
         client.get_service = AsyncMock(side_effect=Exception("not found"))
         client.list_services = AsyncMock(
@@ -235,18 +242,67 @@ class TestServiceTools:
         assert proto == 5
 
     @pytest.mark.asyncio
-    async def test_tcp_udp_protocol_falls_back_when_undetectable(self) -> None:
+    async def test_tcp_udp_protocol_falls_back_when_undetectable(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
         """If nothing port-based can be read, fall back to the current-build
-        value rather than failing the create."""
+        value rather than failing the create -- and warn the operator, since
+        the fallback is wrong on some builds (e.g. FMG 7.6.6)."""
         from unittest.mock import AsyncMock
 
-        object_tools._TCP_UDP_PROTOCOL_CACHE.clear()
         client = MagicMock()
         client.get_service = AsyncMock(side_effect=Exception("not found"))
         client.list_services = AsyncMock(return_value=[])
 
-        proto = await object_tools._tcp_udp_protocol(client, "adom-empty")
+        with caplog.at_level("WARNING", logger="fortimanager_mcp.tools.object_tools"):
+            proto = await object_tools._tcp_udp_protocol(client, "adom-empty")
+
         assert proto == object_tools._TCP_UDP_PROTOCOL_FALLBACK
+        msgs = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert any("Could not detect the TCP/UDP service protocol code" in m for m in msgs)
+
+    @pytest.mark.asyncio
+    async def test_tcp_udp_protocol_cached_per_adom(self) -> None:
+        """Detection runs once per ADOM, and one ADOM's code never leaks to
+        another: FMG builds differ (7.6.6=5, 7.6.7/8.0=15) and each rejects
+        the other's value, so a global or miskeyed cache would break creates."""
+        from unittest.mock import AsyncMock
+
+        async def get_service(adom: str, name: str) -> dict:
+            proto = 5 if adom == "adom-766" else 15
+            return {"name": name, "protocol": proto, "tcp-portrange": ["1-65535"]}
+
+        client = MagicMock()
+        client.get_service = AsyncMock(side_effect=get_service)
+
+        assert await object_tools._tcp_udp_protocol(client, "adom-766") == 5
+        assert await object_tools._tcp_udp_protocol(client, "adom-800") == 15
+        probes_after_first_round = client.get_service.await_count
+
+        # Repeat lookups must be served from the cache, not the appliance.
+        assert await object_tools._tcp_udp_protocol(client, "adom-766") == 5
+        assert await object_tools._tcp_udp_protocol(client, "adom-800") == 15
+        assert client.get_service.await_count == probes_after_first_round
+
+    @pytest.mark.asyncio
+    async def test_tcp_udp_protocol_fallback_is_not_cached(self) -> None:
+        """The fallback constant must not poison the cache: once the ADOM
+        becomes readable, detection runs again and the real code wins."""
+        from unittest.mock import AsyncMock
+
+        client = MagicMock()
+        client.get_service = AsyncMock(side_effect=Exception("unreachable"))
+        client.list_services = AsyncMock(side_effect=Exception("unreachable"))
+
+        proto = await object_tools._tcp_udp_protocol(client, "adom-flaky")
+        assert proto == object_tools._TCP_UDP_PROTOCOL_FALLBACK
+
+        # The ADOM becomes readable: detection must be attempted again rather
+        # than returning a cached fallback that this build would reject.
+        client.get_service = AsyncMock(
+            return_value={"name": "ALL_TCP", "protocol": 5, "tcp-portrange": ["1-65535"]}
+        )
+        assert await object_tools._tcp_udp_protocol(client, "adom-flaky") == 5
 
     @pytest.mark.asyncio
     async def test_create_service_icmp_sends_integer_protocol(self) -> None:

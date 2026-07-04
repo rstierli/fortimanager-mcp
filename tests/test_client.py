@@ -1154,6 +1154,22 @@ class TestTokenAuthLivenessProbe:
         assert not client.is_connected
 
     @pytest.mark.asyncio
+    async def test_token_connect_probe_detail_from_non_dict_response(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A probe failure with a non-dict body still fails closed with a
+        useful message instead of crashing on the detail extraction."""
+        stub = MagicMock()
+        stub.login.return_value = (0, {"status": {"code": 0}})
+        stub.get.return_value = (-1, "unexpected string body")
+        monkeypatch.setattr("fortimanager_mcp.api.client.FortiManager", lambda *a, **kw: stub)
+
+        client = FortiManagerClient(host="fmg.example.com", api_token="t")
+        with pytest.raises(ConnectionError, match="unexpected string body"):
+            await client.connect()
+        assert not client.is_connected
+
+    @pytest.mark.asyncio
     async def test_session_connect_does_not_probe(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Username/password login already round-trips, so no extra probe."""
         stub = MagicMock()
@@ -1248,6 +1264,9 @@ class TestRunFmgCallCancellation:
         # Start the follow-up while the orphan is still in-flight.
         second = asyncio.ensure_future(client._run_fmg_call(second_call))
         await asyncio.sleep(0.05)
+        # State-based check first: a broken handoff releases the lock, which
+        # would let the second call through regardless of scheduler timing.
+        assert client._request_lock.locked()
         assert not second_ran.is_set(), "second call started while session was busy"
 
         release_worker.set()
@@ -1255,9 +1274,12 @@ class TestRunFmgCallCancellation:
         assert second_ran.is_set()
 
     @pytest.mark.asyncio
-    async def test_orphaned_failure_does_not_leak_and_releases_lock(self) -> None:
-        """If an abandoned worker call raises, the lock is still released and no
-        unretrieved-exception warning is produced."""
+    async def test_orphaned_failure_does_not_leak_and_releases_lock(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """If an abandoned worker call raises, the lock is still released and
+        its exception is retrieved (logged at debug) so no unretrieved-exception
+        warning is produced."""
         import asyncio
         import threading
 
@@ -1276,8 +1298,6 @@ class TestRunFmgCallCancellation:
         with pytest.raises(asyncio.CancelledError):
             await task
 
-        release_worker.set()
-
         async def _lock_free() -> bool:
             for _ in range(500):
                 if not client._request_lock.locked():
@@ -1285,4 +1305,63 @@ class TestRunFmgCallCancellation:
                 await asyncio.sleep(0.01)
             return False
 
-        assert await _lock_free()
+        with caplog.at_level("DEBUG", logger="fortimanager_mcp.api.client"):
+            release_worker.set()
+            assert await _lock_free()
+
+        # The completion callback must retrieve the orphan's exception; the
+        # debug log is the observable proof of that retrieval.
+        msgs = [r.getMessage() for r in caplog.records]
+        assert any("Abandoned FortiManager call failed after cancellation" in m for m in msgs)
+
+    @pytest.mark.asyncio
+    async def test_cancel_while_queued_leaves_holders_lock_intact(self) -> None:
+        """Cancelling a call that is still WAITING for the lock must not
+        release the lock the in-flight call holds -- otherwise a follow-up
+        call could start on the shared session while the first is still
+        using it, which is exactly the corruption the lock exists to stop."""
+        import asyncio
+        import threading
+
+        client = FortiManagerClient(host="fmg.example.com", api_token="t")
+        release_worker = threading.Event()
+        first_entered = threading.Event()
+
+        def first_call() -> tuple[int, dict]:
+            first_entered.set()
+            release_worker.wait(5)
+            return (0, {"first": True})
+
+        first = asyncio.ensure_future(client._run_fmg_call(first_call))
+        await asyncio.to_thread(first_entered.wait, 5)
+
+        # Queue a second call behind the lock, then cancel it while it waits.
+        second = asyncio.ensure_future(client._run_fmg_call(lambda: (0, {"second": True})))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        second.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await second
+
+        # The queued caller never owned the lock, so the holder's lock must
+        # be untouched and the first call must complete normally.
+        assert client._request_lock.locked()
+        release_worker.set()
+        assert await first == (0, {"first": True})
+        assert not client._request_lock.locked()
+
+        # Session idle again: a fresh call runs normally.
+        assert await client._run_fmg_call(lambda: (0, {"third": True})) == (0, {"third": True})
+
+    @pytest.mark.asyncio
+    async def test_failing_call_propagates_error_and_releases_lock(self) -> None:
+        """A call that raises without any cancellation propagates the error
+        to the caller and leaves the lock free for the next call."""
+
+        def failing_call() -> tuple[int, dict]:
+            raise OSError("connection reset")
+
+        client = FortiManagerClient(host="fmg.example.com", api_token="t")
+        with pytest.raises(OSError, match="connection reset"):
+            await client._run_fmg_call(failing_call)
+        assert not client._request_lock.locked()

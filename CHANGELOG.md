@@ -5,6 +5,12 @@ All notable changes to FortiManager MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Tests
+
+- **Pinned the two invariants the v1.9.1 lock-handoff and protocol-detection fixes rely on.** New tests assert that cancelling a call still queued on the request lock cannot release the in-flight holder's lock (verified by mutation: moving the acquire inside the try/finally fails the test), that the TCP/UDP protocol cache is keyed per ADOM and serves repeat lookups without re-probing, and that the fallback constant is never cached so a temporarily unreachable ADOM recovers to its real code. Also covered: orphaned-worker exception retrieval, error propagation with lock release on a plain failing call, connect()'s non-dict probe response detail, the parser's `TCP/UDP/SCTP` string alias, and the operator warning on detection fallback. The per-ADOM cache is now cleared by an autouse fixture (before and after each test), removing a latent test-order dependence. 506 unit tests pass.
+
 ## [1.9.1] - 2026-07-03
 
 Follow-ups to v1.9.0, verified against live FortiManager appliances (7.6.6, 7.6.7, 8.0.0). 496 unit tests pass.

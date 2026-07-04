@@ -594,6 +594,14 @@ class TestServiceProtocolParsing:
         )
         assert d["category"] == "TCP/UDP/SCTP"
 
+    def test_tcp_udp_string_alias(self) -> None:
+        """Some endpoints surface the string alias instead of the integer."""
+        d = policy_tools._extract_service_details(
+            {"name": "web", "protocol": "TCP/UDP/SCTP", "tcp-portrange": "80"}
+        )
+        assert d["category"] == "TCP/UDP/SCTP"
+        assert d["ports"]["tcp-portrange"] == "80"
+
     def test_icmp_integer_1(self) -> None:
         d = policy_tools._extract_service_details(
             {"name": "ping", "protocol": 1, "icmptype": 8, "icmpcode": 0}
