@@ -118,7 +118,23 @@ class TestErrorCodeMapping:
 
     def test_error_code_map_contains_expected_codes(self):
         """Test that ERROR_CODE_MAP has expected codes."""
-        expected_codes = [-1, -2, -3, -4, -5, -6, -7, -8, -9, -10, -11, -22, -10147, -20055]
+        expected_codes = [
+            -1,
+            -2,
+            -3,
+            -4,
+            -5,
+            -6,
+            -7,
+            -8,
+            -9,
+            -10,
+            -11,
+            -22,
+            -10015,
+            -10147,
+            -20055,
+        ]
         for code in expected_codes:
             assert code in ERROR_CODE_MAP
 
@@ -143,6 +159,7 @@ class TestErrorCodeMapping:
             (-10, ValidationError),  # Data invalid for selected URL
             (-11, PermissionError),  # No permission / stale session
             (-22, AuthenticationError),  # Login fail
+            (-10015, ObjectError),  # Object in use ("used"), delete refused
             (-10147, PermissionError),  # No write permission
             (-20055, ADOMLockError),  # Workspace locked by another admin
         ],
@@ -211,6 +228,21 @@ class TestIsObjectInUseError:
         """Test detection by error code -7."""
         error = FortiManagerMCPError("Error", code=-7)
         assert is_object_in_use_error(error) is True
+
+    def test_with_code_minus_10015(self):
+        """Test detection by error code -10015 (verified live on FMG 7.6.7)."""
+        error = FortiManagerMCPError("used", code=-10015)
+        assert is_object_in_use_error(error) is True
+
+    def test_with_object_error_used_message(self):
+        """Test detection by the raw FMG 'used' message."""
+        error = ObjectError("used")
+        assert is_object_in_use_error(error) is True
+
+    def test_unused_message_is_not_in_use(self):
+        """Test 'unused'/'caused' do not false-positive the 'used' match."""
+        assert is_object_in_use_error(ObjectError("entry is unused")) is False
+        assert is_object_in_use_error(ObjectError("caused a failure")) is False
 
     def test_with_object_error_in_use_message(self):
         """Test detection by 'in use' message."""
@@ -325,6 +357,16 @@ class TestClientSafeError:
         msg, code = client_safe_error(err)
         assert "not initialized" in msg
         assert code == "internal_error"
+
+    def test_in_use_delete_maps_to_object_error(self):
+        """Raw FMG -10015 'used' surfaces as object_error with a clear message."""
+        err = parse_fmg_error(
+            -10015, "used", url="/pm/config/adom/root/obj/firewall/service/custom/x"
+        )
+        msg, code = client_safe_error(err)
+        assert code == "object_error"
+        assert "in use" in msg
+        assert "/pm/config" not in msg
 
 
 class TestIsAuthError:
