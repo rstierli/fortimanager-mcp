@@ -237,6 +237,7 @@ ERROR_CODE_MAP: dict[int, type[FortiManagerMCPError]] = {
     -10: ValidationError,  # Data invalid for selected URL [verified]
     -11: PermissionError,  # No permission / stale session [verified]
     -22: AuthenticationError,  # Login fail [verified]
+    -10015: ObjectError,  # Object in use, delete refused while referenced [verified]
     -10147: PermissionError,  # No write permission [verified]
     -20055: ADOMLockError,  # Workspace locked by another admin [verified]
 }
@@ -255,6 +256,7 @@ ERROR_CODE_MESSAGES: dict[int, str] = {
     -10: "The data is invalid for the selected URL",
     -11: "No permission for the resource (or the session expired)",
     -22: "Login failed - invalid credentials",
+    -10015: "Cannot delete object - it is still in use (referenced by a group, policy, or other object)",
     -10147: "No write permission (read-only admin, or ADOM not locked in workspace mode)",
     -20055: "Workspace is locked by another administrator",
 }
@@ -405,11 +407,16 @@ def is_object_in_use_error(error: Exception) -> bool:
         True if error indicates object is in use
     """
     if isinstance(error, FortiManagerMCPError):
-        if error.code == -7:
+        # -10015 probed live on FMG 7.6.7 and 8.0.0 (delete of a service
+        # referenced by a group -> {"code": -10015, "message": "used"});
+        # -7 is the legacy code.
+        if error.code in (-7, -10015):
             return True
     if isinstance(error, ObjectError):
         msg = str(error).lower()
-        return "in use" in msg or "referenced" in msg
+        # \bused\b matches the raw FMG "used" message without tripping on
+        # "unused"/"caused".
+        return bool("in use" in msg or "referenced" in msg or re.search(r"\bused\b", msg))
     return False
 
 
