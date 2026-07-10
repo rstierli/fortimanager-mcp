@@ -5,6 +5,12 @@ All notable changes to FortiManager MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Deleting an in-use object now surfaces as `object_error` with a clear message instead of generic `api_error: "used"`.** Deleting a service referenced by a service group returns `{"code": -10015, "message": "used"}` (probed live on FMG 7.6.7 build 3737 and 8.0.0 build 0105) — a code the error map did not carry, so it fell through to the generic `APIError` and callers saw only the bare word "used". `-10015` now maps to `ObjectError` and reads "Cannot delete object - it is still in use (referenced by a group, policy, or other object)". `is_object_in_use_error()` recognizes `-10015` alongside the legacy unverified `-7`, and its message heuristic matches the raw `used` with a word-boundary check so "unused"/"caused" cannot false-positive. The complete FMG error table is FNDN-gated, so the code is annotated as live-verified rather than doc-cited.
+
 ## [1.9.2] - 2026-07-04
 
 ### Tests
