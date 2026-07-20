@@ -264,6 +264,11 @@ class TestValidatePackageName:
             "default",
             "branch-policy",
             "pkg_2024",
+            "Corporate/Branch-Policy",  # Folder-nested package
+            "A/B/C/D/E/F/G/H/I/J",  # Max depth (10 segments)
+            "package name",  # Space within a segment
+            "Corporate Office/Branch Policy",  # Spaces in a folder path
+            "a" + " " * 33 + "c",  # Max-length segment (35 chars) with spaces
         ],
     )
     def test_valid_package_names(self, name):
@@ -274,9 +279,17 @@ class TestValidatePackageName:
         "name",
         [
             "",
-            "package name",  # Space
             "pkg.test",  # Dot
             "a" * 36,  # Too long (>35)
+            "/Branch-Policy",  # Leading slash
+            "Corporate/",  # Trailing slash
+            "Corporate//Branch-Policy",  # Empty segment
+            "Corporate/../etc",  # Path traversal
+            "A/B/C/D/E/F/G/H/I/J/K",  # Too many segments (>10)
+            "Corporate /Branch",  # Trailing space in a segment
+            "Corporate/ Branch",  # Leading space in a segment
+            " ",  # Segment that is only a space
+            "Corporate/ /Branch",  # Middle segment that is only a space
         ],
     )
     def test_invalid_package_names(self, name):

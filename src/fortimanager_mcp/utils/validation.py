@@ -114,8 +114,17 @@ DEVICE_SERIAL_PATTERN = re.compile(r"^(FG|FM|FW|FA|FS|FD|FP|FC|FV)[A-Z0-9]{10,20
 # "addr (1)") and colons; path/injection chars (/ \ ; quotes) stay blocked.
 OBJECT_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_.:() -]{1,79}$")
 
-# Package name pattern: alphanumeric, underscore, hyphen, 1-35 chars
-PACKAGE_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,35}$")
+# Package name pattern: one or more path segments, 1-35 chars each.
+# FortiManager addresses a policy package nested in a folder by its full
+# folder path (e.g. "Corporate/Branch Policy"), so "/" is allowed as a
+# segment separator up to 10 levels deep. FortiManager package/folder names
+# routinely contain spaces, so each segment may use alphanumeric, underscore,
+# hyphen, or interior spaces -- but must start and end with a non-space
+# character, so a lone/leading/trailing space can't create an ambiguous
+# segment. Segments stay dot-free, so "..", "//", and leading/trailing
+# slashes are rejected.
+_PACKAGE_SEGMENT = r"[a-zA-Z0-9_-](?:[a-zA-Z0-9_ -]{0,33}[a-zA-Z0-9_-])?"
+PACKAGE_NAME_PATTERN = re.compile(rf"^{_PACKAGE_SEGMENT}(?:/{_PACKAGE_SEGMENT}){{0,9}}$")
 
 # Policy name pattern: alphanumeric, underscore, hyphen, dot, space, parens,
 # colon; 1-35 chars. Path/injection chars (/ \ ; quotes) stay blocked.
@@ -276,6 +285,11 @@ def validate_device_serial(serial: str) -> str:
 def validate_package_name(name: str) -> str:
     """Validate policy package name format.
 
+    Accepts folder-qualified names (e.g. "Corporate/Branch Policy") for
+    packages nested inside a policy package folder. Spaces are allowed
+    within a segment (FortiManager package/folder names commonly contain
+    them) but not at the start/end of a segment.
+
     Args:
         name: Package name to validate
 
@@ -293,7 +307,10 @@ def validate_package_name(name: str) -> str:
     if not PACKAGE_NAME_PATTERN.match(name):
         raise ValidationError(
             f"Invalid package name '{name}'. "
-            "Must be 1-35 characters, alphanumeric, underscore, or hyphen only."
+            "Must be 1-35 characters per segment: alphanumeric, underscore, "
+            "hyphen, or spaces (not at the start/end of a segment). "
+            "Folder-nested packages may use '/' to separate up to 10 path "
+            "segments (e.g. 'Corporate/Branch Policy')."
         )
 
     return name
