@@ -107,6 +107,23 @@ class Settings(BaseSettings):
         "a trusted, isolated bind (e.g. 127.0.0.1 behind a gateway).",
     )
 
+    # MCP HTTP Request Bounds
+    MCP_MAX_REQUEST_BYTES: int = Field(
+        default=10 * 1024 * 1024,
+        ge=0,
+        description="Maximum accepted HTTP request body, in bytes. The Streamable HTTP "
+        "transport buffers the whole body before decoding it, so an unbounded body is an "
+        "unbounded allocation. Oversize requests get 413. Set 0 to disable the bound.",
+    )
+
+    MCP_MAX_CONCURRENT_REQUESTS: int = Field(
+        default=64,
+        ge=0,
+        description="Maximum HTTP requests in flight before returning 503. Every "
+        "FortiManager call serializes behind one shared session lock, so an unbounded "
+        "queue only grows latency. Set 0 to disable the bound.",
+    )
+
     # MCP Allowed Hosts (for reverse proxy / Docker deployments)
     MCP_ALLOWED_HOSTS: Annotated[list[str], NoDecode] = Field(
         default_factory=list,
