@@ -11,6 +11,10 @@ services:
       # exposes the connection to MITM — last resort on trusted networks only.
       - FORTIMANAGER_VERIFY_SSL=${FORTIMANAGER_VERIFY_SSL:-true}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      # Reversible masking (issue #34). Off unless asked for; when on, the
+      # key is mandatory and the server refuses to start without it.
+      - MASKING_ENABLED=${MASKING_ENABLED:-false}
+      - FMG_MASKING_KEY=${FMG_MASKING_KEY:-}
     volumes:
       - ./output:/app/output
     restart: unless-stopped
