@@ -223,6 +223,17 @@ class FPEEngine:
         return self._mask_suffix
 
     @property
+    def str_alphabet(self) -> str:
+        """Alphabet of the string cipher.
+
+        Exposed so token grammars are derived from the cipher itself: a
+        hand-written character class that omitted one character the
+        cipher can emit (the alphabet includes ``~``) would fail to
+        recognize tokens this server produced.
+        """
+        return STR_ALPHABET
+
+    @property
     def key_id(self) -> str:
         """4-hex-char one-way fingerprint of the key, embedded in marked tokens."""
         return self._key_id

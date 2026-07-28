@@ -1,0 +1,173 @@
+"""Output masking: what gets replaced, what survives, what fails closed.
+
+Record shapes here mirror live FortiManager 7.6.7 and 8.0.0 responses
+(read-only sweep, issue #34). Every value is from a documentation range
+(RFC 5737, RFC 2606); no value from any real estate appears.
+"""
+
+from typing import Any
+
+import pytest
+
+from fortimanager_mcp.masking.fpe_engine import FPEEngine
+from fortimanager_mcp.masking.tokens import PLACEHOLDER_MARK
+from fortimanager_mcp.masking.wrapper import OutputMasker
+
+KEY = "2DE79D232DF5585D68CE47882AE256D6"
+
+
+@pytest.fixture()
+def engine() -> FPEEngine:
+    return FPEEngine(KEY)
+
+
+@pytest.fixture()
+def masker(engine: FPEEngine, monkeypatch: pytest.MonkeyPatch) -> OutputMasker:
+    monkeypatch.setenv("FMG_MASKING_KEY", KEY)
+    return OutputMasker(engine)
+
+
+class TestNamesStayClear:
+    def test_routing_names_survive_at_every_depth(self, masker: OutputMasker) -> None:
+        """A masked name would break every follow-up call that used it."""
+        record = {
+            "name": "srv-web-dmz",
+            "adom": "root",
+            "package": "Corporate/Branch",
+            "ip": "192.0.2.19",
+            "nested": [{"name": "grp-partners", "vdom": "root", "ip": "198.51.100.7"}],
+        }
+
+        out = masker.mask_result(record)
+
+        assert out["name"] == "srv-web-dmz"
+        assert out["adom"] == "root"
+        assert out["package"] == "Corporate/Branch"
+        assert out["nested"][0]["name"] == "grp-partners"
+        assert out["nested"][0]["vdom"] == "root"
+        assert out["ip"] != "192.0.2.19"
+        assert out["nested"][0]["ip"] != "198.51.100.7"
+
+    def test_unknown_keys_pass_through(self, masker: OutputMasker) -> None:
+        record = {"os_ver": "7.6.7", "platform_str": "FortiGate-VM64", "conn_status": 1}
+        assert masker.mask_result(record) == record
+
+
+class TestScalarCarriers:
+    def test_ip_is_masked_into_a_marked_envelope(
+        self, masker: OutputMasker, engine: FPEEngine
+    ) -> None:
+        out = masker.mask_result({"ip": "192.0.2.19"})
+        assert out["ip"].startswith(f"ip4-{engine.key_id}-")
+        assert engine.unmask_ip_token(out["ip"]) == "192.0.2.19"
+
+    def test_serial_round_trips_with_its_case(
+        self, masker: OutputMasker, engine: FPEEngine
+    ) -> None:
+        """The hostname cipher lowercases; a serial must come back exact."""
+        out = masker.mask_result({"sn": "FGVM020000123456"})
+        assert out["sn"].startswith(f"sn-{engine.key_id}-")
+        assert engine.unseal_serial(out["sn"]) == "FGVM020000123456"
+
+    def test_spaced_system_status_keys_are_masked(
+        self, masker: OutputMasker, engine: FPEEngine
+    ) -> None:
+        """Live 7.6.7 get_system_status answers with title-cased spaced keys."""
+        record = {"Serial Number": "FMG-VM0000000001", "Hostname": "FMG-LAB-01", "Build": "3737"}
+
+        out = masker.mask_result(record)
+
+        assert engine.unseal_serial(out["Serial Number"]) == "FMG-VM0000000001"
+        assert out["Hostname"] != "FMG-LAB-01"
+        assert out["Build"] == "3737"
+
+    def test_admin_user_is_masked(self, masker: OutputMasker, engine: FPEEngine) -> None:
+        out = masker.mask_result({"adm_usr": "netadmin"})
+        assert engine.unmask_username(out["adm_usr"]) == "netadmin"
+
+    def test_masking_is_deterministic_across_calls(self, masker: OutputMasker) -> None:
+        first = masker.mask_result({"ip": "192.0.2.19"})["ip"]
+        second = masker.mask_result({"nested": {"ip": "192.0.2.19"}})["nested"]["ip"]
+        assert first == second
+
+
+class TestSubnetComposite:
+    def test_list_form_masks_network_keeps_netmask(
+        self, masker: OutputMasker, engine: FPEEngine
+    ) -> None:
+        """Live 8.0.0 shape: {"subnet": ["169.254.169.254", "255.255.255.255"]}."""
+        out = masker.mask_result({"subnet": ["203.0.113.0", "255.255.255.0"]})
+
+        assert out["subnet"][1] == "255.255.255.0"
+        assert out["subnet"][0] != "203.0.113.0"
+        assert engine.unmask_ip_token(out["subnet"][0]) == "203.0.113.0"
+
+    def test_prefix_string_form(self, masker: OutputMasker, engine: FPEEngine) -> None:
+        out = masker.mask_result({"subnet": "203.0.113.0/24"})
+        token, _, tail = out["subnet"].partition("/")
+        assert tail == "24"
+        assert engine.unmask_ip_token(token) == "203.0.113.0"
+
+    def test_space_separated_string_form(self, masker: OutputMasker, engine: FPEEngine) -> None:
+        out = masker.mask_result({"subnet": "203.0.113.0 255.255.255.0"})
+        token, _, tail = out["subnet"].partition(" ")
+        assert tail == "255.255.255.0"
+        assert engine.unmask_ip_token(token) == "203.0.113.0"
+
+    def test_structural_subnets_are_left_alone(self, masker: OutputMasker) -> None:
+        """Stock 8.0.0 objects ship subnet ["0.0.0.0", "0.0.0.0"]."""
+        record = {"subnet": ["0.0.0.0", "0.0.0.0"]}
+        assert masker.mask_result(record) == record
+
+    def test_wildcard_address_keeps_its_mask(self, masker: OutputMasker) -> None:
+        out = masker.mask_result({"wildcard": ["203.0.113.0", "0.0.0.255"]})
+        assert out["wildcard"][1] == "0.0.0.255"
+        assert out["wildcard"][0] != "203.0.113.0"
+
+
+class TestFqdnComposite:
+    def test_plain_fqdn_masks_whole(self, masker: OutputMasker, engine: FPEEngine) -> None:
+        out = masker.mask_result({"fqdn": "mail.example.com"})
+        assert out["fqdn"].endswith(f".{engine.key_id}.{engine.mask_suffix}")
+        assert engine.unmask_domain(out["fqdn"]) == "mail.example.com"
+
+    def test_wildcard_fqdn_keeps_its_label(self, masker: OutputMasker, engine: FPEEngine) -> None:
+        """Live 8.0.0 returns {"fqdn": "*.google.com"} in the same key."""
+        out = masker.mask_result({"fqdn": "*.example.com"})
+
+        assert out["fqdn"].startswith("*.")
+        assert PLACEHOLDER_MARK not in out["fqdn"]
+        assert engine.unmask_domain(out["fqdn"][2:]) == "example.com"
+
+
+class TestFailClosed:
+    def test_unmaskable_value_becomes_a_placeholder(self, masker: OutputMasker) -> None:
+        """Outside the cipher alphabet: never passed through raw."""
+        out = masker.mask_result({"fqdn": "hosét.example.com"})
+        assert out["fqdn"].startswith(PLACEHOLDER_MARK)
+        assert "hosét" not in out["fqdn"]
+
+    def test_placeholders_are_deterministic(self, masker: OutputMasker) -> None:
+        first = masker.mask_result({"fqdn": "båd.example.com"})["fqdn"]
+        second = masker.mask_result({"fqdn": "båd.example.com"})["fqdn"]
+        assert first == second
+
+    def test_wildcard_failure_yields_one_bare_placeholder(self, masker: OutputMasker) -> None:
+        """ "*." + placeholder would not be recognizable to the input guard."""
+        out = masker.mask_result({"fqdn": "*.båd.example.com"})
+        assert out["fqdn"].startswith(PLACEHOLDER_MARK)
+
+    def test_whole_result_is_withheld_when_masking_breaks(
+        self, masker: OutputMasker, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def explode(*_: Any, **__: Any) -> Any:
+            raise RuntimeError("walker bug with 192.0.2.19 inside")
+
+        monkeypatch.setattr(masker, "mask_result", explode)
+
+        out = masker.mask_tool_result({"ip": "192.0.2.19"}, "get_device")
+
+        assert out["status"] == "error"
+        assert out["error"] == "masking_failed"
+        assert "192.0.2.19" not in str(out)
+        assert "walker bug" not in str(out)
