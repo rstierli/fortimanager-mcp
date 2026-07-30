@@ -1998,6 +1998,23 @@ class FortiManagerClient:
         """
         return await self.get(f"/pm/wanprof/adom/{adom}/{name}")
 
+    async def get_device_sdwan(
+        self,
+        device: str,
+        vdom: str = "root",
+    ) -> dict[str, Any]:
+        """Get the device-DB SD-WAN config for a managed device.
+
+        Reads the SD-WAN configuration FortiManager holds in its device
+        database -- members/zones, health-checks and service (steering)
+        rules -- which is local to the device rather than a wanprof template.
+        Use when a device runs SD-WAN but no template is assigned
+        (``list_sdwan_templates`` returns nothing).
+
+        FNDN: GET /pm/config/device/{device}/vdom/{vdom}/system/sdwan
+        """
+        return await self.get(f"/pm/config/device/{device}/vdom/{vdom}/system/sdwan")
+
     async def create_sdwan_template(
         self,
         adom: str,
