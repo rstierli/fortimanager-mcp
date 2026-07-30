@@ -40,30 +40,62 @@ def _check_policy_safety(
     dstaddr: list[str] | None,
     service: list[str] | None,
     action: str | None,
+    srcaddr_negate: bool = False,
+    dstaddr_negate: bool = False,
+    service_negate: bool = False,
 ) -> dict[str, Any] | None:
     """Check policy permissiveness based on safety config.
 
     Returns error dict (strict), warning dict (warn), or None (OK/disabled).
+
+    Enabling negation never blocks on its own (it is a legitimate feature),
+    but it always attaches a warning in strict/warn mode: negation inverts a
+    field's meaning, so it should be noisy rather than silent.
     """
     settings = get_settings()
     if settings.FMG_POLICY_SAFETY == "disabled":
         return None
 
-    warning = check_policy_permissiveness(srcaddr, dstaddr, service, action)
-    if not warning:
-        return None
+    warning = check_policy_permissiveness(
+        srcaddr,
+        dstaddr,
+        service,
+        action,
+        srcaddr_negate=srcaddr_negate,
+        dstaddr_negate=dstaddr_negate,
+        service_negate=service_negate,
+    )
+    if warning:
+        if settings.FMG_POLICY_SAFETY == "strict":
+            logger.warning(f"Policy blocked — {warning}")
+            return {
+                "status": "error",
+                "message": f"Policy blocked: {warning} "
+                "Set FMG_POLICY_SAFETY=warn or FMG_POLICY_SAFETY=disabled to override.",
+            }
 
-    if settings.FMG_POLICY_SAFETY == "strict":
-        logger.warning(f"Policy blocked — {warning}")
-        return {
-            "status": "error",
-            "message": f"Policy blocked: {warning} "
-            "Set FMG_POLICY_SAFETY=warn or FMG_POLICY_SAFETY=disabled to override.",
-        }
+        # warn mode — return marker for caller to attach warning to success response
+        logger.warning(f"Policy warning — {warning}")
+        return {"_safety_warning": warning}
 
-    # warn mode — return marker for caller to attach warning to success response
-    logger.warning(f"Policy warning — {warning}")
-    return {"_safety_warning": warning}
+    negated = [
+        field
+        for field, flag in (
+            ("srcaddr", srcaddr_negate),
+            ("dstaddr", dstaddr_negate),
+            ("service", service_negate),
+        )
+        if flag
+    ]
+    if negated:
+        note = (
+            f"Negation enabled on {', '.join(negated)}: the policy matches the "
+            "complement of the listed value(s), not the value(s) themselves."
+        )
+        logger.warning(f"Policy warning — {note}")
+        return {"_safety_warning": note}
+
+    return None
 
 
 # =============================================================================
@@ -383,6 +415,9 @@ async def create_firewall_policy(
     status: str = "enable",
     comments: str | None = None,
     policyid: int | None = None,
+    srcaddr_negate: bool | None = None,
+    dstaddr_negate: bool | None = None,
+    service_negate: bool | None = None,
 ) -> dict[str, Any]:
     """Create a new firewall policy.
 
@@ -405,6 +440,10 @@ async def create_firewall_policy(
         status: Policy status - "enable" or "disable" (default: "enable")
         comments: Policy comments (optional)
         policyid: Specific policy ID (optional, auto-assigned if not set)
+        srcaddr_negate: Match all sources EXCEPT srcaddr (optional; omitted
+            from the payload when not set, leaving the FortiManager default)
+        dstaddr_negate: Match all destinations EXCEPT dstaddr (optional)
+        service_negate: Match all services EXCEPT service (optional)
 
     Returns:
         dict: Create result with keys:
@@ -428,7 +467,15 @@ async def create_firewall_policy(
     """
     # Safety check for overly permissive policies
     safety_warning = None
-    safety_result = _check_policy_safety(srcaddr, dstaddr, service, action)
+    safety_result = _check_policy_safety(
+        srcaddr,
+        dstaddr,
+        service,
+        action,
+        srcaddr_negate=bool(srcaddr_negate),
+        dstaddr_negate=bool(dstaddr_negate),
+        service_negate=bool(service_negate),
+    )
     if safety_result:
         if safety_result.get("status") == "error":
             return safety_result
@@ -462,6 +509,12 @@ async def create_firewall_policy(
             policy["comments"] = comments
         if policyid is not None:
             policy["policyid"] = policyid
+        if srcaddr_negate is not None:
+            policy["srcaddr-negate"] = "enable" if srcaddr_negate else "disable"
+        if dstaddr_negate is not None:
+            policy["dstaddr-negate"] = "enable" if dstaddr_negate else "disable"
+        if service_negate is not None:
+            policy["service-negate"] = "enable" if service_negate else "disable"
 
         result = await client.create_firewall_policy(adom, package, policy)
 
@@ -498,6 +551,9 @@ async def update_firewall_policy(
     comments: str | None = None,
     global_label: str | None = None,
     global_label_color: int | None = None,
+    srcaddr_negate: bool | None = None,
+    dstaddr_negate: bool | None = None,
+    service_negate: bool | None = None,
 ) -> dict[str, Any]:
     """Update an existing firewall policy.
 
@@ -521,6 +577,10 @@ async def update_firewall_policy(
         comments: New comments (optional)
         global_label: Policy section label (optional)
         global_label_color: Policy section color ID 0-31 (optional)
+        srcaddr_negate: Match all sources EXCEPT srcaddr (optional; None
+            leaves the field untouched, like every other optional field)
+        dstaddr_negate: Match all destinations EXCEPT dstaddr (optional)
+        service_negate: Match all services EXCEPT service (optional)
 
     Returns:
         dict: Update result with keys:
@@ -545,15 +605,25 @@ async def update_firewall_policy(
         ...     srcaddr=["New-Subnet", "Other-Subnet"]
         ... )
     """
-    # Safety check — only when all critical fields are explicitly provided.
-    # For partial updates we can't know existing values without an extra API call.
+    # Safety check — permissiveness only when all critical fields are explicitly
+    # provided (for partial updates we can't know existing values without an
+    # extra API call). Negation flags are always checked so enabling one is
+    # never silent, even on a negate-only partial update.
     safety_warning = None
-    if srcaddr is not None and dstaddr is not None and action is not None:
-        safety_result = _check_policy_safety(srcaddr, dstaddr, service, action)
-        if safety_result:
-            if safety_result.get("status") == "error":
-                return safety_result
-            safety_warning = safety_result.get("_safety_warning")
+    full_check = srcaddr is not None and dstaddr is not None and action is not None
+    safety_result = _check_policy_safety(
+        srcaddr if full_check else None,
+        dstaddr if full_check else None,
+        service if full_check else None,
+        action if full_check else None,
+        srcaddr_negate=bool(srcaddr_negate),
+        dstaddr_negate=bool(dstaddr_negate),
+        service_negate=bool(service_negate),
+    )
+    if safety_result:
+        if safety_result.get("status") == "error":
+            return safety_result
+        safety_warning = safety_result.get("_safety_warning")
 
     try:
         adom = validate_adom(adom)
@@ -592,6 +662,12 @@ async def update_firewall_policy(
             data["global-label"] = global_label
         if global_label_color is not None:
             data["_global-label-color"] = global_label_color
+        if srcaddr_negate is not None:
+            data["srcaddr-negate"] = "enable" if srcaddr_negate else "disable"
+        if dstaddr_negate is not None:
+            data["dstaddr-negate"] = "enable" if dstaddr_negate else "disable"
+        if service_negate is not None:
+            data["service-negate"] = "enable" if service_negate else "disable"
 
         if not data:
             return {"status": "error", "message": "No update parameters provided"}

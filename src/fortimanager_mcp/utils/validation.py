@@ -888,6 +888,9 @@ def check_policy_permissiveness(
     dstaddr: list[str] | None,
     service: list[str] | None,
     action: str | None,
+    srcaddr_negate: bool = False,
+    dstaddr_negate: bool = False,
+    service_negate: bool = False,
 ) -> str | None:
     """Check if a firewall policy is overly permissive.
 
@@ -895,11 +898,18 @@ def check_policy_permissiveness(
     which allows unrestricted traffic. Distinguishes between "fully open"
     (service=ALL) and "overly permissive" (specific services but any-to-any).
 
+    Negation inverts a field's match set, so it changes what "broad" means:
+    a negated specific list matches its complement (effectively almost
+    everything), while a negated "all" matches nothing at all.
+
     Args:
         srcaddr: Source address list (e.g., ["all"])
         dstaddr: Destination address list (e.g., ["all"])
         service: Service list (e.g., ["ALL"])
         action: Policy action (e.g., "accept")
+        srcaddr_negate: srcaddr-negate is enabled on the policy
+        dstaddr_negate: dstaddr-negate is enabled on the policy
+        service_negate: service-negate is enabled on the policy
 
     Returns:
         Warning message string if overly permissive, None if acceptable
@@ -912,19 +922,59 @@ def check_policy_permissiveness(
             return False
         return any(a.lower() == "all" for a in addrs)
 
-    if not (_is_all(srcaddr) and _is_all(dstaddr)):
-        return None
-
+    src_all = _is_all(srcaddr)
+    dst_all = _is_all(dstaddr)
     svc_all = service is not None and any(s.upper() == "ALL" for s in service)
 
-    if svc_all:
+    # Negating "all" produces an empty match set — the policy matches no
+    # traffic. Almost always a mistake, and FortiOS may reject it at install.
+    negated_all = [
+        field
+        for field, negated, is_all in (
+            ("srcaddr", srcaddr_negate, src_all),
+            ("dstaddr", dstaddr_negate, dst_all),
+            ("service", service_negate, svc_all),
+        )
+        if negated and is_all
+    ]
+    if negated_all:
+        fields = ", ".join(negated_all)
+        return (
+            f"Policy negates 'all'/'ALL' on {fields}: negation inverts the "
+            "field, so this policy matches no traffic at all."
+        )
+
+    # A negated specific list matches its complement, which is effectively
+    # as broad as "all" for permissiveness purposes.
+    src_broad = src_all or (srcaddr_negate and bool(srcaddr))
+    dst_broad = dst_all or (dstaddr_negate and bool(dstaddr))
+    if not (src_broad and dst_broad):
+        return None
+
+    negate_note = ""
+    if srcaddr_negate or dstaddr_negate or service_negate:
+        negated = [
+            f
+            for f, n in (
+                ("srcaddr", srcaddr_negate),
+                ("dstaddr", dstaddr_negate),
+                ("service", service_negate),
+            )
+            if n
+        ]
+        negate_note = (
+            f" Note: negation on {', '.join(negated)} makes the policy match "
+            "the complement of the listed values, which is effectively full scope."
+        )
+
+    if svc_all or (service_negate and bool(service)):
         return (
             "Policy is fully open: srcaddr='all', dstaddr='all', service='ALL', "
             "action='accept'. This allows all traffic from any source to any "
-            "destination on all ports."
+            "destination on all ports." + negate_note
         )
 
     return (
         "Policy is overly permissive: srcaddr='all', dstaddr='all', "
-        "action='accept'. This allows traffic from any source to any destination."
+        "action='accept'. This allows traffic from any source to any destination." + negate_note
     )

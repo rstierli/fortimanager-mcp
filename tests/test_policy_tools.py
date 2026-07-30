@@ -132,6 +132,174 @@ class TestPolicyCrudTools:
         assert "message" in result
 
 
+class TestPolicyNegateFields:
+    """Test srcaddr/dstaddr/service negation on policy create/update."""
+
+    @pytest.mark.asyncio
+    async def test_create_policy_negate_enabled(
+        self,
+        mock_client: MagicMock,
+        mock_fmg_instance: MagicMock,
+        configure_mock_responses: None,
+    ) -> None:
+        """Negate flags set to True serialize as 'enable' in the payload."""
+        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
+            result = await policy_tools.create_firewall_policy(
+                adom="root",
+                package="default",
+                name="Negated-Src",
+                srcintf=["port1"],
+                dstintf=["port2"],
+                srcaddr=["LAN-Users"],
+                dstaddr=["Server-Net"],
+                service=["SYSLOG"],
+                action="deny",
+                srcaddr_negate=True,
+                dstaddr_negate=True,
+                service_negate=True,
+            )
+
+        assert result["status"] == "success"
+        payload = mock_fmg_instance.add.call_args.kwargs["data"]
+        assert payload["srcaddr-negate"] == "enable"
+        assert payload["dstaddr-negate"] == "enable"
+        assert payload["service-negate"] == "enable"
+        # Enabling negation is never silent.
+        assert "warning" in result
+        assert "complement" in result["warning"]
+
+    @pytest.mark.asyncio
+    async def test_create_policy_negate_disabled_explicit(
+        self,
+        mock_client: MagicMock,
+        mock_fmg_instance: MagicMock,
+        configure_mock_responses: None,
+    ) -> None:
+        """Negate flags set to False serialize as 'disable' in the payload."""
+        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
+            result = await policy_tools.create_firewall_policy(
+                adom="root",
+                package="default",
+                name="Plain-Policy",
+                srcintf=["port1"],
+                dstintf=["port2"],
+                srcaddr=["LAN-Users"],
+                dstaddr=["Server-Net"],
+                service=["SYSLOG"],
+                action="accept",
+                srcaddr_negate=False,
+            )
+
+        assert result["status"] == "success"
+        payload = mock_fmg_instance.add.call_args.kwargs["data"]
+        assert payload["srcaddr-negate"] == "disable"
+
+    @pytest.mark.asyncio
+    async def test_create_policy_negate_default_omitted(
+        self,
+        mock_client: MagicMock,
+        mock_fmg_instance: MagicMock,
+        configure_mock_responses: None,
+    ) -> None:
+        """Unset negate flags (None) are omitted from the payload entirely."""
+        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
+            result = await policy_tools.create_firewall_policy(
+                adom="root",
+                package="default",
+                name="Plain-Policy",
+                srcintf=["port1"],
+                dstintf=["port2"],
+                srcaddr=["LAN-Users"],
+                dstaddr=["Server-Net"],
+                service=["SYSLOG"],
+                action="accept",
+            )
+
+        assert result["status"] == "success"
+        payload = mock_fmg_instance.add.call_args.kwargs["data"]
+        assert "srcaddr-negate" not in payload
+        assert "dstaddr-negate" not in payload
+        assert "service-negate" not in payload
+
+    @pytest.mark.asyncio
+    async def test_update_policy_negate_partial_only_touches_negate(
+        self,
+        mock_client: MagicMock,
+        mock_fmg_instance: MagicMock,
+        configure_mock_responses: None,
+    ) -> None:
+        """A negate-only update sends only the negate attribute (partial update)."""
+        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
+            result = await policy_tools.update_firewall_policy(
+                adom="root",
+                package="default",
+                policyid=42,
+                srcaddr_negate=True,
+            )
+
+        assert result["status"] == "success"
+        # Enabling negation is never silent, even on a partial update.
+        assert "warning" in result
+        data = mock_fmg_instance.update.call_args.kwargs
+        assert data["srcaddr-negate"] == "enable"
+        for untouched in (
+            "srcaddr",
+            "dstaddr",
+            "service",
+            "schedule",
+            "status",
+            "global-label",
+            "_global-label-color",
+            "dstaddr-negate",
+            "service-negate",
+        ):
+            assert untouched not in data
+
+    @pytest.mark.asyncio
+    async def test_update_policy_negate_disable(
+        self,
+        mock_client: MagicMock,
+        mock_fmg_instance: MagicMock,
+        configure_mock_responses: None,
+    ) -> None:
+        """Negate flag set to False serializes as 'disable' on update."""
+        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
+            result = await policy_tools.update_firewall_policy(
+                adom="root",
+                package="default",
+                policyid=42,
+                srcaddr_negate=False,
+            )
+
+        assert result["status"] == "success"
+        data = mock_fmg_instance.update.call_args.kwargs
+        assert data["srcaddr-negate"] == "disable"
+        # Disabling negation restores normal match semantics — no warning needed.
+        assert "warning" not in result
+
+    @pytest.mark.asyncio
+    async def test_update_policy_negate_none_untouched(
+        self,
+        mock_client: MagicMock,
+        mock_fmg_instance: MagicMock,
+        configure_mock_responses: None,
+    ) -> None:
+        """Unset negate flags never appear in an unrelated update payload."""
+        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
+            result = await policy_tools.update_firewall_policy(
+                adom="root",
+                package="default",
+                policyid=42,
+                comments="touch only comments",
+            )
+
+        assert result["status"] == "success"
+        data = mock_fmg_instance.update.call_args.kwargs
+        assert "srcaddr-negate" not in data
+        assert "dstaddr-negate" not in data
+        assert "service-negate" not in data
+
+
 class TestPackageTools:
     """Test package management tools."""
 
