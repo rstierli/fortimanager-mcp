@@ -1501,6 +1501,21 @@ class FortiManagerClient:
             data=group,
         )
 
+    async def update_service_group(
+        self,
+        adom: str,
+        name: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Update a service group.
+
+        FNDN: UPDATE /pm/config/adom/{adom}/obj/firewall/service/group/{name}
+        """
+        return await self.update(
+            f"/pm/config/adom/{adom}/obj/firewall/service/group/{name}",
+            **data,
+        )
+
     async def delete_service_group(
         self,
         adom: str,

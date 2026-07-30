@@ -1240,6 +1240,52 @@ async def create_service_group(
 
 
 @mcp.tool()
+async def update_service_group(
+    adom: str,
+    name: str,
+    members: list[str] | None = None,
+    comment: str | None = None,
+) -> dict[str, Any]:
+    """Update a service group.
+
+    Args:
+        adom: ADOM name
+        name: Group name
+        members: New member list (replaces existing)
+        comment: New comment
+
+    Returns:
+        dict: Update result with keys:
+            - status: "success" or "error"
+            - message: Status or error message
+    """
+    try:
+        adom = validate_adom(adom)
+        name = validate_object_name(name, "service group")
+        client = _get_client()
+
+        data: dict[str, Any] = {}
+        if members is not None:
+            data["member"] = members
+        if comment is not None:
+            data["comment"] = comment
+
+        if not data:
+            return {"status": "error", "message": "No update parameters provided"}
+
+        await client.update_service_group(adom, name, data)
+
+        return {
+            "status": "success",
+            "message": f"Service group {name} updated successfully",
+        }
+    except Exception as e:
+        logger.error(f"Failed to update service group {name}: {e}")
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
+
+
+@mcp.tool()
 async def delete_service_group(
     adom: str,
     name: str,
