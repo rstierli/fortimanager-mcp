@@ -8,11 +8,17 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "mcp>=1.0.0",
+    # 2.0 removed mcp.server.fastmcp (our whole API), so a floating pin breaks
+    # every fresh install; stay on 1.x until a deliberate migration. The 1.28.1
+    # floor clears PYSEC-2026-3483.
+    "mcp>=1.28.1,<2",
     "pydantic>=2.0.0",
-    "pydantic-settings>=2.0.0",
+    # Security floors: pinning mcp to 1.x holds back its transitive resolution,
+    # which otherwise lands on pydantic-settings 2.14.1 (GHSA-4xgf-cpjx-pc3j)
+    # and starlette 1.3.0 (PYSEC-2026-249). Both are patched in the floors below.
+    "pydantic-settings>=2.14.2",
     "httpx>=0.27.0",
-    "starlette>=0.37.0",
+    "starlette>=1.3.1",
     "uvicorn>=0.30.0",
     "pyfmg @ git+https://github.com/p4r4n0y1ng/pyfmg.git@7ec0a77e72758da2528abdbcdc415a9880cfa97a",
 ]
