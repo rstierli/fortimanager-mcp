@@ -201,10 +201,10 @@ FortiManager MCP supports two tool loading modes to optimize context window usag
 
 | Mode | Tools Loaded | Context Usage | Best For |
 |------|-------------|---------------|----------|
-| `full` (default) | All 102 tools | ~100% | Large context windows, full functionality |
+| `full` (default) | All 106 tools | ~100% | Large context windows, full functionality |
 | `dynamic` | 4 discovery tools | ~10% | Smaller context windows, on-demand loading |
 
-**Full Mode** (default): All 102 tools are loaded at startup. Best when you have sufficient context window and need immediate access to all FortiManager operations.
+**Full Mode** (default): All 106 tools are loaded at startup. Best when you have sufficient context window and need immediate access to all FortiManager operations.
 
 **Dynamic Mode**: Only lightweight discovery tools are loaded:
 - `find_fortimanager_tool(operation)` - Search for tools by keyword
@@ -231,6 +231,24 @@ This is particularly useful when:
 - You want to avoid repeatedly specifying the ADOM in each tool call
 
 If not set, defaults to `root` (the global ADOM).
+
+### Default Device
+
+The `DEFAULT_DEVICE` environment variable sets a fallback managed device for
+device-scoped tools (e.g. `get_device_client_location`,
+`get_device_interface_config`, `get_device_sdwan_monitor`). When such a tool is
+called without a `device`, this value is used.
+
+```bash
+DEFAULT_DEVICE=myfw01   # unset by default
+```
+
+It is unset by default because there is no universal device name. Setting it is
+recommended for single-FortiGate deployments (and when driving the tools from an
+LLM, which may omit `device` if it treats it as an implied default) — the tool
+then resolves to `DEFAULT_DEVICE` instead of erroring. If neither a `device`
+argument nor `DEFAULT_DEVICE` is provided, the tool returns a clear
+`device_required` error.
 
 ### Generating an API Token
 
@@ -427,7 +445,7 @@ networks:
     external: true
 ```
 
-## Available Tools (102 tools)
+## Available Tools (106 tools)
 
 ### System Tools (17 tools)
 
@@ -451,7 +469,7 @@ networks:
 | `unlock_adom` | Unlock ADOM |
 | `commit_adom` | Commit ADOM changes |
 
-### Device Management Tools (12 tools)
+### Device Management Tools (14 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -467,6 +485,8 @@ networks:
 | `reload_device_list` | Refresh device list cache |
 | `get_device_realtime_status` | Get live device status |
 | `get_device_interfaces` | Get device interface information |
+| `get_device_interface_config` | Read device-DB interface config objects, filterable by VLAN id / interface name (maps a client IP to its VLAN/interface/port) |
+| `get_device_client_location` | Asset Identity Center: locate a client (by ip/mac/hostname) via the live detected-device inventory — resolves the FortiAP/FortiSwitch, port and VLAN it is connected through |
 
 ### Policy Tools (15 tools)
 
@@ -554,7 +574,7 @@ networks:
 | `assign_template_group` | Assign template group |
 | `validate_template` | Validate template against device |
 
-### SD-WAN Tools (8 tools)
+### SD-WAN Tools (10 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -566,6 +586,8 @@ networks:
 | `assign_sdwan_template_bulk` | Bulk assign SD-WAN template |
 | `unassign_sdwan_template` | Remove template assignment |
 | `get_device_sdwan` | Read a device's SD-WAN config (members/zones/health-checks/rules) from the device DB — for SD-WAN configured locally, not via a template |
+| `get_device_sdwan_monitor` | Live SD-WAN Monitor via the device proxy — per-member link/bandwidth (`virtual-wan/members`) + per-member SLA health (`virtual-wan/health-check`) |
+| `resolve_datasource` | Generic config-DB introspection: resolve the objects a config attribute is allowed to reference (`option: datasrc`) |
 
 ## Usage Examples
 

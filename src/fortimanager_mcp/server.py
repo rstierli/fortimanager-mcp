@@ -2,7 +2,7 @@
 
 Uses FastMCP pattern for tool registration.
 Supports two modes:
-- full: All 102 tools loaded (default)
+- full: All 106 tools loaded (default)
 - dynamic: Only discovery tools loaded (~90% context reduction)
 """
 
@@ -65,7 +65,7 @@ async def health_check() -> str:
     """Check FortiManager MCP server health and connection status."""
     mode = settings.FMG_TOOL_MODE
     if mode == "full":
-        tool_info = "All 102 tools loaded"
+        tool_info = "All 106 tools loaded"
     else:
         tool_info = "Discovery tools + dynamic execution"
     return f"FortiManager MCP Server is healthy (mode: {mode}, {tool_info})"
@@ -87,7 +87,7 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
         """
         op = operation.lower().strip()
 
-        # Define available tools and their categories (102 tools total)
+        # Define available tools and their categories (106 tools total)
         tool_catalog = {
             "system": [
                 ("get_system_status", "Get FortiManager system status and version info"),
@@ -121,6 +121,14 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
                 ("reload_device_list", "Refresh device list cache"),
                 ("get_device_realtime_status", "Get live device status"),
                 ("get_device_interfaces", "Get device interface information"),
+                (
+                    "get_device_interface_config",
+                    "Read device-DB interface config, filter by VLAN/name",
+                ),
+                (
+                    "get_device_client_location",
+                    "Asset Identity: locate a client (ip/mac/hostname) -> AP/switch/VLAN",
+                ),
             ],
             "policy": [
                 ("create_package", "Create a new policy package"),
@@ -204,6 +212,11 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
                 ("assign_sdwan_template_bulk", "Bulk assign SD-WAN template"),
                 ("unassign_sdwan_template", "Remove template assignment"),
                 ("get_device_sdwan", "Get device-DB SD-WAN config (members/zones/rules)"),
+                (
+                    "get_device_sdwan_monitor",
+                    "Live SD-WAN Monitor: member link/bandwidth + SLA health",
+                ),
+                ("resolve_datasource", "Resolve objects a config attribute can reference"),
             ],
         }
 
@@ -248,15 +261,18 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
             Categories with descriptions and tool counts
         """
         return {
-            "total_tools": 102,
+            "total_tools": 106,
             "categories": {
                 "system": {
                     "count": 17,
                     "description": "System status, ADOM management, tasks, packages",
                 },
                 "device": {
-                    "count": 12,
-                    "description": "Device management, VDOMs, bulk operations",
+                    "count": 14,
+                    "description": (
+                        "Device management, VDOMs, bulk operations, interface config, "
+                        "client location"
+                    ),
                 },
                 "policy": {
                     "count": 14,
@@ -275,8 +291,11 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
                     "description": "Provisioning templates, system templates, CLI template groups",
                 },
                 "sdwan": {
-                    "count": 8,
-                    "description": "SD-WAN templates, assignment, device-DB config read",
+                    "count": 10,
+                    "description": (
+                        "SD-WAN templates, assignment, device config + live monitor, "
+                        "datasource resolution"
+                    ),
                 },
             },
             "usage": "Use find_fortimanager_tool(category) to see tools in a category",
@@ -333,6 +352,8 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
                     "reload_device_list",
                     "get_device_realtime_status",
                     "get_device_interfaces",
+                    "get_device_interface_config",
+                    "get_device_client_location",
                 },
                 "policy_tools": {
                     "create_package",
@@ -416,6 +437,8 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
                     "assign_sdwan_template_bulk",
                     "unassign_sdwan_template",
                     "get_device_sdwan",
+                    "get_device_sdwan_monitor",
+                    "resolve_datasource",
                 },
             }
 
@@ -457,7 +480,7 @@ if settings.FMG_TOOL_MODE == "dynamic":
 
 else:
     # Full mode: Load all tools (default behavior)
-    logger.info("Loading in FULL mode - all 102 tools")
+    logger.info("Loading in FULL mode - all 106 tools")
 
     # Import all tool modules (registers them with the server)
     from fortimanager_mcp.tools import (  # noqa: E402, F401

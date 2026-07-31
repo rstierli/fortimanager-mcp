@@ -10,12 +10,13 @@ from typing import Any
 
 from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.server import get_fmg_client, mcp
-from fortimanager_mcp.utils.config import get_default_adom
+from fortimanager_mcp.utils.config import get_default_adom, get_default_device
 from fortimanager_mcp.utils.errors import client_safe_error
 from fortimanager_mcp.utils.validation import (
     ValidationError,
     validate_adom,
     validate_device_name,
+    validate_object_name,
 )
 
 logger = logging.getLogger(__name__)
@@ -802,3 +803,231 @@ async def get_device_interfaces(
         logger.error(f"Failed to get interfaces for {device}: {e}")
         msg, code = client_safe_error(e)
         return {"status": "error", "message": msg, "error_code": code}
+
+
+def _summarize_interfaces(data: Any) -> list[dict[str, Any]]:
+    """Condense raw device-DB interface config objects into a compact list.
+
+    The device DB returns either a list of interface objects or a dict wrapping
+    a ``data`` list (shapes vary by FortiOS/FMG version), so both are handled.
+    Defensive by design: every field is optional and off-shape values are
+    tolerated. The goal is to let a caller map a queried IP/client to its
+    VLAN / interface / physical port.
+    """
+    if isinstance(data, dict):
+        # Either a wrapper ({"data": [...]}) or a single bare interface object.
+        inner = data.get("data")
+        items = inner if inner is not None else data
+    else:
+        items = data
+    if isinstance(items, dict):
+        items = [items]
+    if not isinstance(items, list):
+        return []
+
+    summary: list[dict[str, Any]] = []
+    for iface in items:
+        if not isinstance(iface, dict):
+            continue
+        summary.append(
+            {
+                "name": iface.get("name"),
+                "alias": iface.get("alias"),
+                "vlanid": iface.get("vlanid"),
+                "ip": iface.get("ip"),
+                "type": iface.get("type"),
+                # physical/aggregate members (e.g. VLAN parent, LAG members)
+                "interface": iface.get("interface"),
+                "vdom": iface.get("vdom"),
+                "status": iface.get("status"),
+                "role": iface.get("role"),
+                "description": iface.get("description"),
+            }
+        )
+    return summary
+
+
+@mcp.tool()
+async def get_device_interface_config(
+    device: str | None = None,
+    vlanids: list[int] | None = None,
+    name: str | None = None,
+) -> dict[str, Any]:
+    """Read a device's interface CONFIG objects from FortiManager's device DB.
+
+    Unlike ``get_device_interfaces`` (which proxies the live FortiGate monitor
+    API and cannot filter by VLAN), this reads the interface configuration
+    FortiManager keeps in its device database and supports server-side
+    filtering by VLAN id and/or exact interface name. Use it to map a queried
+    IP / client to the VLAN, interface and physical port it belongs to.
+
+    Args:
+        device: Managed device name (e.g. "FGT-HQ"). Defaults to DEFAULT_DEVICE
+            when omitted; required if that is not configured.
+        vlanids: Optional list of VLAN ids to filter on (matches ``vlanid in``)
+        name: Optional exact interface name to filter on (e.g. "port1")
+
+    Returns:
+        dict with keys:
+            - device
+            - interfaces: raw device-DB interface config (list or dict)
+            - summary: condensed per-interface list (name/alias/vlanid/ip/...)
+            - interface_count: number of summarized interfaces
+            - error / error_code: on failure
+    """
+    client = get_fmg_client()
+    if not client:
+        return {"error": "FortiManager client not connected"}
+
+    device = device or get_default_device()
+    if not device:
+        return {
+            "error": "device is required (pass it, or configure DEFAULT_DEVICE)",
+            "error_code": "device_required",
+        }
+
+    try:
+        device = validate_device_name(device)
+        if name is not None:
+            name = validate_object_name(name, "interface")
+        interfaces = await client.get_device_interface_config(
+            device=device,
+            vlanids=vlanids,
+            name=name,
+        )
+        summary = _summarize_interfaces(interfaces)
+        return {
+            "device": device,
+            "interfaces": interfaces,
+            "summary": summary,
+            "interface_count": len(summary),
+        }
+    except Exception as e:
+        logger.error(f"Device interface-config read failed for {device}: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
+
+
+def _proxy_results(raw: Any) -> Any:
+    """Extract the FortiGate payload from a FMG proxy-response envelope.
+
+    ``proxy_call`` returns ``[{"response": {"results": <data>, ...}, ...}]``.
+    Returns the inner ``results``, or ``None`` if the envelope is off-shape.
+    """
+    if isinstance(raw, list) and raw:
+        raw = raw[0]
+    if isinstance(raw, dict):
+        response = raw.get("response")
+        if isinstance(response, dict):
+            return response.get("results")
+    return None
+
+
+def _summarize_detected_client(rec: dict[str, Any]) -> dict[str, Any]:
+    """Condense a detected-device record to the 'where is it connected' fields."""
+    return {
+        "hostname": rec.get("hostname"),
+        "ip": rec.get("ipv4_address"),
+        "mac": rec.get("mac"),
+        "vendor": rec.get("hardware_vendor"),
+        "os": rec.get("os_name"),
+        "hardware_type": rec.get("hardware_type"),
+        "is_online": rec.get("is_online"),
+        "detected_interface": rec.get("detected_interface"),
+        "fortiap_id": rec.get("fortiap_id"),
+        "fortiap_ssid": rec.get("fortiap_ssid"),
+        "fortiap_name": rec.get("fortiap_name"),
+        "fortiswitch_id": rec.get("fortiswitch_id"),
+        "fortiswitch_port": rec.get("fortiswitch_port_name"),
+        "vlan_id": rec.get("fortiswitch_vlan_id"),
+        "dhcp_lease_status": rec.get("dhcp_lease_status"),
+        "total_vuln_count": rec.get("total_vuln_count"),
+        "last_seen": rec.get("last_seen"),
+    }
+
+
+def _client_matches(
+    rec: dict[str, Any], ip: str | None, mac: str | None, hostname: str | None
+) -> bool:
+    """True if the record satisfies every provided (non-empty) filter."""
+    if ip and rec.get("ipv4_address") != ip.strip():
+        return False
+    if mac and str(rec.get("mac", "")).lower() != mac.strip().lower():
+        return False
+    if hostname and hostname.strip().lower() not in str(rec.get("hostname", "")).lower():
+        return False
+    return True
+
+
+@mcp.tool()
+async def get_device_client_location(
+    adom: str | None = None,
+    device: str | None = None,
+    ip: str | None = None,
+    mac: str | None = None,
+    hostname: str | None = None,
+) -> dict[str, Any]:
+    """Locate a client on a device (Asset Identity Center): which FortiAP / FortiSwitch + VLAN it is connected through.
+
+    Proxies the device's detected-device inventory
+    (``/api/v2/monitor/user/device/query``) -- the data behind the FortiManager
+    "Asset Identity Center" view -- and answers "where is this client connected".
+    Each match resolves to the access point / switch + port and VLAN the client
+    is on, plus hostname, vendor/OS, online state, DHCP lease and vuln count.
+
+    Filter to one client by ``ip``, ``mac`` or ``hostname`` (each provided filter
+    narrows; a hostname match is case-insensitive substring). With no filter, the
+    full detected-client inventory is returned (summarized).
+
+    Args:
+        adom: ADOM name (defaults to DEFAULT_ADOM / "root" when omitted)
+        device: Managed device name (e.g. "FGT-HQ"). Defaults to DEFAULT_DEVICE
+            when omitted; required if that is not configured.
+        ip: Client IPv4 address to locate (exact match)
+        mac: Client MAC address to locate (case-insensitive)
+        hostname: Client hostname to locate (case-insensitive substring)
+
+    Returns:
+        dict with keys:
+            - adom, device
+            - query: the filter used (or None for full inventory)
+            - match_count
+            - clients: summarized detected-client records (ap/switch/port/vlan/...)
+            - error / error_code: on failure
+    """
+    client = get_fmg_client()
+    if not client:
+        return {"error": "FortiManager client not connected"}
+
+    adom = adom or get_default_adom()
+    device = device or get_default_device()
+    if not device:
+        return {
+            "error": "device is required (pass it, or configure DEFAULT_DEVICE)",
+            "error_code": "device_required",
+        }
+
+    try:
+        adom = validate_adom(adom)
+        device = validate_device_name(device)
+        raw = await client.proxy_call(
+            action="get",
+            resource="/api/v2/monitor/user/device/query",
+            target=[f"/adom/{adom}/device/{device}"],
+        )
+        results = _proxy_results(raw)
+        records = [r for r in results if isinstance(r, dict)] if isinstance(results, list) else []
+
+        has_filter = bool(ip or mac or hostname)
+        matched = [r for r in records if not has_filter or _client_matches(r, ip, mac, hostname)]
+        return {
+            "adom": adom,
+            "device": device,
+            "query": {"ip": ip, "mac": mac, "hostname": hostname} if has_filter else None,
+            "match_count": len(matched),
+            "clients": [_summarize_detected_client(r) for r in matched],
+        }
+    except Exception as e:
+        logger.error(f"Client-location lookup failed for {device}: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}

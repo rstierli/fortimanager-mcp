@@ -2015,6 +2015,56 @@ class FortiManagerClient:
         """
         return await self.get(f"/pm/config/device/{device}/vdom/{vdom}/system/sdwan")
 
+    async def get_device_interface_config(
+        self,
+        device: str,
+        vlanids: list[int] | None = None,
+        name: str | None = None,
+    ) -> Any:
+        """Get device-DB interface config objects, optionally filtered.
+
+        Reads the interface CONFIG objects FortiManager holds in its device
+        database (distinct from the live monitor proxy used by
+        ``get_device_interfaces``). Supports server-side filtering by exact
+        interface name and/or by VLAN id.
+
+        The ``filter`` param uses the FMG filter-array dialect (see
+        ``common.filter.object`` in cdb-device76.json). A single clause is a
+        flat array (``["name", "==", "wan1"]`` /
+        ``["vlanid", "in", 10, 20]``); combining both uses the compound form
+        ``[<clause>, "&&", <clause>]``.
+
+        FNDN: GET /pm/config/device/{device}/global/system/interface
+        """
+        url = f"/pm/config/device/{device}/global/system/interface"
+        name_clause = ["name", "==", name] if name else None
+        vlan_clause = ["vlanid", "in", *vlanids] if vlanids else None
+        params: dict[str, Any] = {}
+        if name_clause and vlan_clause:
+            params["filter"] = [name_clause, "&&", vlan_clause]
+        elif name_clause:
+            params["filter"] = name_clause
+        elif vlan_clause:
+            params["filter"] = vlan_clause
+        return await self.get(url, **params)
+
+    async def resolve_datasource(
+        self,
+        url: str,
+        attr: str,
+    ) -> Any:
+        """Resolve the objects an attribute can reference (``option: datasrc``).
+
+        Generic config-DB introspection: for a given cdb table ``url`` and an
+        attribute name ``attr``, FortiManager returns every object that
+        ``attr`` is allowed to reference. Documented generically in the swagger
+        cdb get-params (``params.cdb.get.table.option.opts`` -> ``datasrc``,
+        which requires the ``attr`` parameter).
+
+        FNDN: GET <cdb url> with option=datasrc, attr=<attr>
+        """
+        return await self.get(url, attr=attr, option="datasrc")
+
     async def create_sdwan_template(
         self,
         adom: str,

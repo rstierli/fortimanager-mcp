@@ -71,6 +71,15 @@ class Settings(BaseSettings):
         description="Default ADOM for API operations when not specified",
     )
 
+    # Default managed device (optional). When set, device-scoped tools may
+    # fall back to it if the caller omits `device`. Unset by default because
+    # there is no universal device name; set it (e.g. "myfw01") in
+    # single-FortiGate deployments so `device` can be optional.
+    DEFAULT_DEVICE: str = Field(
+        default="",
+        description="Default managed device for device-scoped tools when not specified",
+    )
+
     # MCP Server Settings
     MCP_SERVER_HOST: str = Field(
         # Operator-controlled bind. 0.0.0.0 is intended for Docker / reverse-proxy
@@ -128,7 +137,7 @@ class Settings(BaseSettings):
     # Tool Loading Mode
     FMG_TOOL_MODE: Literal["full", "dynamic"] = Field(
         default="full",
-        description="Tool loading mode: 'full' loads all 102 tools, 'dynamic' loads meta-tools only (~90% context reduction)",
+        description="Tool loading mode: 'full' loads all 106 tools, 'dynamic' loads meta-tools only (~90% context reduction)",
     )
 
     # Logging Configuration
@@ -330,3 +339,18 @@ def get_default_adom() -> str:
     import os
 
     return os.environ.get("DEFAULT_ADOM", "root")
+
+
+def get_default_device() -> str:
+    """Get the default managed device from the environment, or "" if unset.
+
+    Device-scoped tools may fall back to this when the caller omits `device`.
+    There is no universal device name, so the fallback is empty unless
+    DEFAULT_DEVICE is configured (e.g. "myfw01" in a single-FortiGate setup).
+
+    Returns:
+        The default device name, or an empty string if none is configured.
+    """
+    import os
+
+    return os.environ.get("DEFAULT_DEVICE", "").strip()
