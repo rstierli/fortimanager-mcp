@@ -105,6 +105,39 @@ ADDRESS_RECORDS: dict[str, Any] = {
     ],
 }
 
+# Shapes from the SD-WAN and client-location tools added upstream on
+# 07-31 (#40/#43): member gateways, health-check targets, detected-client
+# records. The carrier table grew with the tool surface; these pin it.
+SDWAN_GATEWAY = "203.0.113.254"
+HEALTH_SERVER = "198.51.100.53"
+CLIENT_IP = "192.0.2.77"
+CLIENT_MAC = "00:11:22:aa:bb:cc"
+CLIENT_HOSTNAME = "laptop-eng-07"
+
+SDWAN_RECORD: dict[str, Any] = {
+    "status": "success",
+    "device": DEVICE_NAME,
+    "members": [{"name": "wan1", "interface": "port1", "gateway": SDWAN_GATEWAY, "status": "up"}],
+    "health_checks": [{"name": "default-dns", "server": HEALTH_SERVER, "members": ["wan1"]}],
+}
+
+CLIENT_LOCATION_RECORD: dict[str, Any] = {
+    "status": "success",
+    "device": DEVICE_NAME,
+    "clients": [
+        {
+            "hostname": CLIENT_HOSTNAME,
+            "ip": CLIENT_IP,
+            "mac": CLIENT_MAC,
+            "vendor": "ExampleCorp",
+            "is_online": True,
+            "detected_interface": "port3",
+            "fortiswitch_port": "port12",
+            "vlan_id": 20,
+        }
+    ],
+}
+
 POLICY_RECORD: dict[str, Any] = {
     "status": "success",
     "package": PACKAGE_NAME,
@@ -136,6 +169,8 @@ class TestNothingLeaks:
                 "ADDRESS_RECORDS",
                 [SUBNET_NET, RANGE_START, RANGE_END, FQDN_VALUE, WILDCARD_TAIL],
             ),
+            ("SDWAN_RECORD", [SDWAN_GATEWAY, HEALTH_SERVER]),
+            ("CLIENT_LOCATION_RECORD", [CLIENT_IP, CLIENT_MAC, CLIENT_HOSTNAME]),
         ],
     )
     def test_no_identifier_survives(
@@ -204,6 +239,25 @@ class TestMaskedValuesRoundTrip:
     def test_wildcard_label_survives_the_round_trip(self, masker: OutputMasker) -> None:
         addresses = masker.mask_result(ADDRESS_RECORDS)["addresses"]
         assert addresses[3]["fqdn"].startswith("*.")
+
+    def test_sdwan_values_come_back(self, masker: OutputMasker) -> None:
+        engine = FPEEngine(KEY)
+        out = masker.mask_result(SDWAN_RECORD)
+
+        assert engine.unmask_ip_token(out["members"][0]["gateway"]) == SDWAN_GATEWAY
+        assert engine.unmask_ip_token(out["health_checks"][0]["server"]) == HEALTH_SERVER
+        assert out["members"][0]["interface"] == "port1"
+        assert out["health_checks"][0]["members"] == ["wan1"]
+
+    def test_client_location_values_come_back(self, masker: OutputMasker) -> None:
+        engine = FPEEngine(KEY)
+        client = masker.mask_result(CLIENT_LOCATION_RECORD)["clients"][0]
+
+        assert engine.unmask_ip_token(client["ip"]) == CLIENT_IP
+        assert engine.unmask_mac_token(client["mac"]) == CLIENT_MAC
+        assert engine.unmask_hostname(client["hostname"]) == CLIENT_HOSTNAME
+        assert client["detected_interface"] == "port3"
+        assert client["vlan_id"] == 20
 
 
 class TestKnownCarveOuts:

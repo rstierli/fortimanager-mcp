@@ -30,6 +30,19 @@ oversight:
   design work, not a table entry.
 - Object and policy names that embed an address (``srv-192.0.2.10``).
   Names route calls, see above.
+- Device coordinates (``latitude``/``longitude`` on dvmdb records).
+  Floats, so no format-preserving cipher covers them; masking would mean
+  an irreversible placeholder on a value the issue #34 scope never
+  claimed. Estate-location privacy is worth raising on the RFC, not
+  smuggling into this table.
+
+One consequence worth naming: ``get_device_client_location`` (upstream
+#43) filters by ``ip``/``mac``/``hostname``, the first FortiManager
+reader that accepts terminal values. With masking on, a masked client IP
+cannot be pasted back into it; the guard refuses tokens everywhere, so
+the caller must use a literal address. Restoring tokens for read-only
+tools like this one is exactly what the authenticated v2 format on the
+sibling RFC #40 would enable safely.
 """
 
 # Value-type tags. The wrapper maps each to a cipher; the guard maps the
@@ -75,6 +88,12 @@ FIELD_TYPES: dict[str, str] = {
     # Address objects.
     "start_ip": IP,  # live: 8.0.0 list_addresses "start-ip"
     "end_ip": IP,  # live: 8.0.0 list_addresses "end-ip"
+    # SD-WAN device-DB reads (upstream #40/#43, merged 2026-07-31).
+    "gateway": IP,  # static: sdwan_tools.py:117 (member gateway)
+    "server": IP_OR_HOST,  # static: sdwan_tools.py:128 (health-check target,
+    # an IP or a hostname depending on the deployment)
+    # Detected-client records (get_device_client_location, upstream #43).
+    "mac": MAC,  # static: dvm_tools.py:931 (_summarize_detected_client)
 }
 
 #: Subnet-shaped keys. FortiManager returns these as a two-element
