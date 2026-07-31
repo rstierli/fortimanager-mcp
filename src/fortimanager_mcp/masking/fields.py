@@ -77,9 +77,9 @@ def canonical_key(key: str) -> str:
 FIELD_TYPES: dict[str, str] = {
     # Device inventory. dvmdb records reach the caller both reshaped and
     # as raw passthrough, so both spellings matter.
-    "ip": IP,  # static: dvm_tools.py:312 (add_device device_config)
-    "sn": SERIAL,  # static: dvm_tools.py:320
-    "adm_usr": USERNAME,  # static: dvm_tools.py:314
+    "ip": IP,  # static: dvm_tools.py:313 (add_device device_config)
+    "sn": SERIAL,  # static: dvm_tools.py:321
+    "adm_usr": USERNAME,  # static: dvm_tools.py:315
     # System status arrives with spaced, title-cased keys, which
     # canonical_key folds onto these entries: "Serial Number" and
     # "Hostname" both observed live on 7.6.7 (get_system_status).
@@ -102,10 +102,23 @@ FIELD_TYPES: dict[str, str] = {
 #: "net mask" string elsewhere. Only the network part is an identifier.
 COMPOSITE_SUBNET: tuple[str, ...] = ("subnet",)  # static: object_tools.py:257
 
-#: Wildcard ADDRESS: an IP plus a wildcard mask. Distinct from a wildcard
-#: FQDN despite the shared word (Fortinet CLI reference). Not present in
-#: either lab, kept on the static citation.
-COMPOSITE_WILDCARD_IP: tuple[str, ...] = ("wildcard",)  # static: policy_tools.py:1026
+#: Wildcard ADDRESS: an IP plus a wildcard mask, which FortiManager
+#: returns under this key on a ``type=wildcard`` address object. Distinct
+#: from a wildcard FQDN despite the shared word.
+#:
+#: Weakest entry in this table, and labelled as such on purpose. Neither
+#: lab holds a wildcard address object, and this repo cannot create one
+#: (the create_address_* tools cover subnet, host, fqdn and range only),
+#: so there is no live observation and no output-key literal in our
+#: source to cite. The word does appear in ``policy_tools`` and
+#: ``validation``, but only as a category label and an address-type
+#: filter value, neither of which evidences an output key.
+#:
+#: Kept anyway because the field carries an address wherever it does
+#: exist, and a missing carrier leaks while a surplus one is only a
+#: no-op. Worth confirming against a real wildcard object before relying
+#: on it.
+COMPOSITE_WILDCARD_IP: tuple[str, ...] = ("wildcard",)  # unverified, see above
 
 #: DNS names. Handled as a composite rather than a plain DOMAIN carrier
 #: because FortiManager puts wildcard FQDNs in the SAME key: 8.0.0
