@@ -128,7 +128,7 @@ class Settings(BaseSettings):
     # Tool Loading Mode
     FMG_TOOL_MODE: Literal["full", "dynamic"] = Field(
         default="full",
-        description="Tool loading mode: 'full' loads all 101 tools, 'dynamic' loads meta-tools only (~90% context reduction)",
+        description="Tool loading mode: 'full' loads all 102 tools, 'dynamic' loads meta-tools only (~90% context reduction)",
     )
 
     # Logging Configuration

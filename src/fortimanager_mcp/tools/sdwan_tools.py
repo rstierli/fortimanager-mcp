@@ -94,6 +94,103 @@ async def get_sdwan_template(
         return {"error": msg, "error_code": code}
 
 
+def _as_list(value: Any) -> list[Any]:
+    """Normalize an FMG field that may be a list, a single dict, or absent."""
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        return [value]
+    return []
+
+
+def _summarize_sdwan(sdwan: dict[str, Any]) -> dict[str, Any]:
+    """Condense a raw ``system/sdwan`` object into a compact summary.
+
+    Defensive by design: every field is optional and the exact shapes vary by
+    FortiOS version, so each lookup tolerates missing keys and off-shape values.
+    """
+    members = [
+        {
+            "seq_num": m.get("seq-num"),
+            "interface": m.get("interface"),
+            "gateway": m.get("gateway"),
+            "zone": m.get("zone"),
+            "weight": m.get("weight"),
+            "priority": m.get("priority"),
+            "status": m.get("status"),
+        }
+        for m in _as_list(sdwan.get("members"))
+        if isinstance(m, dict)
+    ]
+    zones = [z.get("name") for z in _as_list(sdwan.get("zone")) if isinstance(z, dict)]
+    health_checks = [
+        {"name": h.get("name"), "server": h.get("server"), "members": h.get("members")}
+        for h in _as_list(sdwan.get("health-check"))
+        if isinstance(h, dict)
+    ]
+    services = [
+        {"id": s.get("id"), "name": s.get("name"), "mode": s.get("mode"), "dst": s.get("dst")}
+        for s in _as_list(sdwan.get("service"))
+        if isinstance(s, dict)
+    ]
+    return {
+        "status": sdwan.get("status"),
+        "load_balance_mode": sdwan.get("load-balance-mode"),
+        "member_count": len(members),
+        "members": members,
+        "zones": zones,
+        "health_checks": health_checks,
+        "service_rule_count": len(services),
+        "services": services,
+    }
+
+
+@mcp.tool()
+async def get_device_sdwan(
+    device: str,
+    vdom: str = "root",
+) -> dict[str, Any]:
+    """Get a managed device's SD-WAN configuration from FortiManager's device DB.
+
+    Unlike ``get_sdwan_template`` (which reads wanprof templates in an ADOM),
+    this reads the SD-WAN config local to the device itself -- members/zones,
+    health-checks and service (steering) rules -- from the device database
+    FortiManager keeps in sync with the FortiGate. Use this when a device runs
+    SD-WAN but has no wanprof template assigned (``list_sdwan_templates``
+    returns nothing) yet you still need its members, zones and steering rules.
+
+    Args:
+        device: Managed device name (e.g. "myfw01")
+        vdom: VDOM name (default: "root")
+
+    Returns:
+        dict with keys:
+            - device, vdom
+            - sdwan: raw system/sdwan config object
+            - summary: condensed members/zones/health-checks/service rules
+            - error / error_code: on failure
+    """
+    client = get_fmg_client()
+    if not client:
+        return {"error": "FortiManager client not connected"}
+
+    try:
+        device = validate_device_name(device)
+        vdom = validate_object_name(vdom, "VDOM")
+        sdwan = await client.get_device_sdwan(device=device, vdom=vdom)
+        summary = _summarize_sdwan(sdwan) if isinstance(sdwan, dict) else None
+        return {
+            "device": device,
+            "vdom": vdom,
+            "sdwan": sdwan,
+            "summary": summary,
+        }
+    except Exception as e:
+        logger.error(f"SD-WAN device-config read failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
+
+
 @mcp.tool()
 async def create_sdwan_template(
     adom: str,

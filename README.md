@@ -554,7 +554,7 @@ networks:
 | `assign_template_group` | Assign template group |
 | `validate_template` | Validate template against device |
 
-### SD-WAN Tools (7 tools)
+### SD-WAN Tools (8 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -565,6 +565,7 @@ networks:
 | `assign_sdwan_template` | Assign template to device |
 | `assign_sdwan_template_bulk` | Bulk assign SD-WAN template |
 | `unassign_sdwan_template` | Remove template assignment |
+| `get_device_sdwan` | Read a device's SD-WAN config (members/zones/health-checks/rules) from the device DB — for SD-WAN configured locally, not via a template |
 
 ## Usage Examples
 
