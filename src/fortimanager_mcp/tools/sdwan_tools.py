@@ -9,10 +9,11 @@ Based on FNDN FortiManager 7.6.5 API specifications.
 """
 
 import logging
+import re
 from typing import Any
 
 from fortimanager_mcp.server import get_fmg_client, mcp
-from fortimanager_mcp.utils.config import get_default_adom
+from fortimanager_mcp.utils.config import get_default_adom, get_default_device
 from fortimanager_mcp.utils.errors import client_safe_error
 from fortimanager_mcp.utils.validation import (
     validate_adom,
@@ -187,6 +188,211 @@ async def get_device_sdwan(
         }
     except Exception as e:
         logger.error(f"SD-WAN device-config read failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
+
+
+def _proxy_results(raw: Any) -> Any:
+    """Extract the FortiGate payload from a FMG proxy-response envelope.
+
+    ``proxy_call`` returns ``[{"response": {"results": <data>, ...}, ...}]``.
+    Returns the inner ``results`` (list or dict), or ``None`` if the envelope
+    is off-shape (defensive: the proxy layer can return errors or empties).
+    """
+    if isinstance(raw, list) and raw:
+        raw = raw[0]
+    if isinstance(raw, dict):
+        response = raw.get("response")
+        if isinstance(response, dict):
+            return response.get("results")
+    return None
+
+
+def _summarize_sdwan_monitor(members_raw: Any, health_raw: Any) -> dict[str, Any]:
+    """Condense the live SD-WAN member + health-check monitor payloads.
+
+    Defensive by design: proxy envelopes vary and health-check results are a
+    nested ``{health_check: {member: {...}}}`` map, so every level tolerates
+    missing/off-shape values.
+    """
+    members_results = _proxy_results(members_raw)
+    members = [
+        {
+            "interface": m.get("interface"),
+            "seq_num": m.get("seq_num"),
+            "link": m.get("link"),
+            "tx_bandwidth": m.get("tx_bandwidth"),
+            "rx_bandwidth": m.get("rx_bandwidth"),
+            "tx_bytes": m.get("tx_bytes"),
+            "rx_bytes": m.get("rx_bytes"),
+        }
+        for m in (members_results if isinstance(members_results, list) else [])
+        if isinstance(m, dict)
+    ]
+
+    hc_results = _proxy_results(health_raw)
+    sla: list[dict[str, Any]] = []
+    if isinstance(hc_results, dict):
+        for hc_name, per_member in hc_results.items():
+            if not isinstance(per_member, dict):
+                continue
+            for member, stats in per_member.items():
+                if not isinstance(stats, dict):
+                    continue
+                sla.append(
+                    {
+                        "health_check": hc_name,
+                        "interface": member,
+                        "status": stats.get("status"),
+                        "latency": stats.get("latency"),
+                        "jitter": stats.get("jitter"),
+                        "packet_loss": stats.get("packet_loss"),
+                        "sla_targets_met": stats.get("sla_targets_met"),
+                    }
+                )
+
+    return {
+        "member_count": len(members),
+        "members_up": sum(1 for m in members if m.get("link") == "up"),
+        "members": members,
+        "health_checks": sorted({s["health_check"] for s in sla}),
+        "sla": sla,
+        "sla_entry_count": len(sla),
+    }
+
+
+@mcp.tool()
+async def get_device_sdwan_monitor(
+    adom: str | None = None,
+    device: str | None = None,
+) -> dict[str, Any]:
+    """Read a device's LIVE SD-WAN Monitor status through the FortiManager proxy.
+
+    Unlike ``get_device_sdwan`` (which reads the device-DB SD-WAN *config*),
+    this proxies the device's live monitor API to return current SD-WAN
+    *runtime* state -- the data the FortiManager "SD-WAN Monitor" view shows:
+
+    - per-member link status and up/down bandwidth (``virtual-wan/members``)
+    - per-member SLA health for each health-check: latency, jitter, packet
+      loss and which SLA targets are met (``virtual-wan/health-check``)
+
+    Use it to answer "how are the uplinks doing right now / which member is
+    breaching SLA", which the config read cannot answer.
+
+    Args:
+        adom: ADOM name (defaults to DEFAULT_ADOM / "root" when omitted)
+        device: Managed device name (e.g. "FGT-HQ"). Defaults to DEFAULT_DEVICE
+            when omitted; required if that is not configured.
+
+    Returns:
+        dict with keys:
+            - adom, device
+            - members: raw virtual-wan/members proxy response
+            - health_check: raw virtual-wan/health-check proxy response
+            - summary: condensed member links/bandwidth + per-member SLA
+            - error / error_code: on failure
+    """
+    client = get_fmg_client()
+    if not client:
+        return {"error": "FortiManager client not connected"}
+
+    adom = adom or get_default_adom()
+    device = device or get_default_device()
+    if not device:
+        return {
+            "error": "device is required (pass it, or configure DEFAULT_DEVICE)",
+            "error_code": "device_required",
+        }
+
+    try:
+        adom = validate_adom(adom)
+        device = validate_device_name(device)
+        target = [f"/adom/{adom}/device/{device}"]
+        members = await client.proxy_call(
+            action="get",
+            resource="/api/v2/monitor/virtual-wan/members",
+            target=target,
+        )
+        health = await client.proxy_call(
+            action="get",
+            resource="/api/v2/monitor/virtual-wan/health-check",
+            target=target,
+        )
+        return {
+            "adom": adom,
+            "device": device,
+            "members": members,
+            "health_check": health,
+            "summary": _summarize_sdwan_monitor(members, health),
+        }
+    except Exception as e:
+        logger.error(f"SD-WAN monitor read failed for {device}: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
+
+
+@mcp.tool()
+async def resolve_datasource(
+    url: str,
+    attr: str,
+    adom: str | None = None,
+) -> dict[str, Any]:
+    """Resolve the objects a config attribute is allowed to reference.
+
+    Generic config-DB introspection built on FortiManager's ``option: datasrc``
+    mechanism: given a cdb table ``url`` and an attribute name ``attr``, FMG
+    returns every object ``attr`` may reference. For example, the objects an
+    SD-WAN ``service`` (steering) rule can point at -- internet-service-names,
+    address groups, etc. Documented generically in the swagger cdb get-params
+    (``params.cdb.get.table.option.opts`` -> ``datasrc``, requires ``attr``).
+
+    Only ``pm/config`` endpoints are accepted -- arbitrary URLs are rejected.
+
+    Args:
+        url: A cdb config path, e.g. "pm/config/adom/root/obj/system/sdwan"
+        attr: The attribute whose referenceable objects to resolve, e.g.
+            "internet-service-name" or "service"
+        adom: ADOM name (informational; default: DEFAULT_ADOM env var or "root")
+
+    Returns:
+        dict with keys:
+            - url, attr, adom
+            - datasource: raw list/dict of referenceable objects
+            - error / error_code: on failure
+    """
+    client = get_fmg_client()
+    if not client:
+        return {"error": "FortiManager client not connected"}
+
+    normalized = url.strip()
+    if not (normalized.startswith("pm/config") or normalized.startswith("/pm/config")):
+        return {
+            "error": "url must be a config-DB endpoint starting with 'pm/config' or '/pm/config'",
+            "error_code": "invalid_url",
+        }
+
+    # A datasrc attr is an attribute path, not an object name: it may be nested
+    # with a slash (e.g. "service/internet-service-name"), which the object-name
+    # validator would reject. Allow the object-name character set plus "/".
+    attr = attr.strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.\-/ ]{1,120}", attr):
+        return {
+            "error": "attr must be an attribute name or path (alphanumerics, '_', '.', '-', '/', space)",
+            "error_code": "invalid_attr",
+        }
+
+    adom = adom or get_default_adom()
+    try:
+        adom = validate_adom(adom)
+        datasource = await client.resolve_datasource(url=normalized, attr=attr)
+        return {
+            "url": normalized,
+            "attr": attr,
+            "adom": adom,
+            "datasource": datasource,
+        }
+    except Exception as e:
+        logger.error(f"Datasource resolve failed for {url}/{attr}: {e}")
         msg, code = client_safe_error(e)
         return {"error": msg, "error_code": code}
 
