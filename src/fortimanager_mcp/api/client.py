@@ -2131,3 +2131,175 @@ class FortiManagerClient:
             f"/pm/wanprof/adom/{adom}/{template}/scope member",
             data=scope,
         )
+
+    # =========================================================================
+    # Device-DB Configuration (issue #45)
+    # =========================================================================
+
+    async def create_device_interface(
+        self,
+        device: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Create an interface object in a device's device DB (global scope).
+
+        FNDN: ADD /pm/config/device/{device}/global/system/interface
+        """
+        return await self.add(
+            f"/pm/config/device/{device}/global/system/interface",
+            data=data,
+        )
+
+    async def update_device_interface(
+        self,
+        device: str,
+        name: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Update a device-DB interface object.
+
+        FNDN: UPDATE /pm/config/device/{device}/global/system/interface/{name}
+        """
+        return await self.update(
+            f"/pm/config/device/{device}/global/system/interface/{name}",
+            data=data,
+        )
+
+    async def delete_device_interface(
+        self,
+        device: str,
+        name: str,
+    ) -> dict[str, Any]:
+        """Delete a device-DB interface object.
+
+        FNDN: DELETE /pm/config/device/{device}/global/system/interface/{name}
+        """
+        return await self.delete(
+            f"/pm/config/device/{device}/global/system/interface/{name}",
+        )
+
+    async def list_device_dhcp_servers(
+        self,
+        device: str,
+        vdom: str = "root",
+    ) -> Any:
+        """List DHCP servers in a device's device DB (vdom scope).
+
+        FNDN: GET /pm/config/device/{device}/vdom/{vdom}/system/dhcp/server
+        """
+        return await self.get(f"/pm/config/device/{device}/vdom/{vdom}/system/dhcp/server")
+
+    async def create_device_dhcp_server(
+        self,
+        device: str,
+        vdom: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Create a DHCP server in a device's device DB.
+
+        FNDN: ADD /pm/config/device/{device}/vdom/{vdom}/system/dhcp/server
+        """
+        return await self.add(
+            f"/pm/config/device/{device}/vdom/{vdom}/system/dhcp/server",
+            data=data,
+        )
+
+    async def update_device_dhcp_server(
+        self,
+        device: str,
+        vdom: str,
+        server_id: int,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Update a device-DB DHCP server by id.
+
+        FNDN: UPDATE /pm/config/device/{device}/vdom/{vdom}/system/dhcp/server/{id}
+        """
+        return await self.update(
+            f"/pm/config/device/{device}/vdom/{vdom}/system/dhcp/server/{server_id}",
+            data=data,
+        )
+
+    async def delete_device_dhcp_server(
+        self,
+        device: str,
+        vdom: str,
+        server_id: int,
+    ) -> dict[str, Any]:
+        """Delete a device-DB DHCP server by id.
+
+        FNDN: DELETE /pm/config/device/{device}/vdom/{vdom}/system/dhcp/server/{id}
+        """
+        return await self.delete(
+            f"/pm/config/device/{device}/vdom/{vdom}/system/dhcp/server/{server_id}",
+        )
+
+    async def list_device_vaps(
+        self,
+        device: str,
+        vdom: str = "root",
+    ) -> Any:
+        """List wireless VAPs (SSIDs) in a device's device DB.
+
+        FNDN: GET /pm/config/device/{device}/vdom/{vdom}/wireless-controller/vap
+        """
+        return await self.get(f"/pm/config/device/{device}/vdom/{vdom}/wireless-controller/vap")
+
+    async def create_device_vap(
+        self,
+        device: str,
+        vdom: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Create a wireless VAP (SSID) in a device's device DB.
+
+        FNDN: ADD /pm/config/device/{device}/vdom/{vdom}/wireless-controller/vap
+        """
+        return await self.add(
+            f"/pm/config/device/{device}/vdom/{vdom}/wireless-controller/vap",
+            data=data,
+        )
+
+    async def delete_device_vap(
+        self,
+        device: str,
+        vdom: str,
+        name: str,
+    ) -> dict[str, Any]:
+        """Delete a device-DB wireless VAP by name.
+
+        FNDN: DELETE /pm/config/device/{device}/vdom/{vdom}/wireless-controller/vap/{name}
+        """
+        return await self.delete(
+            f"/pm/config/device/{device}/vdom/{vdom}/wireless-controller/vap/{name}",
+        )
+
+    async def get_device_wtp_profile(
+        self,
+        device: str,
+        vdom: str,
+        name: str,
+    ) -> Any:
+        """Get a device-DB FortiAP (WTP) profile by name.
+
+        FNDN: GET /pm/config/device/{device}/vdom/{vdom}/wireless-controller/wtp-profile/{name}
+        """
+        return await self.get(
+            f"/pm/config/device/{device}/vdom/{vdom}/wireless-controller/wtp-profile/{name}",
+        )
+
+    async def update_device_wtp_profile(
+        self,
+        device: str,
+        vdom: str,
+        name: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Update a device-DB FortiAP (WTP) profile.
+
+        FNDN: UPDATE /pm/config/device/{device}/vdom/{vdom}/wireless-controller/wtp-profile/{name}
+        """
+        return await self.update(
+            f"/pm/config/device/{device}/vdom/{vdom}/wireless-controller/wtp-profile/{name}",
+            data=data,
+        )

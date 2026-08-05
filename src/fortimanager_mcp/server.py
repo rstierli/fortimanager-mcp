@@ -2,7 +2,7 @@
 
 Uses FastMCP pattern for tool registration.
 Supports two modes:
-- full: All 106 tools loaded (default)
+- full: All 117 tools loaded (default)
 - dynamic: Only discovery tools loaded (~90% context reduction)
 """
 
@@ -66,7 +66,7 @@ async def health_check() -> str:
     """Check FortiManager MCP server health and connection status."""
     mode = settings.FMG_TOOL_MODE
     if mode == "full":
-        tool_info = "All 106 tools loaded"
+        tool_info = "All 117 tools loaded"
     else:
         tool_info = "Discovery tools + dynamic execution"
     return f"FortiManager MCP Server is healthy (mode: {mode}, {tool_info})"
@@ -88,7 +88,7 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
         """
         op = operation.lower().strip()
 
-        # Define available tools and their categories (106 tools total)
+        # Define available tools and their categories (117 tools total)
         tool_catalog = {
             "system": [
                 ("get_system_status", "Get FortiManager system status and version info"),
@@ -130,6 +130,19 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
                     "get_device_client_location",
                     "Asset Identity: locate a client (ip/mac/hostname) -> AP/switch/VLAN",
                 ),
+            ],
+            "device_config": [
+                ("create_device_interface", "Create VLAN subinterface in device DB"),
+                ("update_device_interface", "Update device-DB interface fields"),
+                ("delete_device_interface", "Delete device-DB interface"),
+                ("list_device_dhcp_servers", "List device-DB DHCP server scopes"),
+                ("create_device_dhcp_server", "Create DHCP scope (range/gateway/DNS)"),
+                ("update_device_dhcp_server", "Update DHCP scope by id"),
+                ("delete_device_dhcp_server", "Delete DHCP scope by id"),
+                ("list_device_vaps", "List wireless VAPs (SSIDs) in device DB"),
+                ("create_device_vap", "Create wireless VAP/SSID with VLAN mapping"),
+                ("delete_device_vap", "Delete wireless VAP"),
+                ("assign_vap_to_wtp_profile", "Add VAP to FortiAP profile radios"),
             ],
             "policy": [
                 ("create_package", "Create a new policy package"),
@@ -262,7 +275,7 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
             Categories with descriptions and tool counts
         """
         return {
-            "total_tools": 106,
+            "total_tools": 117,
             "categories": {
                 "system": {
                     "count": 17,
@@ -273,6 +286,13 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
                     "description": (
                         "Device management, VDOMs, bulk operations, interface config, "
                         "client location"
+                    ),
+                },
+                "device_config": {
+                    "count": 11,
+                    "description": (
+                        "Device-DB configuration: VLAN interfaces, DHCP servers, "
+                        "wireless VAPs/SSIDs, FortiAP profile assignment"
                     ),
                 },
                 "policy": {
@@ -355,6 +375,19 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
                     "get_device_interfaces",
                     "get_device_interface_config",
                     "get_device_client_location",
+                },
+                "device_config_tools": {
+                    "create_device_interface",
+                    "update_device_interface",
+                    "delete_device_interface",
+                    "list_device_dhcp_servers",
+                    "create_device_dhcp_server",
+                    "update_device_dhcp_server",
+                    "delete_device_dhcp_server",
+                    "list_device_vaps",
+                    "create_device_vap",
+                    "delete_device_vap",
+                    "assign_vap_to_wtp_profile",
                 },
                 "policy_tools": {
                     "create_package",
@@ -481,10 +514,11 @@ if settings.FMG_TOOL_MODE == "dynamic":
 
 else:
     # Full mode: Load all tools (default behavior)
-    logger.info("Loading in FULL mode - all 106 tools")
+    logger.info("Loading in FULL mode - all 117 tools")
 
     # Import all tool modules (registers them with the server)
     from fortimanager_mcp.tools import (  # noqa: E402, F401
+        device_config_tools,
         dvm_tools,
         object_tools,
         policy_tools,
