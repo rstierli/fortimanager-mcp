@@ -5,6 +5,12 @@ All notable changes to FortiManager MCP Server will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Stored scripts execute again under strict safety: the type screener now understands FMG's integer type codes.** `create_script` validates the caller's string name ("cli"), but FortiManager stores and returns `type` as an integer, so the execute-path readback handed the allowlist "1" and every CLI script created through the MCP was refused at execution time as "not a recognized screenable type". The screener now normalizes stored codes to their names before the check, using the mapping FortiManager's own schema reports (`get /dvmdb/script` with `option=syntax`, verified identical on 7.6.7 and 8.0.0): cli=1, tcl=2, cligrp=3, tclgrp=4, jinja=5. Create and execute now agree on both representations, Tcl codes are refused under their real name instead of a bare digit, and codes outside the schema keep failing closed. (#44)
+
 ## [1.9.2] - 2026-07-04
 
 ### Tests

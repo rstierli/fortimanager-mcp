@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from fortimanager_mcp.utils import task_guard
 from fortimanager_mcp.utils.config import get_settings
 from fortimanager_mcp.utils.validation import validate_script_content
 
@@ -166,10 +167,14 @@ class TestValidateScriptContent:
 
 @pytest.fixture(autouse=True)
 def clear_settings_cache():
-    """Clear settings cache so env var changes take effect."""
+    """Clear settings cache so env var changes take effect, and drop task
+    slots left in flight by mocked executes so tests cannot exhaust the
+    guard's concurrency limit as the file grows."""
     get_settings.cache_clear()
+    task_guard._reset()
     yield
     get_settings.cache_clear()
+    task_guard._reset()
 
 
 class TestScriptToolSafetyStrict:
@@ -566,4 +571,130 @@ class TestScriptTypeAllowlist:
             )
 
         assert result.get("success") is True
+        mock_client.return_value.create_script.assert_called_once()
+
+
+class TestScriptTypeCodeNormalization:
+    """FMG stores the script type as an integer code, not the string name.
+
+    Its own schema (get /dvmdb/script with option=syntax) maps cli=1, tcl=2,
+    cligrp=3, tclgrp=4, jinja=5, identical on 7.6.7 and 8.0.0. Create paths
+    send the string name, but the execute-path readback receives the stored
+    integer, so the allowlist must accept both or every CLI script created
+    through the MCP is blocked at execution time (#44).
+    """
+
+    @pytest.mark.asyncio
+    async def test_execute_stored_int_cli_type_passes_strict(self, monkeypatch):
+        monkeypatch.setenv("FORTIMANAGER_HOST", "test.example.com")
+        monkeypatch.setenv("FMG_SCRIPT_SAFETY", "strict")
+
+        from fortimanager_mcp.tools.script_tools import execute_script_on_device
+
+        client = AsyncMock()
+        client.get_script = AsyncMock(
+            return_value={"type": 1, "content": "config system interface\nend"}
+        )
+        client.execute_script = AsyncMock(return_value={"task": 11})
+
+        with patch("fortimanager_mcp.tools.script_tools.get_fmg_client", return_value=client):
+            result = await execute_script_on_device(adom="root", script="demo", device="FGT-01")
+
+        assert result.get("success") is True
+        client.execute_script.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_execute_stored_int_tcl_type_blocked_strict(self, monkeypatch):
+        monkeypatch.setenv("FORTIMANAGER_HOST", "test.example.com")
+        monkeypatch.setenv("FMG_SCRIPT_SAFETY", "strict")
+
+        from fortimanager_mcp.tools.script_tools import execute_script_on_device
+
+        client = AsyncMock()
+        client.get_script = AsyncMock(return_value={"type": 2, "content": "puts hi"})
+        client.execute_script = AsyncMock(return_value={"task": 1})
+
+        with patch("fortimanager_mcp.tools.script_tools.get_fmg_client", return_value=client):
+            result = await execute_script_on_device(adom="root", script="tcljob", device="FGT-01")
+
+        assert "error" in result
+        assert "tcl" in result["error"].lower()
+        client.execute_script.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stored_type", [3, 5, "3", "5"])
+    async def test_execute_stored_screenable_codes_pass_strict(self, monkeypatch, stored_type):
+        """cligrp=3 and jinja=5 are content-screenable regardless of representation."""
+        monkeypatch.setenv("FORTIMANAGER_HOST", "test.example.com")
+        monkeypatch.setenv("FMG_SCRIPT_SAFETY", "strict")
+
+        from fortimanager_mcp.tools.script_tools import execute_script_on_device
+
+        client = AsyncMock()
+        client.get_script = AsyncMock(
+            return_value={"type": stored_type, "content": "show system status"}
+        )
+        client.execute_script = AsyncMock(return_value={"task": 3})
+
+        with patch("fortimanager_mcp.tools.script_tools.get_fmg_client", return_value=client):
+            result = await execute_script_on_device(adom="root", script="grp", device="FGT-01")
+
+        assert result.get("success") is True
+
+    @pytest.mark.asyncio
+    async def test_execute_stored_int_tclgrp_type_blocked_strict(self, monkeypatch):
+        monkeypatch.setenv("FORTIMANAGER_HOST", "test.example.com")
+        monkeypatch.setenv("FMG_SCRIPT_SAFETY", "strict")
+
+        from fortimanager_mcp.tools.script_tools import execute_script_on_device
+
+        client = AsyncMock()
+        client.get_script = AsyncMock(return_value={"type": 4, "content": "puts hi"})
+        client.execute_script = AsyncMock(return_value={"task": 1})
+
+        with patch("fortimanager_mcp.tools.script_tools.get_fmg_client", return_value=client):
+            result = await execute_script_on_device(adom="root", script="tclg", device="FGT-01")
+
+        assert "error" in result
+        assert "tclgrp" in result["error"].lower()
+        client.execute_script.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_execute_unknown_int_code_still_blocked_strict(self, monkeypatch):
+        """Codes outside FMG's schema stay refused, fail closed."""
+        monkeypatch.setenv("FORTIMANAGER_HOST", "test.example.com")
+        monkeypatch.setenv("FMG_SCRIPT_SAFETY", "strict")
+
+        from fortimanager_mcp.tools.script_tools import execute_script_on_device
+
+        client = AsyncMock()
+        client.get_script = AsyncMock(return_value={"type": 7, "content": "show system status"})
+        client.execute_script = AsyncMock(return_value={"task": 1})
+
+        with patch("fortimanager_mcp.tools.script_tools.get_fmg_client", return_value=client):
+            result = await execute_script_on_device(adom="root", script="odd", device="FGT-01")
+
+        assert "error" in result
+        assert "not a recognized" in result["error"]
+        client.execute_script.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_create_accepts_int_code_string(self, monkeypatch):
+        """Creating with the numeric code agrees with the execute-path check."""
+        monkeypatch.setenv("FORTIMANAGER_HOST", "test.example.com")
+        monkeypatch.setenv("FMG_SCRIPT_SAFETY", "strict")
+
+        from fortimanager_mcp.tools.script_tools import create_script
+
+        with patch("fortimanager_mcp.tools.script_tools.get_fmg_client") as mock_client:
+            mock_client.return_value = AsyncMock()
+            mock_client.return_value.create_script = AsyncMock(return_value={})
+            result = await create_script(
+                adom="root",
+                name="bycode",
+                content="show system status",
+                script_type="1",
+            )
+
+        assert "error" not in result
         mock_client.return_value.create_script.assert_called_once()
