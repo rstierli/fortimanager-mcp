@@ -36,6 +36,19 @@ logger = logging.getLogger(__name__)
 SCREENABLE_SCRIPT_TYPES = {"cli", "cligrp", "jinja"}
 UNSCREENABLE_SCRIPT_TYPES = {"tcl", "tclgrp"}
 
+# FMG accepts the string name on create but stores and returns the type as an
+# integer code. Mapping from FMG's own schema (get /dvmdb/script with
+# option=syntax), identical on 7.6.7 and 8.0.0: cli=1, tcl=2, cligrp=3,
+# tclgrp=4, jinja=5. Without this, the execute-path readback check receives
+# "1" where create validated "cli" and refuses every stored script (#44).
+SCRIPT_TYPE_CODES = {
+    "1": "cli",
+    "2": "tcl",
+    "3": "cligrp",
+    "4": "tclgrp",
+    "5": "jinja",
+}
+
 
 def _check_script_type_safety(script_type: str | None) -> dict[str, Any] | None:
     """Enforce the strict-safety script-type allowlist.
@@ -57,13 +70,14 @@ def _check_script_type_safety(script_type: str | None) -> dict[str, Any] | None:
         return None
 
     normalized = script_type.lower()
+    normalized = SCRIPT_TYPE_CODES.get(normalized, normalized)
     if normalized in SCREENABLE_SCRIPT_TYPES:
         return None
 
     if normalized in UNSCREENABLE_SCRIPT_TYPES:
-        logger.warning(f"Script blocked — unscreenable script type: {script_type}")
+        logger.warning(f"Script blocked — unscreenable script type: {normalized}")
         return {
-            "error": f"Script type '{script_type}' cannot be safety-screened because its "
+            "error": f"Script type '{normalized}' cannot be safety-screened because its "
             "commands can be assembled at runtime. "
             "Set FMG_SCRIPT_SAFETY=disabled to override.",
         }
