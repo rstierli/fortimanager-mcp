@@ -361,6 +361,157 @@ class TestCreateDeviceVap:
         assert "error" in result
         mock_fmg_instance.add.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_sae_sends_sae_password_not_passphrase(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        # FMG keeps the SAE credential in its own field; sending `passphrase`
+        # for wpa3-sae is rejected with "vap sae password must be not empty".
+        mock_fmg_instance.add.return_value = (0, {"name": "TEST"})
+
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.create_device_vap(
+                device="FGT-01",
+                name="TEST",
+                ssid="TEST",
+                security="wpa3-sae",
+                passphrase="s3cretpass",
+            )
+
+        assert result.get("success") is True
+        data = mock_fmg_instance.add.call_args.kwargs["data"]
+        assert data["sae-password"] == "s3cretpass"
+        assert "passphrase" not in data
+
+    @pytest.mark.asyncio
+    async def test_sae_enables_pmf(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        mock_fmg_instance.add.return_value = (0, {"name": "TEST"})
+
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            await device_config_tools.create_device_vap(
+                device="FGT-01",
+                name="TEST",
+                ssid="TEST",
+                security="wpa3-sae",
+                passphrase="s3cretpass",
+            )
+
+        assert mock_fmg_instance.add.call_args.kwargs["data"]["pmf"] == "enable"
+
+    @pytest.mark.asyncio
+    async def test_sae_transition_sends_both_credentials(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        # Transition mode runs a WPA2 leg alongside SAE, so both fields apply.
+        mock_fmg_instance.add.return_value = (0, {"name": "TEST"})
+
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            await device_config_tools.create_device_vap(
+                device="FGT-01",
+                name="TEST",
+                ssid="TEST",
+                security="wpa3-sae-transition",
+                passphrase="s3cretpass",
+            )
+
+        data = mock_fmg_instance.add.call_args.kwargs["data"]
+        assert data["sae-password"] == "s3cretpass"
+        assert data["passphrase"] == "s3cretpass"
+
+    @pytest.mark.asyncio
+    async def test_sae_rejects_missing_password(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.create_device_vap(
+                device="FGT-01", name="TEST", ssid="TEST", security="wpa3-sae"
+            )
+
+        assert "error" in result
+        mock_fmg_instance.add.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_result_never_echoes_the_sae_password(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        mock_fmg_instance.add.return_value = (
+            0,
+            {"name": "TEST", "sae-password": "s3cretpass"},
+        )
+
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.create_device_vap(
+                device="FGT-01",
+                name="TEST",
+                ssid="TEST",
+                security="wpa3-sae",
+                passphrase="s3cretpass",
+            )
+
+        assert result.get("success") is True
+        assert "s3cretpass" not in repr(result)
+
+    @pytest.mark.asyncio
+    async def test_list_strips_the_sae_password(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        mock_fmg_instance.get.return_value = (
+            0,
+            [{"name": "TEST", "ssid": "TEST", "sae-password": "s3cretpass"}],
+        )
+
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.list_device_vaps(device="FGT-01")
+
+        assert "s3cretpass" not in repr(result)
+
+    @pytest.mark.asyncio
+    async def test_enterprise_refused_before_any_call(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        # Enterprise modes need a radius server or user group, which this tool
+        # does not wire up; creating the VAP anyway leaves an unusable SSID.
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.create_device_vap(
+                device="FGT-01", name="TEST", ssid="TEST", security="wpa2-only-enterprise"
+            )
+
+        assert "error" in result
+        assert "radius" in result["error"].lower()
+        mock_fmg_instance.add.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_wep_refused_without_claiming_it_needs_radius(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        # wep64/wep128 are in the security enum but take a `key`, not radius.
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.create_device_vap(
+                device="FGT-01", name="TEST", ssid="TEST", security="wep128"
+            )
+
+        assert "error" in result
+        assert "radius" not in result["error"].lower()
+        mock_fmg_instance.add.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_open_needs_no_credential(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        mock_fmg_instance.add.return_value = (0, {"name": "TEST"})
+
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.create_device_vap(
+                device="FGT-01", name="TEST", ssid="TEST", security="open"
+            )
+
+        assert result.get("success") is True
+        data = mock_fmg_instance.add.call_args.kwargs["data"]
+        assert "passphrase" not in data
+        assert "sae-password" not in data
+
 
 class TestDeleteDeviceVap:
     @pytest.mark.asyncio

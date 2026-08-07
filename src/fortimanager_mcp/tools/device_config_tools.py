@@ -471,10 +471,22 @@ async def delete_device_dhcp_server(
 # =============================================================================
 
 
+#: Credential fields FMG stores as ``type=password`` on ``wireless-controller
+#: vap``. WPA/WPA2 personal modes use ``passphrase``; WPA3-SAE keeps its own
+#: ``sae-password``, and transition mode carries both.
+_VAP_SECRET_FIELDS = ("passphrase", "sae-password")
+
+#: Security modes that authenticate with an SAE password.
+_VAP_SAE_MODES = frozenset({"wpa3-sae", "wpa3-sae-transition"})
+
+#: Security modes that authenticate with a WPA pre-shared key.
+_VAP_PSK_MODES = frozenset({"wpa-personal", "wpa-only-personal", "wpa2-only-personal"})
+
+
 def _sanitize_vap_result(result: Any) -> Any:
-    """Strip the passphrase from anything FMG echoes back."""
+    """Strip every credential field from anything FMG echoes back."""
     if isinstance(result, dict):
-        return {k: v for k, v in result.items() if k != "passphrase"}
+        return {k: v for k, v in result.items() if k not in _VAP_SECRET_FIELDS}
     if isinstance(result, list):
         return [_sanitize_vap_result(item) for item in result]
     return result
@@ -534,10 +546,16 @@ async def create_device_vap(
         name: VAP object name
         ssid: SSID to broadcast
         security: Security mode, a FortiOS ``wireless-controller vap``
-            security enum value (e.g. "wpa2-only-personal", "wpa3-sae",
-            "open"); default "wpa2-only-personal"
-        passphrase: WPA passphrase, 8-63 characters; required by the
-            personal/SAE modes
+            security enum value; default "wpa2-only-personal". Supported here:
+            the personal modes ("wpa-personal", "wpa-only-personal",
+            "wpa2-only-personal"), the SAE modes ("wpa3-sae",
+            "wpa3-sae-transition"), "owe" and "open". Enterprise and WEP modes
+            are refused, since neither a radius/user-group nor a WEP key is set
+            by this tool.
+        passphrase: Credential, 8-63 characters, required by the personal and
+            SAE modes. It is sent as ``passphrase`` for the personal modes and
+            as ``sae-password`` for SAE; transition mode carries both, since it
+            runs a WPA2 leg alongside SAE.
         vlanid: VLAN id to map wireless clients into
         vdom: VDOM the VAP lives in (default "root")
 
@@ -551,15 +569,37 @@ async def create_device_vap(
     try:
         device = validate_device_name(device)
         name = validate_object_name(name, "vap")
-        data: dict[str, Any] = {
-            "name": name,
-            "ssid": ssid,
-            "security": security.strip().lower(),
-        }
-        if passphrase is not None:
-            if not 8 <= len(passphrase) <= 63:
-                raise ValidationError("passphrase must be 8-63 characters")
-            data["passphrase"] = passphrase
+        security = security.strip().lower()
+        data: dict[str, Any] = {"name": name, "ssid": ssid, "security": security}
+
+        def _credential(mode: str) -> str:
+            if passphrase is None or not 8 <= len(passphrase) <= 63:
+                raise ValidationError(f"{mode} requires a passphrase of 8-63 characters")
+            return passphrase
+
+        if security in _VAP_SAE_MODES:
+            data["sae-password"] = _credential(security)
+            # SAE is only defined with Protected Management Frames.
+            data["pmf"] = "enable"
+            if security == "wpa3-sae-transition":
+                # Transition mode also runs a WPA2 leg off the PSK field.
+                data["passphrase"] = _credential(security)
+        elif security in _VAP_PSK_MODES:
+            data["passphrase"] = _credential(security)
+        elif security == "owe":
+            data["pmf"] = "enable"
+        elif security == "open":
+            pass
+        elif security.startswith("wep"):
+            raise ValidationError(
+                f"security '{security}' takes a WEP key, which this tool does not set"
+            )
+        else:
+            raise ValidationError(
+                f"security '{security}' needs radius or user-group auth, which this "
+                "tool does not set"
+            )
+
         if vlanid is not None:
             if not 1 <= vlanid <= 4094:
                 raise ValidationError(f"vlanid must be 1-4094, got {vlanid}")
