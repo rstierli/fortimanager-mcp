@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from fortimanager_mcp.masking.fields import REDACTED
 from fortimanager_mcp.masking.fpe_engine import FPEEngine
 from fortimanager_mcp.masking.tokens import PLACEHOLDER_MARK
 from fortimanager_mcp.masking.wrapper import OutputMasker
@@ -138,6 +139,153 @@ class TestFqdnComposite:
         assert out["fqdn"].startswith("*.")
         assert PLACEHOLDER_MARK not in out["fqdn"]
         assert engine.unmask_domain(out["fqdn"][2:]) == "example.com"
+
+    def test_wildcard_fqdn_key_takes_the_same_handler(
+        self, masker: OutputMasker, engine: FPEEngine
+    ) -> None:
+        """A third FQDN key beside fqdn and wildcard (PR #39 review).
+
+        It exists precisely to hold a starred name, so routing it to a
+        plain DOMAIN carrier would placeholder the common case.
+        """
+        out = masker.mask_result({"wildcard-fqdn": "*.example.com"})
+
+        assert out["wildcard-fqdn"].startswith("*.")
+        assert PLACEHOLDER_MARK not in out["wildcard-fqdn"]
+        assert engine.unmask_domain(out["wildcard-fqdn"][2:]) == "example.com"
+
+
+class TestRangeComposite:
+    """``iprange`` holds either one address or a start-end pair."""
+
+    def test_pair_masks_both_ends(self, masker: OutputMasker, engine: FPEEngine) -> None:
+        out = masker.mask_result({"iprange": "192.0.2.1-192.0.2.10"})
+
+        # Not a partition on the first "-": each token is itself
+        # "<kind>-<kid>-<ct>", so the joined pair holds six parts. See
+        # the separator test below for why that count is stable.
+        parts = out["iprange"].split("-")
+        assert len(parts) == 6
+        start = "-".join(parts[:3])
+        end = "-".join(parts[3:])
+
+        assert engine.unmask_ip_token(start) == "192.0.2.1"
+        assert engine.unmask_ip_token(end) == "192.0.2.10"
+
+    @pytest.mark.parametrize(
+        ("low", "high"),
+        [
+            ("192.0.2.1", "192.0.2.10"),
+            ("198.51.100.0", "198.51.100.255"),
+            ("2001:db8::1", "2001:db8::ffff"),
+        ],
+    )
+    def test_the_hyphen_separator_stays_unambiguous(
+        self, masker: OutputMasker, low: str, high: str
+    ) -> None:
+        """The join is only reversible because a token holds no spare "-".
+
+        A masked pair is two ``<kind>-<kid>-<ct>`` tokens joined by the
+        separator they also contain, so the value can only be split back
+        because ``kind``, ``kid`` and ``ct`` are each hyphen-free: the
+        kinds are ip4/ip6, the key id is hex, and a masked address prints
+        as dotted quad or colon-separated v6. Nothing enforces that, so
+        it is asserted here rather than trusted, for both families.
+        """
+        out = masker.mask_result({"iprange": f"{low}-{high}"})
+
+        assert out["iprange"].count("-") == 5
+
+    def test_single_address_masks_as_one(self, masker: OutputMasker, engine: FPEEngine) -> None:
+        out = masker.mask_result({"iprange": "192.0.2.1"})
+        assert engine.unmask_ip_token(out["iprange"]) == "192.0.2.1"
+
+    def test_stock_unset_value_is_left_alone(self, masker: OutputMasker) -> None:
+        """Every stock 7.6.7 service carries iprange 0.0.0.0 (measured)."""
+        assert masker.mask_result({"iprange": "0.0.0.0"}) == {"iprange": "0.0.0.0"}
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "192.0.2.1-",
+            "-192.0.2.10",
+            "192.0.2.1-192.0.2.10-192.0.2.20",
+            "192.0.2.1-not-an-address",
+            "example.com-192.0.2.1",
+        ],
+    )
+    def test_anything_that_is_not_a_range_fails_closed(
+        self, masker: OutputMasker, value: str
+    ) -> None:
+        """An unparsed range is still full of addresses, so never pass it."""
+        out = masker.mask_result({"iprange": value})
+
+        assert out["iprange"].startswith(PLACEHOLDER_MARK)
+        assert value not in out["iprange"]
+
+
+class TestIpv6InterfaceAddresses:
+    """``ip6-address`` carries its prefix, so it takes the subnet handler.
+
+    The PR #39 review suggested a plain IP carrier. That cannot parse
+    ``addr/prefix``: it would fail the value closed into an irreversible
+    placeholder, losing both the address and the prefix an operator needs.
+    """
+
+    def test_prefix_bearing_address_keeps_its_prefix(
+        self, masker: OutputMasker, engine: FPEEngine
+    ) -> None:
+        out = masker.mask_result({"ipv6": {"ip6-address": "2001:db8::1/64"}})
+        masked = out["ipv6"]["ip6-address"]
+
+        assert masked.endswith("/64")
+        assert PLACEHOLDER_MARK not in masked
+        assert engine.unmask_ip_token(masked[: -len("/64")]) == "2001:db8::1"
+
+    def test_bare_address_still_works(self, masker: OutputMasker, engine: FPEEngine) -> None:
+        """The handler falls through to a plain IP, so it is a superset."""
+        out = masker.mask_result({"ipv6": {"ip6-address": "2001:db8::1"}})
+        assert engine.unmask_ip_token(out["ipv6"]["ip6-address"]) == "2001:db8::1"
+
+
+class TestSecretsAreRedactedNotTokenised:
+    """A credential is not an identifier, so it does not get a token.
+
+    A token is reversible by design and stable across calls; both are
+    wrong for a secret. The constant is checked before every other rule
+    in the walk, so the value's shape never gets a say.
+    """
+
+    def test_admin_password_is_replaced_by_a_constant(self, masker: OutputMasker) -> None:
+        out = masker.mask_result({"name": "fgt-branch-01", "adm_pass": "not-a-real-password"})
+
+        assert out["adm_pass"] == REDACTED
+        assert "not-a-real-password" not in str(out)
+        assert out["name"] == "fgt-branch-01"
+
+    def test_a_list_valued_secret_is_replaced_whole(self, masker: OutputMasker) -> None:
+        """FortiManager returns adm_pass as a list of encrypted strings.
+
+        Recursing into it would be a chance to emit part of it, so the
+        redaction does not look at the value at all.
+        """
+        out = masker.mask_result({"adm_pass": ["ENC aaaa", "ENC bbbb"]})
+
+        assert out["adm_pass"] == REDACTED
+        assert "ENC" not in str(out)
+
+    def test_redaction_does_not_correlate_two_devices(self, masker: OutputMasker) -> None:
+        """Two different passwords must not be distinguishable."""
+        out = masker.mask_result(
+            {"devices": [{"adm_pass": "secret-one"}, {"adm_pass": "secret-two"}]}
+        )
+
+        first, second = out["devices"]
+        assert first["adm_pass"] == second["adm_pass"] == REDACTED
+
+    def test_the_constant_is_not_token_shaped(self) -> None:
+        """It must not read as something a caller could send back."""
+        assert PLACEHOLDER_MARK not in REDACTED
 
 
 class TestFailClosed:

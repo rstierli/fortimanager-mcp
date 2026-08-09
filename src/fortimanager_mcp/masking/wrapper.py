@@ -43,6 +43,7 @@ from typing import Any
 
 from fortimanager_mcp.masking.fields import (
     COMPOSITE_FQDN,
+    COMPOSITE_RANGE,
     COMPOSITE_SUBNET,
     COMPOSITE_WILDCARD_IP,
     DOMAIN,
@@ -52,6 +53,8 @@ from fortimanager_mcp.masking.fields import (
     IP,
     IP_OR_HOST,
     MAC,
+    REDACT_KEYS,
+    REDACTED,
     SERIAL,
     SKIP_VALUES,
     USERNAME,
@@ -166,6 +169,46 @@ class OutputMasker:
         """
         return self._mask_subnet(value)
 
+    def _mask_range(self, value: Any) -> Any:
+        """Mask both ends of a start-end address range.
+
+        ``firewall/service/custom`` returns ``iprange`` holding either a
+        single address or a ``start-end`` pair. Masking each side
+        independently keeps the pair reversible; masking the raw string
+        would fail closed on the hyphen and lose both addresses.
+
+        Fail-closed on anything else. A value that is neither a pair of
+        addresses nor a single one is not a range we understand, and
+        emitting it unchanged would be the one outcome this layer exists
+        to prevent.
+
+        The masked pair is rejoined with the same hyphen it was split on,
+        which is only reversible because a token holds no spare one:
+        ``<kind>-<kid>-<ct>`` where the kinds are ip4/ip6, the key id is
+        hex and a masked address prints as a dotted quad or a v6 address.
+        Nothing in the engine enforces that, so a test asserts it.
+        """
+        if not isinstance(value, str):
+            return value
+        if value.strip().lower() in SKIP_VALUES:
+            return value
+        start, found, end = value.partition("-")
+        if found:
+            if self._is_ip(start) and self._is_ip(end):
+                return f"{self._mask_scalar(IP, start)}-{self._mask_scalar(IP, end)}"
+            return self.placeholder(value)
+        if self._is_ip(value):
+            return self._mask_scalar(IP, value)
+        return self.placeholder(value)
+
+    @staticmethod
+    def _is_ip(value: str) -> bool:
+        try:
+            ipaddress.ip_address(value.strip())
+        except ValueError:
+            return False
+        return True
+
     def _mask_fqdn(self, value: Any) -> Any:
         """Mask a DNS name, preserving a wildcard label.
 
@@ -195,12 +238,20 @@ class OutputMasker:
 
     def _mask_entry(self, key: str, value: Any) -> Any:
         ckey = canonical_key(key)
+        if ckey in REDACT_KEYS:
+            # First, and without looking at the value: a secret is
+            # replaced whatever shape it arrives in (FortiManager returns
+            # adm_pass as a list of encrypted strings), and recursing into
+            # it would be a chance to emit part of it.
+            return REDACTED
         if ckey in COMPOSITE_SUBNET:
             return self._mask_subnet(value)
         if ckey in COMPOSITE_WILDCARD_IP:
             return self._mask_wildcard_ip(value)
         if ckey in COMPOSITE_FQDN:
             return self._mask_fqdn(value)
+        if ckey in COMPOSITE_RANGE:
+            return self._mask_range(value)
         vtype = FIELD_TYPES.get(ckey)
         if vtype is None:
             return self.mask_result(value)

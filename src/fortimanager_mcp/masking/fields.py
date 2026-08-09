@@ -94,13 +94,71 @@ FIELD_TYPES: dict[str, str] = {
     # an IP or a hostname depending on the deployment)
     # Detected-client records (get_device_client_location, upstream #43).
     "mac": MAC,  # static: dvm_tools.py:931 (_summarize_detected_client)
+    # ---------------------------------------------------------------- #
+    # Carriers added from the PR #39 review. The maintainer probed
+    # ``system/sdwan``, ``system/interface``, ``firewall/address`` and
+    # ``firewall/service/custom`` against live 7.6.7 and 8.0.0
+    # FortiManagers and found these returned in clear. They reach the
+    # caller through raw API passthrough, so no literal appears in our
+    # source and neither of our labs can populate them (both hold zero
+    # managed devices), which is exactly the passthrough case the module
+    # docstring says a single-source citation covers.
+    # ---------------------------------------------------------------- #
+    # SD-WAN (system/sdwan, returned raw beside the summary).
+    "source": IP,  # review: members[].source, health-check[].source
+    "source6": IP,  # review: SD-WAN IPv6 source
+    "gateway6": IP,  # review: SD-WAN IPv6 gateway
+    "preferred_source": IP,  # review: members[].preferred-source
+    "dns_match_ip": IP,  # review: health-check[].dns-match-ip
+    # Interface (system/interface). IPv4 variants; the v6 address keys are
+    # composites below, because they carry a prefix.
+    "gateway_address": IP,  # review
+    "remote_ip": IP,  # review
+    "ipunnumbered": IP,  # review
+    "dhcp_relay_ip": IP,  # review
+    "dhcp_relay_source_ip": IP,  # review
+    "dhcp6_relay_ip": IP,  # review
+    "dhcp6_relay_source_ip": IP,  # review
+    "server_ip": IP,  # review: dhcp-snooping-server-list[].server-ip
+    "secip_relay_ip": IP,  # review: secondaryip[].secip-relay-ip
+    "vrip": IP,  # review: vrrp[].vrip
+    "vrdst": IP,  # review: vrrp[].vrdst
+    "vrip6": IP,  # review: vrrp6[].vrip6
+    "vrdst6": IP,  # review: vrrp6[].vrdst6
+    # The interface MAC is a different key from the ``mac`` above.
+    "macaddr": MAC,  # review: system/interface macaddr, firewall/address
+    "start_mac": MAC,  # review: MAC-type address, also dynamic_mapping[]
+    "end_mac": MAC,  # review: MAC-type address, also dynamic_mapping[]
+    # Named in the review's suggested list but NOT in its confirmed-leak
+    # section, so they are schema attributes of system/interface rather
+    # than observed output. Kept on the same reasoning as the wildcard
+    # entry below: a surplus carrier is a no-op, a missing one leaks.
+    "virtual_mac": MAC,  # review, suggested only: not individually observed
+    "sfp_dsl_mac": MAC,  # review, suggested only: not individually observed
+    "substitute_dst_mac": MAC,  # review, suggested only: not individually observed
 }
 
 #: Subnet-shaped keys. FortiManager returns these as a two-element
 #: [network, netmask] list on address objects (observed live on 8.0.0:
 #: ["169.254.169.254", "255.255.255.255"]) and as a "net/prefix" or
 #: "net mask" string elsewhere. Only the network part is an identifier.
-COMPOSITE_SUBNET: tuple[str, ...] = ("subnet",)  # static: object_tools.py:257
+#:
+#: The IPv6 keys are here rather than in FIELD_TYPES, which is a
+#: deliberate departure from the PR #39 review's suggestion of
+#: ``ip6_address`` as a plain IP carrier. ``ip6-address`` carries its
+#: prefix (``2001:db8::1/64``), and a plain IP carrier cannot parse that:
+#: it fails closed into an irreversible placeholder, so the caller loses
+#: the address AND the prefix. This handler already falls through to a
+#: plain IP when there is no separator, so it is a superset of the scalar
+#: route for both spellings.
+COMPOSITE_SUBNET: tuple[str, ...] = (
+    "subnet",  # static: object_tools.py:257
+    "ip6_address",  # review: ipv6.ip6-address, prefix-bearing
+    "ip6_subnet",  # review: ipv6.ip6-subnet
+)
+#: The review also asked for "the IPv6 prefix keys" without naming them.
+#: They are not guessed at here: an invented key name is an entry that
+#: reads like coverage and masks nothing. Asked on the PR instead.
 
 #: Wildcard ADDRESS: an IP plus a wildcard mask, which FortiManager
 #: returns under this key on a ``type=wildcard`` address object. Distinct
@@ -126,7 +184,46 @@ COMPOSITE_WILDCARD_IP: tuple[str, ...] = ("wildcard",)  # unverified, see above
 #: {"fqdn": "gmail.com"}. The star is outside every cipher alphabet, so
 #: masking the raw value would burn a wildcard entry to an irreversible
 #: placeholder. The composite keeps the label and masks the domain.
-COMPOSITE_FQDN: tuple[str, ...] = ("fqdn",)  # live: 8.0.0 list_addresses
+#: placeholder. The composite keeps the label and masks the domain.
+#:
+#: ``wildcard-fqdn`` is a third FQDN key beside ``fqdn`` and ``wildcard``
+#: (PR #39 review). It takes the same handler because its whole point is
+#: the star that the handler exists to preserve.
+COMPOSITE_FQDN: tuple[str, ...] = (
+    "fqdn",  # live: 8.0.0 list_addresses
+    "wildcard_fqdn",  # review: firewall/address wildcard-fqdn
+)
+
+#: Start-end address ranges. ``firewall/service/custom`` returns
+#: ``iprange`` holding either a single address or a ``start-end`` pair
+#: (``192.0.2.1-192.0.2.10``). A plain IP carrier fails the pair closed on
+#: the hyphen, so both sides mask through their own handler.
+#:
+#: Confirmed live on 7.6.7 (list_services, every stock service carries
+#: ``iprange``), though every stock value is the unset ``0.0.0.0`` that
+#: SKIP_VALUES already passes through; the pair spelling is the review's
+#: live observation.
+COMPOSITE_RANGE: tuple[str, ...] = ("iprange",)  # live: 7.6.7 list_services
+
+#: Keys whose value is a secret, not an identifier. These are replaced by
+#: a fixed constant, never tokenised: a token is reversible by design and
+#: correlatable across calls, which is the opposite of what a credential
+#: needs. Checked before every other rule in the walk.
+#:
+#: ``adm_pass`` is the device manager password on a dvmdb device record
+#: (PR #39 review). It is worth knowing WHY it reaches the caller at all:
+#: ``get_device_status`` asks for an explicit ``fields`` list that does
+#: not include it, but FortiManager treats ``fields`` as a hint rather
+#: than a bound. Measured on 7.6.7: ``list_adoms(fields=["name"])``
+#: returns ``name`` AND ``oid``, and the client passes ``fields`` through
+#: untouched (api/client.py:691-697). ``list_devices`` and ``get_device``
+#: request no field list at all, so they carry the whole record.
+REDACT_KEYS: frozenset[str] = frozenset({"adm_pass"})
+
+#: What a redacted secret is replaced with. Deliberately not a token and
+#: not a keyed placeholder: both are stable across calls, so both would
+#: let a caller tell two devices' passwords apart.
+REDACTED = "[redacted]"
 
 #: Values that are structural rather than identifying. Masking these
 #: would destroy meaning ("any" is not an address) for zero privacy gain.
@@ -140,6 +237,12 @@ SKIP_VALUES: frozenset[str] = frozenset(
         "0.0.0.0 0.0.0.0",
         "255.255.255.255",
         "::",
+        # The unset MAC. It only starts mattering with the interface MAC
+        # carriers above: an appliance ships it on every port that has no
+        # hardware address, so without this every such port would carry a
+        # token standing for nothing. Observed live on a 7.4.12 FortiGate
+        # (the modem interface).
+        "00:00:00:00:00:00",
         "n/a",
         "-",
         "any",
