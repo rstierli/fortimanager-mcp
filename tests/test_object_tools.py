@@ -150,6 +150,85 @@ class TestAddressGroupTools:
         assert result["name"] == "test-group"
 
 
+class TestServiceGroupTools:
+    """Test service group tools."""
+
+    @pytest.mark.asyncio
+    async def test_update_service_group_members(
+        self,
+        mock_client: MagicMock,
+        mock_fmg_instance: MagicMock,
+        configure_mock_responses: None,
+    ) -> None:
+        """Test replacing service group membership."""
+        with patch("fortimanager_mcp.tools.object_tools.get_fmg_client", return_value=mock_client):
+            result = await object_tools.update_service_group(
+                adom="root",
+                name="Web-Services",
+                members=["HTTP", "HTTPS", "DNS"],
+            )
+
+        assert result["status"] == "success"
+        url = mock_fmg_instance.update.call_args.args[0]
+        assert url == "/pm/config/adom/root/obj/firewall/service/group/Web-Services"
+        data = mock_fmg_instance.update.call_args.kwargs
+        assert data["member"] == ["HTTP", "HTTPS", "DNS"]
+        assert "comment" not in data
+
+    @pytest.mark.asyncio
+    async def test_update_service_group_comment_only(
+        self,
+        mock_client: MagicMock,
+        mock_fmg_instance: MagicMock,
+        configure_mock_responses: None,
+    ) -> None:
+        """Test updating only the comment leaves members untouched."""
+        with patch("fortimanager_mcp.tools.object_tools.get_fmg_client", return_value=mock_client):
+            result = await object_tools.update_service_group(
+                adom="root",
+                name="Web-Services",
+                comment="reviewed",
+            )
+
+        assert result["status"] == "success"
+        data = mock_fmg_instance.update.call_args.kwargs
+        assert data == {"comment": "reviewed"}
+
+    @pytest.mark.asyncio
+    async def test_update_service_group_no_params(
+        self,
+        mock_client: MagicMock,
+        mock_fmg_instance: MagicMock,
+    ) -> None:
+        """Test update with no parameters returns an error without calling FMG."""
+        with patch("fortimanager_mcp.tools.object_tools.get_fmg_client", return_value=mock_client):
+            result = await object_tools.update_service_group(
+                adom="root",
+                name="Web-Services",
+            )
+
+        assert result["status"] == "error"
+        assert "No update parameters" in result["message"]
+        mock_fmg_instance.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_update_service_group_invalid_name(
+        self,
+        mock_client: MagicMock,
+        mock_fmg_instance: MagicMock,
+    ) -> None:
+        """Test invalid group name is rejected before any API call."""
+        with patch("fortimanager_mcp.tools.object_tools.get_fmg_client", return_value=mock_client):
+            result = await object_tools.update_service_group(
+                adom="root",
+                name="bad/name;",
+                members=["HTTP"],
+            )
+
+        assert result["status"] == "error"
+        mock_fmg_instance.update.assert_not_called()
+
+
 class TestServiceTools:
     """Test service object tools."""
 
