@@ -184,8 +184,6 @@ COMPOSITE_WILDCARD_IP: tuple[str, ...] = ("wildcard",)  # unverified, see above
 #: {"fqdn": "gmail.com"}. The star is outside every cipher alphabet, so
 #: masking the raw value would burn a wildcard entry to an irreversible
 #: placeholder. The composite keeps the label and masks the domain.
-#: placeholder. The composite keeps the label and masks the domain.
-#:
 #: ``wildcard-fqdn`` is a third FQDN key beside ``fqdn`` and ``wildcard``
 #: (PR #39 review). It takes the same handler because its whole point is
 #: the star that the handler exists to preserve.
@@ -223,12 +221,18 @@ COMPOSITE_RANGE: tuple[str, ...] = ("iprange",)  # live: 7.6.7 list_services
 #: paths lists both (dvm_tools.py:344 in add_device, :546 in
 #: add_devices_bulk). That strip covers only those two echo paths; no
 #: read path has one, which is why the field reaches a caller at all.
-REDACT_KEYS: frozenset[str] = frozenset({"adm_pass", "adm_passwd"})
-
-#: What a redacted secret is replaced with. Deliberately not a token and
-#: not a keyed placeholder: both are stable across calls, so both would
-#: let a caller tell two devices' passwords apart.
-REDACTED = "[redacted]"
+#:
+#: ``password`` is here on direction rather than on an observation. Two
+#: raw-passthrough surfaces can carry one: an SD-WAN health check with an
+#: HTTP probe, and a PPPoE interface. Neither lab can populate them, so
+#: this is not claimed as measured. Redacting a key that turns out never
+#: to appear costs nothing; the reverse is a credential in clear.
+#:
+#: Deliberately NOT ``username``. A PPPoE account is an identifier and
+#: belongs in FIELD_TYPES rather than here, but the name is far too
+#: common to mask at any depth without parent-key scoping the walk does
+#: not have. Raised on the PR instead of guessed at.
+REDACT_KEYS: frozenset[str] = frozenset({"adm_pass", "adm_passwd", "password"})
 
 #: Values that are structural rather than identifying. Masking these
 #: would destroy meaning ("any" is not an address) for zero privacy gain.

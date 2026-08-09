@@ -24,8 +24,8 @@ from typing import Any
 
 import pytest
 
-from fortimanager_mcp.masking.fields import REDACTED
 from fortimanager_mcp.masking.fpe_engine import FPEEngine
+from fortimanager_mcp.masking.tokens import REDACTED
 from fortimanager_mcp.masking.wrapper import OutputMasker
 
 KEY = "2DE79D232DF5585D68CE47882AE256D6"

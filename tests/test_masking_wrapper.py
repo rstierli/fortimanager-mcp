@@ -9,10 +9,9 @@ from typing import Any
 
 import pytest
 
-from fortimanager_mcp.masking.fields import REDACTED
 from fortimanager_mcp.masking.fpe_engine import FPEEngine
-from fortimanager_mcp.masking.tokens import PLACEHOLDER_MARK
-from fortimanager_mcp.masking.wrapper import OutputMasker
+from fortimanager_mcp.masking.tokens import PLACEHOLDER_MARK, REDACTED, strict_pattern
+from fortimanager_mcp.masking.wrapper import OutputMasker, TokenInInput, guard_args
 
 KEY = "2DE79D232DF5585D68CE47882AE256D6"
 
@@ -181,7 +180,7 @@ class TestRangeComposite:
         ],
     )
     def test_the_hyphen_separator_stays_unambiguous(
-        self, masker: OutputMasker, low: str, high: str
+        self, masker: OutputMasker, engine: FPEEngine, low: str, high: str
     ) -> None:
         """The join is only reversible because a token holds no spare "-".
 
@@ -191,18 +190,68 @@ class TestRangeComposite:
         kinds are ip4/ip6, the key id is hex, and a masked address prints
         as dotted quad or colon-separated v6. Nothing enforces that, so
         it is asserted here rather than trusted, for both families.
+
+        The assertion is the round trip, not the hyphen count. Counting
+        alone would pass on a value that split 6 ways but did not align
+        3 and 3, which is the thing a consumer actually depends on.
         """
         out = masker.mask_result({"iprange": f"{low}-{high}"})
 
-        assert out["iprange"].count("-") == 5
+        parts = out["iprange"].split("-")
+        assert len(parts) == 6
+        assert engine.unmask_ip_token("-".join(parts[:3])) == low
+        assert engine.unmask_ip_token("-".join(parts[3:])) == high
 
     def test_single_address_masks_as_one(self, masker: OutputMasker, engine: FPEEngine) -> None:
         out = masker.mask_result({"iprange": "192.0.2.1"})
         assert engine.unmask_ip_token(out["iprange"]) == "192.0.2.1"
 
-    def test_stock_unset_value_is_left_alone(self, masker: OutputMasker) -> None:
-        """Every stock 7.6.7 service carries iprange 0.0.0.0 (measured)."""
-        assert masker.mask_result({"iprange": "0.0.0.0"}) == {"iprange": "0.0.0.0"}
+    def test_a_half_structural_pair_still_masks_the_real_address(
+        self, masker: OutputMasker, engine: FPEEngine
+    ) -> None:
+        """One structural end does not buy the other end its freedom.
+
+        ``0.0.0.0-192.0.2.10`` masks only the right-hand side, so the
+        result holds three hyphens rather than five. That breaks the
+        split-six shape above, which is why it is pinned separately
+        instead of being left to look like a bug later: withholding a
+        real address because its partner is structural would be worse.
+        """
+        out = masker.mask_result({"iprange": "0.0.0.0-192.0.2.10"})
+        head, _, tail = out["iprange"].partition("-")
+
+        assert head == "0.0.0.0"
+        assert engine.unmask_ip_token(tail) == "192.0.2.10"
+
+    @pytest.mark.parametrize("value", ["0.0.0.0", "any", "all", "n/a", "-", ""])
+    def test_structural_values_are_left_alone(self, masker: OutputMasker, value: str) -> None:
+        """Every stock 7.6.7 service carries iprange 0.0.0.0 (measured).
+
+        The handler's own skip check is what does this. Without the whole
+        list, deleting that check survived the suite: "0.0.0.0" exits
+        identically through the scalar route's skip, so it alone kills
+        no mutant.
+        """
+        assert masker.mask_result({"iprange": value}) == {"iprange": value}
+
+    def test_a_list_of_ranges_does_not_pass_through(
+        self, masker: OutputMasker, engine: FPEEngine
+    ) -> None:
+        """The shape the handler did not expect must not be the shape it trusts.
+
+        Measured before this was fixed: a list value under a composite key
+        was returned verbatim, addresses and all, because every composite
+        special-cased the known shapes and fell through to ``return
+        value``. Multi-valued FortiManager fields are lists.
+        """
+        record = {"iprange": ["192.0.2.1-192.0.2.10"]}
+
+        out = masker.mask_result(record)
+
+        assert out != record
+        assert "192.0.2.1" not in str(out)
+        parts = out["iprange"][0].split("-")
+        assert engine.unmask_ip_token("-".join(parts[:3])) == "192.0.2.1"
 
     @pytest.mark.parametrize(
         "value",
@@ -255,6 +304,55 @@ class TestIpv6InterfaceAddresses:
         assert engine.unmask_ip_token(out["ipv6"]["ip6-address"]) == "2001:db8::1"
 
 
+class TestCompositesFailClosedOnUnexpectedShapes:
+    """No composite may return a value it did not understand.
+
+    This was the class of bug, not one instance of it: each composite
+    special-cased the shapes FortiManager is known to use and ended in
+    ``return value``, so a list under any of those keys reached the
+    caller with its addresses in clear. Measured on all four before the
+    fix. Parametrised so a future composite that forgets is caught here
+    rather than by whoever reads the transcript.
+    """
+
+    @pytest.mark.parametrize(
+        ("key", "value", "secret"),
+        [
+            ("iprange", ["198.51.100.10-198.51.100.20"], "198.51.100.10"),
+            ("subnet", ["203.0.113.0"], "203.0.113.0"),
+            ("subnet", ["203.0.113.0", "255.255.255.0", "extra"], "203.0.113.0"),
+            ("wildcard", ["203.0.113.0"], "203.0.113.0"),
+            ("ip6-address", ["2001:db8::1", 64], "2001:db8::1"),
+            ("ip6-subnet", ["2001:db8::1"], "2001:db8::1"),
+            ("fqdn", ["mail.example.com"], "mail.example.com"),
+            ("wildcard-fqdn", ["*.example.com"], "example.com"),
+        ],
+    )
+    def test_a_list_value_never_passes_through(
+        self, masker: OutputMasker, key: str, value: Any, secret: str
+    ) -> None:
+        out = masker.mask_result({key: value})
+
+        assert out[key] != value
+        assert secret not in str(out), f"{secret} survived under {key}"
+
+    def test_a_non_string_scalar_is_left_alone(self, masker: OutputMasker) -> None:
+        """The bound on the class: an int cannot carry an address."""
+        record = {"iprange": 0, "subnet": None, "fqdn": True}
+        assert masker.mask_result(record) == record
+
+    def test_the_known_two_string_subnet_shape_still_keeps_its_mask(
+        self, masker: OutputMasker
+    ) -> None:
+        """The fix must not turn a netmask into a token.
+
+        The list branch runs only after the known shapes, so the live
+        8.0.0 [network, netmask] form is unaffected.
+        """
+        out = masker.mask_result({"subnet": ["203.0.113.0", "255.255.255.0"]})
+        assert out["subnet"][1] == "255.255.255.0"
+
+
 class TestSecretsAreRedactedNotTokenised:
     """A credential is not an identifier, so it does not get a token.
 
@@ -263,7 +361,9 @@ class TestSecretsAreRedactedNotTokenised:
     in the walk, so the value's shape never gets a say.
     """
 
-    @pytest.mark.parametrize("key", ["adm_pass", "adm_passwd", "adm-pass", "Adm Pass", "ADM_PASS"])
+    @pytest.mark.parametrize(
+        "key", ["adm_pass", "adm_passwd", "adm-pass", "Adm Pass", "ADM_PASS", "password"]
+    )
     def test_admin_password_is_replaced_by_a_constant(self, masker: OutputMasker, key: str) -> None:
         """Both spellings, and every casing canonical_key folds onto them.
 
@@ -297,9 +397,35 @@ class TestSecretsAreRedactedNotTokenised:
         first, second = out["devices"]
         assert first["adm_pass"] == second["adm_pass"] == REDACTED
 
-    def test_the_constant_is_not_token_shaped(self) -> None:
-        """It must not read as something a caller could send back."""
-        assert PLACEHOLDER_MARK not in REDACTED
+    def test_the_constant_is_refused_if_it_comes_back(self, engine: FPEEngine) -> None:
+        """The rule this layer states about every value it emits.
+
+        The first version of this test asserted the opposite of its own
+        docstring: it said the constant "must not read as something a
+        caller could send back", and then asserted only that the
+        placeholder mark was absent from it, which is precisely what let
+        it be sent back unrefused. Measured with the old ``[redacted]``:
+        ``guard_args`` accepted it, so a model that echoed a masked
+        device record into a write would have set that literal text as
+        the device's admin password with nothing objecting.
+
+        The constant is part of the reserved vocabulary now, so the
+        guard refuses it like any other emitted value.
+        """
+        pattern = strict_pattern(engine.str_alphabet, engine.mask_suffix)
+
+        with pytest.raises(TokenInInput):
+            guard_args({"adm_pass": REDACTED}, pattern, engine.mask_suffix)
+
+    def test_a_plain_looking_constant_would_not_have_been_refused(self, engine: FPEEngine) -> None:
+        """The negative control for the test above.
+
+        Without this, that test passes for a constant that is refused for
+        some unrelated reason, and the property it claims goes unchecked.
+        """
+        pattern = strict_pattern(engine.str_alphabet, engine.mask_suffix)
+
+        guard_args({"adm_pass": "[redacted]"}, pattern, engine.mask_suffix)
 
 
 class TestFailClosed:

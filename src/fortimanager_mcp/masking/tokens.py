@@ -35,6 +35,15 @@ import re
 #: by design, so it must never be accepted back as an input either.
 PLACEHOLDER_MARK = "masked-unrepresentable-"
 
+#: Emitted in place of a secret (the keys in ``fields.REDACT_KEYS``). It
+#: belongs in the reserved vocabulary rather than being a loose string in
+#: the carrier table, for the same reason the placeholder above does:
+#: every value this server emits has to be recognizable to the guard. An
+#: unmarked constant like ``[redacted]`` is not, so a model that echoed a
+#: masked device record back into a write would set that literal text as
+#: the device's admin password and no layer would object.
+REDACTED = "masked-secret-withheld"
+
 #: Prefix-marked token families. ``ip4``/``ip6``/``mac``/``sn`` are the
 #: FortiManager envelopes; ``host``/``user``/``url`` are FortiAnalyzer's
 #: own forms, included because a token carried over from the sibling MCP
@@ -48,6 +57,7 @@ PREFIX_MARKERS: tuple[str, ...] = (
     "host-",
     "user-",
     PLACEHOLDER_MARK,
+    REDACTED,
 )
 
 _KID = "[0-9a-f]{4}"

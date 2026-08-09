@@ -54,7 +54,6 @@ from fortimanager_mcp.masking.fields import (
     IP_OR_HOST,
     MAC,
     REDACT_KEYS,
-    REDACTED,
     SERIAL,
     SKIP_VALUES,
     USERNAME,
@@ -63,6 +62,7 @@ from fortimanager_mcp.masking.fields import (
 from fortimanager_mcp.masking.fpe_engine import MASKING_KEY_ENV, FPEEngine, MaskingError
 from fortimanager_mcp.masking.tokens import (
     PLACEHOLDER_MARK,
+    REDACTED,
     contains_token,
     looks_token_shaped,
     strict_pattern,
@@ -159,6 +159,8 @@ class OutputMasker:
                         return value
                     return f"{self._mask_scalar(IP, net)}{sep}{tail}"
             return self._mask_scalar(IP, value)
+        if isinstance(value, list):
+            return self._each(self._mask_subnet, value)
         return value
 
     def _mask_wildcard_ip(self, value: Any) -> Any:
@@ -188,6 +190,8 @@ class OutputMasker:
         hex and a masked address prints as a dotted quad or a v6 address.
         Nothing in the engine enforces that, so a test asserts it.
         """
+        if isinstance(value, list):
+            return self._each(self._mask_range, value)
         if not isinstance(value, str):
             return value
         if value.strip().lower() in SKIP_VALUES:
@@ -217,6 +221,8 @@ class OutputMasker:
         ``fqdn``). ``*`` is outside every cipher alphabet, so masking the
         raw value would burn every wildcard entry to a placeholder.
         """
+        if isinstance(value, list):
+            return self._each(self._mask_fqdn, value)
         if not isinstance(value, str):
             return value
         if value.strip().lower() in SKIP_VALUES:
@@ -235,6 +241,27 @@ class OutputMasker:
         return f"*.{masked}"
 
     # -- walk ----------------------------------------------------------- #
+
+    def _each(self, handler: Any, value: Any) -> Any:
+        """Apply a composite handler to every string in a list.
+
+        Every composite below special-cases the shapes FortiManager is
+        known to use and returned anything else unchanged, which is the
+        one thing this layer must never do: a list of addresses under a
+        composite key reached the caller verbatim. Measured, before this
+        existed::
+
+            {"iprange": ["198.51.100.10-198.51.100.20"]}  -> unchanged
+            {"ip6-address": ["2001:db8::1", 64]}          -> unchanged
+
+        Both are plausible FortiManager shapes (multi-valued fields are
+        lists, and a prefix length is as likely to arrive as an int as a
+        string). The scalar route already masks list elements one by one;
+        the composites now do the same, so an unrecognized shape fails
+        closed per element instead of passing whole. Non-strings are
+        returned as they are: an int or a bool cannot carry an address.
+        """
+        return [handler(item) if isinstance(item, str) else item for item in value]
 
     def _mask_entry(self, key: str, value: Any) -> Any:
         ckey = canonical_key(key)
