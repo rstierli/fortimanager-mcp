@@ -212,6 +212,13 @@ class TestRangeComposite:
             "192.0.2.1-192.0.2.10-192.0.2.20",
             "192.0.2.1-not-an-address",
             "example.com-192.0.2.1",
+            # No hyphen at all, so these reach the handler's other exit.
+            # Without them a mutant that returns the value unchanged there
+            # survives the whole suite: every case above fails closed on
+            # the pair branch instead, and proves nothing about this one.
+            "example.com",
+            "192.0.2",
+            "unset",
         ],
     )
     def test_anything_that_is_not_a_range_fails_closed(
