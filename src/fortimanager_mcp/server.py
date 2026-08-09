@@ -7,6 +7,7 @@ Supports two modes:
 """
 
 import hmac
+import json
 import logging
 from typing import Any
 
@@ -563,6 +564,92 @@ def run_stdio() -> None:
     asyncio.run(stdio_main())
 
 
+class _BodyTooLarge(Exception):
+    """Raised inside the wrapped receive when a body outgrows its cap."""
+
+
+class BodyLimitMiddleware:
+    """ASGI middleware that bounds the size of a request body.
+
+    The Streamable HTTP handler buffers the entire body into memory before
+    decoding it, so an unbounded body is an unbounded allocation. Reject
+    anything over ``max_bytes`` with 413. ``max_bytes <= 0`` disables the guard.
+    """
+
+    def __init__(self, app: Any, max_bytes: int) -> None:
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] != "http" or self.max_bytes <= 0:
+            await self.app(scope, receive, send)
+            return
+
+        declared = dict(scope.get("headers", [])).get(b"content-length")
+        if declared is not None:
+            try:
+                if int(declared) > self.max_bytes:
+                    await self._reject(send)
+                    return
+            except ValueError:
+                pass  # malformed header: fall through to counting the real bytes
+
+        # Content-Length is advisory (absent on chunked bodies, and a client may
+        # simply lie), so also count what actually arrives.
+        received = 0
+        over_limit = False
+        responded = False
+
+        async def counting_receive() -> Any:
+            nonlocal received, over_limit
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.max_bytes:
+                    over_limit = True
+                    raise _BodyTooLarge
+            return message
+
+        async def gated_send(message: Any) -> None:
+            nonlocal responded
+            # Once the cap trips, drop whatever downstream emits. Starlette's
+            # ServerErrorMiddleware turns the abort into a 500 and re-raises;
+            # letting that through would both mislabel the error and make the
+            # 413 below a second response on the same request.
+            if over_limit:
+                return
+            if message["type"] == "http.response.start":
+                responded = True
+            await send(message)
+
+        try:
+            await self.app(scope, counting_receive, gated_send)
+        except _BodyTooLarge:
+            pass
+
+        # Checked outside the except so the guard still answers if some
+        # middleware swallows the abort instead of re-raising it.
+        if over_limit and not responded:
+            await self._reject(send)
+
+    async def _reject(self, send: Any) -> None:
+        logger.warning("Rejected request body over MCP_MAX_REQUEST_BYTES (%d)", self.max_bytes)
+        payload = json.dumps(
+            {"error": "Payload Too Large", "detail": f"Request body exceeds {self.max_bytes} bytes"}
+        ).encode()
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 413,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(payload)).encode()),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": payload})
+
+
 def _ensure_http_auth_or_die() -> None:
     """Fail closed: refuse to expose the HTTP transport without authentication.
 
@@ -699,7 +786,12 @@ def run_http() -> None:
             Mount("/", app=mcp.streamable_http_app()),
         ],
         lifespan=app_lifespan,
-        middleware=[Middleware(AuthMiddleware)],
+        # Auth first so unauthenticated callers are rejected on headers alone,
+        # before the body cap has to read anything.
+        middleware=[
+            Middleware(AuthMiddleware),
+            Middleware(BodyLimitMiddleware, max_bytes=settings.MCP_MAX_REQUEST_BYTES),
+        ],
     )
 
     uvicorn.run(
@@ -707,6 +799,8 @@ def run_http() -> None:
         host=settings.MCP_SERVER_HOST,
         port=settings.MCP_SERVER_PORT,
         log_level=settings.LOG_LEVEL.lower(),
+        # None is uvicorn's own "unbounded" sentinel.
+        limit_concurrency=settings.MCP_MAX_CONCURRENT_REQUESTS or None,
     )
 
 

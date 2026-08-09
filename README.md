@@ -190,6 +190,10 @@ DEFAULT_ADOM=root
 # preserve the Mcp-Session-Id header, so each request is handled independently.
 # MCP_STATELESS_HTTP=true
 
+# HTTP request bounds (optional - bounded by default)
+# MCP_MAX_REQUEST_BYTES=10485760     # Max request body; oversize gets 413. 0 disables.
+# MCP_MAX_CONCURRENT_REQUESTS=64     # Max in-flight requests; excess gets 503. 0 disables.
+
 # Safety Guardrails (optional - strict by default)
 # FMG_SCRIPT_SAFETY=strict    # Block dangerous CLI commands in scripts (factory-reset, reboot, etc.)
 # FMG_POLICY_SAFETY=strict    # Block overly permissive policies (srcaddr=all + dstaddr=all + accept)
