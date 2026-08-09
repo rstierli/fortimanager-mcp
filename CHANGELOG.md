@@ -7,9 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-08-09
+
+Minor release: new device-config read tools and an SD-WAN reader, a service-group update tool, address/service negation on policies, HTTP transport hardening, and error-handling fixes.
+
+### Added
+
+- **`get_device_sdwan`** reads a device's SD-WAN configuration from the FMG object DB (#40).
+- **`get_device_interface_config`, `get_device_client_location`, `get_device_sdwan_monitor`, `resolve_datasource`** for reading device-level interface and config state and resolving datasource paths (#43).
+- **`update_service_group`** updates a service group's members and comment, mirroring `update_address_group`; a supplied member list replaces the existing set (#42).
+- **Address and service negation on `create_firewall_policy` / `update_firewall_policy`.** New `srcaddr_negate` / `dstaddr_negate` / `service_negate` parameters set the matching FMG fields. They default to off, so an unset value never negates and a partial update never clobbers the stored negate state. The permissiveness guard treats a negated `all` as matching no traffic and a negated specific list as broad (#41).
+
+### Changed
+
+- **The HTTP transport bounds request body size and in-flight request count** (#37). `MCP_MAX_REQUEST_BYTES` (default 10 MiB) rejects an oversize body with 413 before it is buffered; `MCP_MAX_CONCURRENT_REQUESTS` (default 64) caps concurrency through uvicorn and returns 503 past the ceiling. Set either to 0 to disable. Auth still runs first, and `/health` is unaffected.
+- **Policy package-name validation accepts folder-nested names** such as `folder/pkg` (up to ten segments), while still rejecting path traversal, empty segments, and URL/JSON-RPC metacharacters (#36).
+
 ### Fixed
 
 - **Stored scripts execute again under strict safety: the type screener now understands FMG's integer type codes.** `create_script` validates the caller's string name ("cli"), but FortiManager stores and returns `type` as an integer, so the execute-path readback handed the allowlist "1" and every CLI script created through the MCP was refused at execution time as "not a recognized screenable type". The screener now normalizes stored codes to their names before the check, using the mapping FortiManager's own schema reports (`get /dvmdb/script` with `option=syntax`, verified identical on 7.6.7 and 8.0.0): cli=1, tcl=2, cligrp=3, tclgrp=4, jinja=5. Create and execute now agree on both representations, Tcl codes are refused under their real name instead of a bare digit, and codes outside the schema keep failing closed. (#44)
+- **FMG error `-10015` ("object in use") is classified as `object_error`** instead of a generic API error, so a delete blocked by a dependency returns a clear, categorised message (#35).
+
+### Security
+
+- **Pinned `mcp` to the 1.x line and raised dependency security floors** so the server keeps importing and pulls patched transitive versions (#38).
 
 ## [1.9.2] - 2026-07-04
 
