@@ -263,10 +263,17 @@ class TestSecretsAreRedactedNotTokenised:
     in the walk, so the value's shape never gets a say.
     """
 
-    def test_admin_password_is_replaced_by_a_constant(self, masker: OutputMasker) -> None:
-        out = masker.mask_result({"name": "fgt-branch-01", "adm_pass": "not-a-real-password"})
+    @pytest.mark.parametrize("key", ["adm_pass", "adm_passwd", "adm-pass", "Adm Pass", "ADM_PASS"])
+    def test_admin_password_is_replaced_by_a_constant(self, masker: OutputMasker, key: str) -> None:
+        """Both spellings, and every casing canonical_key folds onto them.
 
-        assert out["adm_pass"] == REDACTED
+        The repo's own write-path strip covers adm_pass AND adm_passwd
+        (dvm_tools.py:344), so covering one here would leave the gap the
+        rest of the codebase already knows about.
+        """
+        out = masker.mask_result({"name": "fgt-branch-01", key: "not-a-real-password"})
+
+        assert out[key] == REDACTED
         assert "not-a-real-password" not in str(out)
         assert out["name"] == "fgt-branch-01"
 

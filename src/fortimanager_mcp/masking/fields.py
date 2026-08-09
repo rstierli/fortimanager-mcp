@@ -218,7 +218,12 @@ COMPOSITE_RANGE: tuple[str, ...] = ("iprange",)  # live: 7.6.7 list_services
 #: returns ``name`` AND ``oid``, and the client passes ``fields`` through
 #: untouched (api/client.py:691-697). ``list_devices`` and ``get_device``
 #: request no field list at all, so they carry the whole record.
-REDACT_KEYS: frozenset[str] = frozenset({"adm_pass"})
+#:
+#: Both spellings, because the repo's own credential strip on the write
+#: paths lists both (dvm_tools.py:344 in add_device, :546 in
+#: add_devices_bulk). That strip covers only those two echo paths; no
+#: read path has one, which is why the field reaches a caller at all.
+REDACT_KEYS: frozenset[str] = frozenset({"adm_pass", "adm_passwd"})
 
 #: What a redacted secret is replaced with. Deliberately not a token and
 #: not a keyed placeholder: both are stable across calls, so both would
