@@ -89,6 +89,7 @@ async def create_device_interface(
 
     try:
         device = validate_device_name(device)
+        vdom = validate_object_name(vdom, "VDOM")
         name = validate_interface_name(name)
         parent = validate_interface_name(parent)
         if not 1 <= vlanid <= 4094:
@@ -261,6 +262,7 @@ async def list_device_dhcp_servers(
 
     try:
         device = validate_device_name(device)
+        vdom = validate_object_name(vdom, "VDOM")
         servers = await client.list_device_dhcp_servers(device=device, vdom=vdom)
         servers = servers if isinstance(servers, list) else [servers] if servers else []
         return {
@@ -311,6 +313,7 @@ async def create_device_dhcp_server(
 
     try:
         device = validate_device_name(device)
+        vdom = validate_object_name(vdom, "VDOM")
         interface = validate_interface_name(interface)
         start_ip = validate_ipv4_address(start_ip)
         end_ip = validate_ipv4_address(end_ip)
@@ -385,6 +388,7 @@ async def update_device_dhcp_server(
 
     try:
         device = validate_device_name(device)
+        vdom = validate_object_name(vdom, "VDOM")
         if (start_ip is None) != (end_ip is None):
             raise ValidationError("start_ip and end_ip must be provided together")
         data: dict[str, Any] = {}
@@ -451,6 +455,7 @@ async def delete_device_dhcp_server(
 
     try:
         device = validate_device_name(device)
+        vdom = validate_object_name(vdom, "VDOM")
         result = await client.delete_device_dhcp_server(
             device=device, vdom=vdom, server_id=dhcp_server_id
         )
@@ -484,9 +489,23 @@ _VAP_PSK_MODES = frozenset({"wpa-personal", "wpa-only-personal", "wpa2-only-pers
 
 
 def _sanitize_vap_result(result: Any) -> Any:
-    """Strip every credential field from anything FMG echoes back."""
+    """Strip every credential field from anything FMG echoes back.
+
+    Recurses through dict VALUES as well as list items. The first version
+    stripped top-level keys only, so a credential one level down survived
+    the function whose entire purpose is that it cannot::
+
+        {"data": {"passphrase": "..."}}   ->   passphrase survived
+
+    The echo is flat today, so that was latent rather than live. It is
+    still wrong: the repo's own ``sanitize_for_logging`` recurses fully,
+    and a sanitizer that depends on the shape it is handed is one
+    response format away from leaking.
+    """
     if isinstance(result, dict):
-        return {k: v for k, v in result.items() if k not in _VAP_SECRET_FIELDS}
+        return {
+            k: _sanitize_vap_result(v) for k, v in result.items() if k not in _VAP_SECRET_FIELDS
+        }
     if isinstance(result, list):
         return [_sanitize_vap_result(item) for item in result]
     return result
@@ -512,6 +531,7 @@ async def list_device_vaps(
 
     try:
         device = validate_device_name(device)
+        vdom = validate_object_name(vdom, "VDOM")
         vaps = await client.list_device_vaps(device=device, vdom=vdom)
         vaps = vaps if isinstance(vaps, list) else [vaps] if vaps else []
         return {
@@ -568,6 +588,7 @@ async def create_device_vap(
 
     try:
         device = validate_device_name(device)
+        vdom = validate_object_name(vdom, "VDOM")
         name = validate_object_name(name, "vap")
         security = security.strip().lower()
         data: dict[str, Any] = {"name": name, "ssid": ssid, "security": security}
@@ -641,6 +662,7 @@ async def delete_device_vap(
 
     try:
         device = validate_device_name(device)
+        vdom = validate_object_name(vdom, "VDOM")
         name = validate_object_name(name, "vap")
         result = await client.delete_device_vap(device=device, vdom=vdom, name=name)
         return {
@@ -685,6 +707,7 @@ async def assign_vap_to_wtp_profile(
 
     try:
         device = validate_device_name(device)
+        vdom = validate_object_name(vdom, "VDOM")
         profile = validate_object_name(profile, "wtp-profile")
         vap = validate_object_name(vap, "vap")
         radios = radios or [1, 2]
@@ -700,6 +723,15 @@ async def assign_vap_to_wtp_profile(
                 "error": f"Unexpected wtp-profile shape for '{profile}'",
                 "error_code": "unexpected_response",
             }
+        if not stored:
+            # An empty read is not a profile with no radios, it is a read
+            # that told us nothing. Continuing would invent radio objects
+            # from scratch and write them, so a typo in the profile name
+            # would create configuration rather than fail.
+            return {
+                "error": f"wtp-profile '{profile}' not found or returned no configuration",
+                "error_code": "not_found",
+            }
 
         data: dict[str, Any] = {}
         for radio_num in radios:
@@ -713,7 +745,15 @@ async def assign_vap_to_wtp_profile(
             if vap in vaps and radio.get("vap-all") == "manual":
                 continue
             merged = vaps if vap in vaps else [*vaps, vap]
-            data[key] = {"vap-all": "manual", "vaps": merged}
+            # Carry the rest of the radio object through. This is a
+            # read-modify-write, and writing back only the two keys we
+            # touched discards everything else we just read: band,
+            # channel, power-level, mode, channel-bonding. FortiManager
+            # replaces a nested object rather than merging into it, so
+            # those would reset to defaults and the next
+            # install_device_settings would push the reset to a live AP.
+            # Changing two fields must not be a way to reset the rest.
+            data[key] = {**radio, "vap-all": "manual", "vaps": merged}
 
         if not data:
             return {
