@@ -95,6 +95,24 @@ class TestNoReadPathReturnsTheCredential:
         assert result["devices"][0]["name"] == "FGT-01"
 
     @pytest.mark.asyncio
+    async def test_list_device_vdoms(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """The same record class, reached by its own tool.
+
+        `get_device(include_details=True)` strips VDOM subobjects, so a raw
+        `list_device_vdoms` would make the same record safe by one route
+        and not the other.
+        """
+        mock_fmg_instance.get.return_value = (0, [{"name": "root", "adm_pass": SECRET}])
+
+        with patch.object(dvm_tools, "get_fmg_client", return_value=mock_client):
+            result = await dvm_tools.list_device_vdoms(device="FGT-01", adom="root")
+
+        assert SECRET not in repr(result)
+        assert result["vdoms"][0]["name"] == "root"
+
+    @pytest.mark.asyncio
     async def test_a_credential_nested_in_a_vdom_subobject_is_also_gone(
         self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
     ) -> None:
@@ -130,6 +148,7 @@ class TestTheStripCannotBeForgotten:
             (dvm_tools, "search_devices"),
             (dvm_tools, "add_device"),
             (dvm_tools, "add_devices_bulk"),
+            (dvm_tools, "list_device_vdoms"),
         }
 
         for module, name in expected:

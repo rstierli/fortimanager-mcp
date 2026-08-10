@@ -64,6 +64,12 @@ class TestAddDeviceCredentialSanitization:
                     "adm_usr": "admin",
                     "adm_pass": "secret123",
                     "adm_passwd": "secret123",
+                    # FortiManager echoes the record back, so the echo carries
+                    # every secret the record holds, not only the password
+                    # that was submitted.
+                    "psk": "secret123",
+                    "private_key": "secret123",
+                    "private_key_status": 1,
                 },
                 "taskid": 42,
             }
@@ -77,8 +83,11 @@ class TestAddDeviceCredentialSanitization:
                 admin_pass="secret123",
             )
         assert result["status"] == "success", result
-        assert "adm_pass" not in result["device"]
-        assert "adm_passwd" not in result["device"]
+        assert "secret123" not in repr(result)
+        for key in ("adm_pass", "adm_passwd", "psk", "private_key"):
+            assert key not in result["device"], key
+        # Not a secret: it reports whether a key is set, not the key.
+        assert result["device"]["private_key_status"] == 1
         assert result["device"]["name"] == "FGT-Branch1"
         assert result["task_id"] == 42
 
@@ -132,14 +141,24 @@ class TestBulkDeviceNameValidation:
                 adom="root",
                 devices=[
                     {"name": "FGT-Site1", "ip": "10.0.1.1", "adm_pass": "p1"},
-                    {"name": "FGT-Site2", "ip": "10.0.2.1", "adm_pass": "p2"},
+                    {
+                        "name": "FGT-Site2",
+                        "ip": "10.0.2.1",
+                        "adm_passwd": "p2",
+                        "psk": "p2",
+                        "private_key": "p2",
+                    },
                 ],
             )
         assert result["status"] == "success", result
         assert result["added_count"] == 2
-        # Credentials must be stripped from the returned device dicts.
+        # Every secret must be stripped from the returned device dicts, not
+        # just the password spelling this test started with.
+        assert "p1" not in repr(result["devices"])
+        assert "p2" not in repr(result["devices"])
         for device in result["devices"]:
-            assert "adm_pass" not in device
+            for key in ("adm_pass", "adm_passwd", "psk", "private_key"):
+                assert key not in device, key
         client.add_device_list.assert_called_once()
 
     @pytest.mark.asyncio

@@ -103,7 +103,10 @@ async def list_device_vdoms(
         return {
             "status": "success",
             "count": len(vdoms),
-            "vdoms": vdoms,
+            # Same record class get_device(include_details=True) returns as a
+            # subobject, where it is stripped. Left raw here, the same VDOM
+            # record would be safe by one route and not the other.
+            "vdoms": strip_device_credentials(vdoms),
         }
     except Exception as e:
         logger.error(f"Failed to list VDOMs for device {device}: {e}")
