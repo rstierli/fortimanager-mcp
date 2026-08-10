@@ -33,17 +33,24 @@ _KV_PATTERN = re.compile(
 _HEX_TOKEN_PATTERN = re.compile(r"\b[a-fA-F0-9]{20,}\b")
 
 
-#: Keys holding a managed device's admin password on a dvmdb record. Both
-#: spellings, because FortiManager uses both and the write-path strips in
-#: ``dvm_tools`` have always listed both.
-DEVICE_CREDENTIAL_KEYS = frozenset({"adm_pass", "adm_passwd"})
+#: Secret-bearing keys on a dvmdb device record. ``adm_pass``/``adm_passwd``
+#: are the admin password under both spellings FortiManager uses, and the
+#: write-path strips in ``dvm_tools`` have always listed both. ``psk`` is the
+#: FGFM tunnel pre-shared key and ``private_key`` the device certificate key;
+#: on a live 7.6.7 those two came back blanked (``psk`` empty,
+#: ``private_key`` as asterisks), so no leak of them was reproduced, but they
+#: are secrets by nature and can be populated on other devices.
+#:
+#: ``private_key_status`` is deliberately NOT here. It reports whether a key
+#: is set, which is operational signal rather than the secret itself.
+DEVICE_CREDENTIAL_KEYS = frozenset({"adm_pass", "adm_passwd", "psk", "private_key"})
 
 #: Emitted in place of a subtree too deep to walk. See strip_device_credentials.
 _TOO_DEEP = "<max-depth>"
 
 
 def strip_device_credentials(data: Any, depth: int = 0) -> Any:
-    """Remove device admin passwords from anything returned to a caller.
+    """Remove device secrets (see DEVICE_CREDENTIAL_KEYS) from any response.
 
     ``add_device`` and ``add_devices_bulk`` have always stripped these from
     the object FortiManager echoes back, because FMG returns the submitted

@@ -24,8 +24,11 @@ from fortimanager_mcp.tools import dvm_tools, system_tools
 
 SECRET = "not-a-real-password"
 
-#: A dvmdb device record as the read paths receive it, with the credential
-#: under both spellings FortiManager uses.
+#: A dvmdb device record as the read paths receive it, with the admin
+#: password under both spellings FortiManager uses, plus the two other
+#: secrets a record carries: the FGFM tunnel pre-shared key and the device
+#: certificate key. All four use the same value, so every `SECRET not in
+#: repr(result)` assertion below covers all four.
 DEVICE_WITH_CREDENTIAL = {
     "name": "FGT-01",
     "ip": "192.0.2.1",
@@ -33,6 +36,8 @@ DEVICE_WITH_CREDENTIAL = {
     "adm_usr": "admin",
     "adm_pass": SECRET,
     "adm_passwd": SECRET,
+    "psk": SECRET,
+    "private_key": SECRET,
     "conn_status": 1,
     "os_ver": "7.4.4",
 }
@@ -109,6 +114,15 @@ class TestTheStripCannotBeForgotten:
     """A future device-returning tool must not silently miss the strip."""
 
     def test_every_device_returning_tool_calls_the_helper(self) -> None:
+        """ADD YOUR TOOL HERE if it returns a dvmdb device record.
+
+        This list is fixed, not discovered, so it cannot catch a new tool
+        on its own: it proves the tools it names still strip, and nothing
+        about the one you just wrote. Discovering the set automatically
+        would mean matching on tool names or return shapes, and either
+        heuristic passes silently on the tool it fails to recognise, which
+        is the same blind spot with more machinery.
+        """
         expected = {
             (system_tools, "list_devices"),
             (system_tools, "get_device"),

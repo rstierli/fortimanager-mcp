@@ -175,10 +175,30 @@ class TestStripDeviceCredentials:
             "oid": 194,
             "uuid": "200ac24666a551f1fcb94e7ebd5398d7",
             "mgmt_mode": 3,
-            "psk": "not-a-device-credential-key",
+            "conn_status": 1,
         }
 
         assert strip_device_credentials(record) == record
+
+    def test_the_tunnel_psk_and_private_key_go_too(self):
+        """These were survivors in the first version of this test.
+
+        Asserting that `psk` comes back unchanged treats the FGFM tunnel
+        pre-shared key as a benign field, and would have blocked whoever
+        later added it to the strip set. It is a secret; so is
+        `private_key`. `private_key_status` is not, and stays.
+        """
+        record = {
+            "name": "FGT-01",
+            "psk": "s3cret",
+            "private_key": "s3cret",
+            "private_key_status": 1,
+        }
+
+        out = strip_device_credentials(record)
+
+        assert "s3cret" not in repr(out)
+        assert out == {"name": "FGT-01", "private_key_status": 1}
 
     def test_the_depth_bound_fails_closed(self):
         """Past the bound the secret must not be published.
