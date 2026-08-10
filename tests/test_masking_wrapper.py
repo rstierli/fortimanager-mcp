@@ -609,3 +609,111 @@ class TestReviewCarriersThatHadNoTest:
     def test_the_value_does_not_survive(self, masker: OutputMasker, key: str, value: str) -> None:
         out = masker.mask_result({"interface": [{key: value}]})
         assert value not in str(out)
+
+
+class TestInterfaceAddressPairs:
+    """``ip``, ``remote-ip`` and ``secondaryip[].ip`` carry a netmask.
+
+    Measured by the maintainer on a live FortiGate device DB: all three
+    come back as ``[address, netmask]``, for example
+    ``["192.168.254.254", "255.255.255.0"]``. As plain IP carriers both
+    elements masked, so the netmask became a random-looking address and
+    the CIDR string form collapsed to a placeholder that lost the prefix.
+
+    The subnet handler falls back to a plain IP when there is no
+    separator, so it is a superset of the scalar route and the
+    single-address case is unaffected.
+    """
+
+    def test_the_netmask_survives_the_pair_form(self, masker: OutputMasker) -> None:
+        out = masker.mask_result({"ip": ["192.168.254.254", "255.255.255.0"]})
+        assert out["ip"][1] == "255.255.255.0"
+        assert out["ip"][0] != "192.168.254.254"
+
+    @pytest.mark.parametrize("key", ["ip", "remote-ip"])
+    def test_both_pair_carriers_keep_their_mask(self, masker: OutputMasker, key: str) -> None:
+        out = masker.mask_result({key: ["10.0.0.1", "255.255.255.0"]})
+        assert out[key][1] == "255.255.255.0"
+        assert "10.0.0.1" not in str(out)
+
+    def test_the_cidr_string_keeps_its_prefix(self, masker: OutputMasker) -> None:
+        out = masker.mask_result({"ip": "192.168.254.254/24"})
+        assert out["ip"].endswith("/24")
+        assert not out["ip"].startswith(PLACEHOLDER_MARK)
+
+    def test_a_bare_address_still_masks_as_one(
+        self, masker: OutputMasker, engine: FPEEngine
+    ) -> None:
+        """The scalar case the device inventory uses must not regress."""
+        out = masker.mask_result({"ip": "192.0.2.50"})
+        assert engine.unmask_ip_token(out["ip"]) == "192.0.2.50"
+
+    def test_the_nested_secondary_address_is_reached(self, masker: OutputMasker) -> None:
+        payload = {"secondaryip": [{"ip": ["10.1.1.1", "255.255.255.0"], "id": 1}]}
+        out = masker.mask_result(payload)
+        entry = out["secondaryip"][0]
+        assert "10.1.1.1" not in str(out)
+        assert entry["ip"][1] == "255.255.255.0"
+        assert entry["id"] == 1
+
+
+class TestManagementAndTrustAddresses:
+    """Populated on most gateways and had no carrier at all.
+
+    Flagged in the round-3 review as still reaching the caller in clear.
+    Routed through the subnet handler rather than the scalar one for the
+    same reason the interface address pair is: FortiOS writes a trusted
+    host as an address plus a mask, and the handler degrades to a plain
+    IP when no mask is present, so it is safe either way.
+    """
+
+    @pytest.mark.parametrize("key", ["management-ip", "trust-ip-1", "trust-ip-2", "trust-ip-3"])
+    def test_the_address_does_not_survive(self, masker: OutputMasker, key: str) -> None:
+        out = masker.mask_result({"interface": [{key: "192.0.2.60"}]})
+        assert "192.0.2.60" not in str(out)
+
+    @pytest.mark.parametrize("key", ["management-ip", "trust-ip-1"])
+    def test_the_pair_form_keeps_its_mask(self, masker: OutputMasker, key: str) -> None:
+        out = masker.mask_result({key: ["192.0.2.60", "255.255.255.0"]})
+        assert out[key][1] == "255.255.255.0"
+        assert "192.0.2.60" not in str(out)
+
+
+class TestHealthCheckRequestDomain:
+    """The SD-WAN health check's own FQDN was the one left in clear.
+
+    ``dns-request-domain`` sits beside fields that already mask, so it
+    read as an oversight rather than a decision.
+    """
+
+    def test_the_probe_domain_is_masked(self, masker: OutputMasker) -> None:
+        payload = {"health-check": [{"dns-request-domain": "probe.example.com"}]}
+        assert "probe.example.com" not in str(masker.mask_result(payload))
+
+    def test_a_wildcard_probe_domain_keeps_its_star(self, masker: OutputMasker) -> None:
+        out = masker.mask_result({"dns-request-domain": "*.example.com"})
+        # Both halves matter: the star survives AND the domain is gone.
+        # Asserting only the star passes on an unmasked value too.
+        assert out["dns-request-domain"].startswith("*.")
+        assert "example.com" not in out["dns-request-domain"]
+
+
+class TestDeviceSecretsAreRedactedAsDefenceInDepth:
+    """``private_key`` and ``psk`` on a dvmdb device record.
+
+    The maintainer measured that a live FMG already returns
+    ``private_key`` as ``******`` and ``psk`` empty, so neither is an
+    active leak. Redacted anyway: the cost of a key that never carries a
+    secret is nothing, and the reverse is a credential in clear if a
+    future FortiManager version stops pre-masking them.
+    """
+
+    @pytest.mark.parametrize("key", ["private_key", "private-key", "psk"])
+    def test_a_populated_device_secret_is_withheld(self, masker: OutputMasker, key: str) -> None:
+        assert masker.mask_result({key: "s3cret"}) == {key: REDACTED}
+
+    def test_the_empty_form_the_appliance_actually_returns_is_left_alone(
+        self, masker: OutputMasker
+    ) -> None:
+        """FMG returns psk empty, so redacting it would invent a secret."""
+        assert masker.mask_result({"psk": ""}) == {"psk": ""}

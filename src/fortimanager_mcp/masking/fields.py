@@ -77,7 +77,9 @@ def canonical_key(key: str) -> str:
 FIELD_TYPES: dict[str, str] = {
     # Device inventory. dvmdb records reach the caller both reshaped and
     # as raw passthrough, so both spellings matter.
-    "ip": IP,  # static: dvm_tools.py:313 (add_device device_config)
+    # ``ip`` is NOT here. It carries a netmask on the interface surfaces
+    # and lives in COMPOSITE_SUBNET below, which degrades to a plain IP
+    # for the device-inventory spelling this entry used to cover.
     "sn": SERIAL,  # static: dvm_tools.py:321
     "adm_usr": USERNAME,  # static: dvm_tools.py:315
     # System status arrives with spaced, title-cased keys, which
@@ -129,7 +131,7 @@ FIELD_TYPES: dict[str, str] = {
     # Interface (system/interface). IPv4 variants; the v6 address keys are
     # composites below, because they carry a prefix.
     "gateway_address": IP,  # review
-    "remote_ip": IP,  # review
+    # ``remote_ip`` moved to COMPOSITE_SUBNET, see the round-3 note there.
     "ipunnumbered": IP,  # review
     "dhcp_relay_ip": IP,  # review
     "dhcp_relay_source_ip": IP,  # review
@@ -167,10 +169,36 @@ FIELD_TYPES: dict[str, str] = {
 #: the address AND the prefix. This handler already falls through to a
 #: plain IP when there is no separator, so it is a superset of the scalar
 #: route for both spellings.
+#: The round-3 review settled the shape of the interface address fields
+#: against a live FortiGate device DB: ``ip``, ``remote-ip`` and
+#: ``secondaryip[].ip`` all return ``[address, netmask]``, measured as
+#: ``["192.168.254.254", "255.255.255.0"]``. As plain IP carriers both
+#: elements masked, so the netmask became a random-looking address, and
+#: the ``address/prefix`` string form failed closed and lost the prefix
+#: with it. They belong here for the same reason ``ip6-address`` does.
+#:
+#: This is the trade that was declined in round 2 and asked about
+#: instead, since this handler keeps whatever follows the separator: if
+#: one of these were ever a genuine pair of ADDRESSES rather than an
+#: address and a mask, the second would be kept in clear. The maintainer's
+#: appliance answered it. ``secondaryip[].ip`` needs no entry of its own,
+#: the walk reaches the nested ``ip`` by name.
+#:
+#: ``management-ip`` and ``trust-ip-1/2/3`` were returning in clear with
+#: no carrier at all. They are here rather than in FIELD_TYPES because
+#: FortiOS writes a trusted host and a management address as an address
+#: plus a mask; the fallback covers them if a given surface returns a
+#: bare address instead, so this is the safe direction either way.
 COMPOSITE_SUBNET: tuple[str, ...] = (
     "subnet",  # static: object_tools.py:257
     "ip6_address",  # review: ipv6.ip6-address, prefix-bearing
     "ip6_subnet",  # review: ipv6.ip6-subnet
+    "ip",  # review r3: live device DB returns [address, netmask]
+    "remote_ip",  # review r3: same pair form
+    "management_ip",  # review r3: populated on most gateways, was in clear
+    "trust_ip_1",  # review r3: was in clear
+    "trust_ip_2",  # review r3: was in clear
+    "trust_ip_3",  # review r3: was in clear
 )
 #: The review also asked for "the IPv6 prefix keys" without naming them.
 #: They are not guessed at here: an invented key name is an entry that
@@ -206,6 +234,10 @@ COMPOSITE_WILDCARD_IP: tuple[str, ...] = ("wildcard",)  # unverified, see above
 COMPOSITE_FQDN: tuple[str, ...] = (
     "fqdn",  # live: 8.0.0 list_addresses
     "wildcard_fqdn",  # review: firewall/address wildcard-fqdn
+    # The SD-WAN health check's own probe target. It sat beside fields
+    # that already masked, so it read as an oversight rather than a
+    # decision (PR #39 round-3 review).
+    "dns_request_domain",  # review r3: health-check[].dns-request-domain
 )
 
 #: Start-end address ranges. ``firewall/service/custom`` returns
@@ -248,7 +280,18 @@ COMPOSITE_RANGE: tuple[str, ...] = ("iprange",)  # live: 7.6.7 list_services
 #: belongs in FIELD_TYPES rather than here, but the name is far too
 #: common to mask at any depth without parent-key scoping the walk does
 #: not have. Raised on the PR instead of guessed at.
-REDACT_KEYS: frozenset[str] = frozenset({"adm_pass", "adm_passwd", "password"})
+#: ``private_key`` and ``psk`` are defence in depth, explicitly not a
+#: leak being closed. Measured by the maintainer on a live FMG: the
+#: device record already returns ``private_key`` as ``******`` and
+#: ``psk`` empty, and ``adm_passwd`` never appears on the record at all,
+#: so neither could be made to leak in practice. They are here because a
+#: redaction key that never fires costs nothing, while a FortiManager
+#: version that stopped pre-masking them would cost a credential. The
+#: empty-value rule in the walk means the ``psk`` the appliance actually
+#: returns is left as it is rather than reported as withheld.
+REDACT_KEYS: frozenset[str] = frozenset(
+    {"adm_pass", "adm_passwd", "password", "private_key", "psk"}
+)
 
 #: Values that are structural rather than identifying. Masking these
 #: would destroy meaning ("any" is not an address) for zero privacy gain.
