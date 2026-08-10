@@ -135,20 +135,29 @@ class OutputMasker:
 
     # -- composites ----------------------------------------------------- #
 
-    def _mask_subnet(self, value: Any) -> Any:
-        """Mask the network part of a subnet, keep the mask or prefix.
+    def _mask_address_and_mask(self, value: Any, *, discriminate: bool) -> Any:
+        """Mask the address part of an address-plus-mask value.
 
         FortiManager returns address-object subnets as a two-element
         ``[network, netmask]`` list (observed live on 8.0.0) and as
         ``"net/prefix"`` or ``"net mask"`` strings elsewhere. A netmask is
         not an identifier, so masking it would cost a round trip and buy
         no privacy.
+
+        ``discriminate`` says whether the second part has to prove it is a
+        mask before being kept. It does on the subnet route, where the
+        round-3 review moved keys whose second part could be an ADDRESS.
+        It must NOT on the wildcard route: a wildcard address exists
+        precisely to carry a non-contiguous mask like ``0.255.0.255``, so
+        the second part is a mask by definition of the key, and applying
+        the test there turned real masks into random-looking addresses,
+        which is the very complaint the round-3 review raised.
         """
         if (
             isinstance(value, list)
             and len(value) == 2
             and all(isinstance(p, str) for p in value)
-            and self._is_mask(value[1])
+            and (not discriminate or self._is_mask(value[1]))
         ):
             net, mask = value
             if net.strip().lower() in SKIP_VALUES:
@@ -159,12 +168,18 @@ class OutputMasker:
                 return value
             for sep in ("/", " "):
                 net, found, tail = value.partition(sep)
-                if found and net and tail and self._is_mask(tail):
+                if found and net and tail and (not discriminate or self._is_mask(tail)):
                     if net.strip().lower() in SKIP_VALUES:
                         return value
                     return f"{self._mask_scalar(IP, net)}{sep}{tail}"
             return self._mask_scalar(IP, value)
-        return self._each(self._mask_subnet, value)
+        return self._each(
+            lambda item: self._mask_address_and_mask(item, discriminate=discriminate), value
+        )
+
+    def _mask_subnet(self, value: Any) -> Any:
+        """Subnet or interface address: the second part must prove itself."""
+        return self._mask_address_and_mask(value, discriminate=True)
 
     def _mask_wildcard_ip(self, value: Any) -> Any:
         """Wildcard ADDRESS (an IP plus a wildcard mask): mask the address.
@@ -172,7 +187,7 @@ class OutputMasker:
         Same shapes as a subnet; distinct from a wildcard FQDN, which is a
         domain string that happens to share the word.
         """
-        return self._mask_subnet(value)
+        return self._mask_address_and_mask(value, discriminate=False)
 
     def _mask_range(self, value: Any) -> Any:
         """Mask both ends of a start-end address range.

@@ -178,11 +178,13 @@ FIELD_TYPES: dict[str, str] = {
 #: with it. They belong here for the same reason ``ip6-address`` does.
 #:
 #: This is the trade that was declined in round 2 and asked about
-#: instead, since this handler keeps whatever follows the separator: if
-#: one of these were ever a genuine pair of ADDRESSES rather than an
-#: address and a mask, the second would be kept in clear. The maintainer's
-#: appliance answered it. ``secondaryip[].ip`` needs no entry of its own,
-#: the walk reaches the nested ``ip`` by name.
+#: instead: the handler used to keep whatever followed the separator, so
+#: if one of these were ever a genuine pair of ADDRESSES rather than an
+#: address and a mask, the second would have been kept in clear. The
+#: maintainer's appliance answered the question (address and mask), and
+#: the handler no longer takes it on trust either: the second part has to
+#: look like a mask before it is kept. ``secondaryip[].ip`` needs no entry
+#: of its own, the walk reaches the nested ``ip`` by name.
 #:
 #: ``management-ip`` and ``trust-ip-1/2/3`` were returning in clear with
 #: no carrier at all. They are here rather than in FIELD_TYPES because
@@ -289,8 +291,12 @@ COMPOSITE_RANGE: tuple[str, ...] = ("iprange",)  # live: 7.6.7 list_services
 #: version that stopped pre-masking them would cost a credential. The
 #: empty-value rule in the walk means the ``psk`` the appliance actually
 #: returns is left as it is rather than reported as withheld.
+#: ``psksecret`` is FortiOS's own spelling of the IPsec pre-shared key;
+#: ``psk`` alone is the FortiManager-side name. No tool here reads VPN
+#: configuration, so neither is a surface today, and both are listed on
+#: the same costs-nothing reasoning as the rest of this set.
 REDACT_KEYS: frozenset[str] = frozenset(
-    {"adm_pass", "adm_passwd", "password", "private_key", "psk"}
+    {"adm_pass", "adm_passwd", "password", "private_key", "psk", "psksecret"}
 )
 
 #: Values that are structural rather than identifying. Masking these

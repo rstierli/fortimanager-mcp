@@ -764,3 +764,36 @@ class TestPairSecondElementMustBeAMask:
         out = masker.mask_result({key: pair})
         assert out[key][1] == kept
         assert pair[0] not in str(out)
+
+
+class TestWildcardMasksAreNotDiscriminated:
+    """A wildcard mask is non-contiguous on purpose, and must survive.
+
+    The mask guard belongs on the subnet route, where element two might
+    be an address. It does not belong here: a ``wildcard`` address exists
+    precisely to carry a non-contiguous mask, so element two is a mask by
+    definition of the key and there is nothing to tell apart.
+
+    Applying the guard here turned ``0.255.0.255`` into a random-looking
+    address, which is the round-3 complaint reintroduced on a different
+    key::
+
+        {"wildcard": ["203.0.113.0", "0.255.0.255"]}
+          -> ["ip4-...", "ip4-..."]
+    """
+
+    @pytest.mark.parametrize("mask", ["0.255.0.255", "0.0.255.255", "0.0.0.255", "255.255.0.0"])
+    def test_any_wildcard_mask_survives(self, masker: OutputMasker, mask: str) -> None:
+        out = masker.mask_result({"wildcard": ["203.0.113.0", mask]})
+        assert out["wildcard"][1] == mask
+        assert "203.0.113.0" not in str(out)
+
+    def test_the_string_form_keeps_a_non_contiguous_mask(self, masker: OutputMasker) -> None:
+        out = masker.mask_result({"wildcard": "203.0.113.0 0.255.0.255"})
+        assert out["wildcard"].endswith(" 0.255.0.255")
+        assert not out["wildcard"].startswith(PLACEHOLDER_MARK)
+
+    def test_the_subnet_route_still_discriminates(self, masker: OutputMasker) -> None:
+        """The guard must stay where element two can be an address."""
+        out = masker.mask_result({"ip": ["192.0.2.50", "192.0.2.51"]})
+        assert "192.0.2.51" not in str(out)
