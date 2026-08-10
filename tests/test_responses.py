@@ -6,7 +6,11 @@ adapted for FortiManager's field names (``task_id``, ``package``, ``device``
 instead of FAZ's ``tid``/``logtype``).
 """
 
-from fortimanager_mcp.utils.responses import error_response, redact
+from fortimanager_mcp.utils.responses import (
+    error_response,
+    redact,
+    strip_device_credentials,
+)
 from fortimanager_mcp.utils.validation import MASK_VALUE
 
 
@@ -110,3 +114,85 @@ class TestErrorResponse:
             error="fmg_operation_failed", message="x" * 2000, operation="get_address"
         )
         assert len(r["message"]) < 600
+
+
+class TestStripDeviceCredentials:
+    """A device's admin password must not reach a caller from a READ.
+
+    add_device and add_devices_bulk have always stripped these from the
+    object FortiManager echoes back. No read path did, so the stored
+    password came out of list_devices, get_device, search_devices and
+    get_device_status. FortiManager treats `fields` as a hint rather than
+    a bound, so a narrow field list does not keep it out either.
+    """
+
+    def test_both_spellings_are_removed(self):
+        record = {
+            "name": "FGT-01",
+            "adm_usr": "admin",
+            "adm_pass": "s3cret",
+            "adm_passwd": "s3cret",
+        }
+
+        out = strip_device_credentials(record)
+
+        assert out == {"name": "FGT-01", "adm_usr": "admin"}
+        assert "s3cret" not in repr(out)
+
+    def test_key_is_matched_however_it_is_spelled(self):
+        """FMG has answered with hyphenated and title-cased keys elsewhere."""
+        record = {"ADM_PASS": "s3cret", "adm-passwd": "s3cret", "Adm Pass": "s3cret", "ok": 1}
+
+        out = strip_device_credentials(record)
+
+        assert out == {"ok": 1}
+        assert "s3cret" not in repr(out)
+
+    def test_it_recurses_through_lists_and_nesting(self):
+        payload = {
+            "devices": [
+                {"name": "FGT-01", "adm_pass": "s3cret"},
+                {"name": "FGT-02", "vdom": [{"name": "root", "adm_pass": "s3cret"}]},
+            ]
+        }
+
+        out = strip_device_credentials(payload)
+
+        assert "s3cret" not in repr(out)
+        assert out["devices"][0]["name"] == "FGT-01"
+        assert out["devices"][1]["vdom"][0]["name"] == "root"
+
+    def test_everything_else_survives_untouched(self):
+        """Narrow on purpose: this is not sanitize_for_logging.
+
+        That helper masks any key containing "key", "auth", "sid" or
+        "session" plus any hex run over 20 characters, which would mangle
+        legitimate device fields.
+        """
+        record = {
+            "name": "FGT-01",
+            "sn": "FGVM020000123456",
+            "oid": 194,
+            "uuid": "200ac24666a551f1fcb94e7ebd5398d7",
+            "mgmt_mode": 3,
+            "psk": "not-a-device-credential-key",
+        }
+
+        assert strip_device_credentials(record) == record
+
+    def test_the_depth_bound_fails_closed(self):
+        """Past the bound the secret must not be published.
+
+        The first version returned the subtree unchanged there, so a
+        credential nested deeper than the bound came straight back out of
+        the function whose job is removing it. "Too deep to check" is not
+        a reason to hand it over. Real dvmdb records are two or three
+        levels deep, so nothing legitimate reaches this.
+        """
+        deep: dict = {"adm_pass": "s3cret"}
+        for _ in range(40):
+            deep = {"nested": deep}
+
+        out = strip_device_credentials(deep)
+
+        assert "s3cret" not in repr(out)
