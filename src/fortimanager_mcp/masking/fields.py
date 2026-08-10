@@ -84,6 +84,22 @@ FIELD_TYPES: dict[str, str] = {
     # canonical_key folds onto these entries: "Serial Number" and
     # "Hostname" both observed live on 7.6.7 (get_system_status).
     "serial_number": SERIAL,  # live: 7.6.7 get_system_status "Serial Number"
+    # The proxy envelope's spelling. ``get_device_realtime_status`` and
+    # ``get_device_interfaces`` return the FortiOS response verbatim under
+    # ``data`` (dvm_tools.py:752, :800), and every FortiOS monitor
+    # envelope carries its serial at top level: measured on a live 7.4.12
+    # FortiGate, ``"serial": "FGT70FTK22019321"`` beside the interface
+    # records whose ``mac`` and ``ip`` were already masking. Two other
+    # spellings of a device serial were already carriers, so this one
+    # reaching the caller in clear was an inconsistency rather than a
+    # scope decision.
+    #
+    # Overloaded the same way ``source`` is, and recorded here for the
+    # same reason: FortiOS also puts a hex certificate serial under this
+    # name. ``seal_serial`` cannot represent one, so the day a tool reads
+    # certificates it placeholders rather than leaks. Fails in the safe
+    # direction, but it is a real cost, not a free entry.
+    "serial": SERIAL,  # live: 7.4.12 FortiGate monitor envelope
     "hostname": HOSTNAME,  # live: 7.6.7 get_system_status "Hostname"
     # Address objects.
     "start_ip": IP,  # live: 8.0.0 list_addresses "start-ip"

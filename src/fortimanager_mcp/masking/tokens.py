@@ -87,11 +87,18 @@ def strict_pattern(payload_alphabet: str, mask_suffix: str) -> re.Pattern[str]:
     prefixed = rf"(?:{_PREFIX_KINDS})-{_KID}-[{payload}]+"
     suffixed = rf"[{payload}]+\.{_KID}{suffix}"
     placeholder = rf"{re.escape(PLACEHOLDER_MARK)}[0-9a-f]+"
+    # The secret constant is complete in itself, with no payload after it.
+    # It was in PREFIX_MARKERS, which is the whole-scalar tier only, so it
+    # was refused as an entire argument and accepted embedded. Embedded is
+    # the shape the claim above is actually about: a masked device record
+    # echoed into script content would have written the literal constant
+    # into the estate as a password.
+    secret = re.escape(REDACTED)
     # The boundary is alphanumeric-only: a token pasted after punctuation
     # ("see ip4-...", "note:ip4-...") must still match, while a genuine
     # word ending in the marker text ("myhost-...") must not.
     return re.compile(
-        rf"(?<![A-Za-z0-9])(?:{prefixed}|{suffixed}|{placeholder})",
+        rf"(?<![A-Za-z0-9])(?:{prefixed}|{suffixed}|{placeholder}|{secret})",
         re.IGNORECASE,
     )
 

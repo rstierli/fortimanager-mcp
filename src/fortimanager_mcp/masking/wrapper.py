@@ -159,9 +159,7 @@ class OutputMasker:
                         return value
                     return f"{self._mask_scalar(IP, net)}{sep}{tail}"
             return self._mask_scalar(IP, value)
-        if isinstance(value, list):
-            return self._each(self._mask_subnet, value)
-        return value
+        return self._each(self._mask_subnet, value)
 
     def _mask_wildcard_ip(self, value: Any) -> Any:
         """Wildcard ADDRESS (an IP plus a wildcard mask): mask the address.
@@ -190,10 +188,8 @@ class OutputMasker:
         hex and a masked address prints as a dotted quad or a v6 address.
         Nothing in the engine enforces that, so a test asserts it.
         """
-        if isinstance(value, list):
-            return self._each(self._mask_range, value)
         if not isinstance(value, str):
-            return value
+            return self._each(self._mask_range, value)
         if value.strip().lower() in SKIP_VALUES:
             return value
         start, found, end = value.partition("-")
@@ -221,10 +217,8 @@ class OutputMasker:
         ``fqdn``). ``*`` is outside every cipher alphabet, so masking the
         raw value would burn every wildcard entry to a placeholder.
         """
-        if isinstance(value, list):
-            return self._each(self._mask_fqdn, value)
         if not isinstance(value, str):
-            return value
+            return self._each(self._mask_fqdn, value)
         if value.strip().lower() in SKIP_VALUES:
             return value
         if not value.startswith("*."):
@@ -243,7 +237,7 @@ class OutputMasker:
     # -- walk ----------------------------------------------------------- #
 
     def _each(self, handler: Any, value: Any) -> Any:
-        """Apply a composite handler to every string in a list.
+        """Apply a key's handler through whatever container it arrived in.
 
         Every composite below special-cases the shapes FortiManager is
         known to use and returned anything else unchanged, which is the
@@ -256,20 +250,44 @@ class OutputMasker:
 
         Both are plausible FortiManager shapes (multi-valued fields are
         lists, and a prefix length is as likely to arrive as an int as a
-        string). The scalar route already masks list elements one by one;
-        the composites now do the same, so an unrecognized shape fails
-        closed per element instead of passing whole. Non-strings are
-        returned as they are: an int or a bool cannot carry an address.
+        string).
+
+        The first fix covered one level of list and only strings, so two
+        shapes still passed whole, and the walk stopped at them rather
+        than merely skipping them::
+
+            {"subnet": [{"ip": "203.0.113.5"}]}       -> unchanged
+            {"iprange": [["192.0.2.1-192.0.2.10"]]}   -> unchanged
+
+        The second is why nesting recurses with the SAME handler instead
+        of going back through :meth:`mask_result`: a bare string in a
+        nested list has no key of its own, so only the key above it says
+        how it should mask. A dict is the opposite case, since its
+        contents are named by its own keys, so it goes back through the
+        key walk. Anything else is returned as it is: an int or a bool
+        cannot carry an address.
         """
-        return [handler(item) if isinstance(item, str) else item for item in value]
+        if isinstance(value, str):
+            return handler(value)
+        if isinstance(value, list):
+            return [self._each(handler, item) for item in value]
+        if isinstance(value, dict):
+            return self.mask_result(value)
+        return value
 
     def _mask_entry(self, key: str, value: Any) -> Any:
         ckey = canonical_key(key)
         if ckey in REDACT_KEYS:
-            # First, and without looking at the value: a secret is
-            # replaced whatever shape it arrives in (FortiManager returns
-            # adm_pass as a list of encrypted strings), and recursing into
-            # it would be a chance to emit part of it.
+            if not value:
+                # An unset field holds no secret. Replacing it would
+                # report a withheld credential where none existed, which
+                # matters most for ``password``: a broad key that lands
+                # on shapes carrying nothing.
+                return value
+            # Otherwise first, and without looking at the value: a secret
+            # is replaced whatever shape it arrives in (FortiManager
+            # returns adm_pass as a list of encrypted strings), and
+            # recursing into it would be a chance to emit part of it.
             return REDACTED
         if ckey in COMPOSITE_SUBNET:
             return self._mask_subnet(value)
@@ -282,11 +300,11 @@ class OutputMasker:
         vtype = FIELD_TYPES.get(ckey)
         if vtype is None:
             return self.mask_result(value)
-        if isinstance(value, str):
-            return self._mask_scalar(vtype, value)
-        if isinstance(value, list):
-            return [self._mask_scalar(vtype, v) if isinstance(v, str) else v for v in value]
-        return value
+        # Same container walk the composites use. The scalar route had the
+        # original form of this hole and kept it through the first fix: a
+        # dict under a carrier key was returned whole AND never walked, so
+        # a carrier nested inside it leaked too.
+        return self._each(lambda v: self._mask_scalar(vtype, v), value)
 
     def mask_result(self, obj: Any) -> Any:
         """Mask allowlisted and composite keys at any nesting depth."""

@@ -459,3 +459,153 @@ class TestFailClosed:
         assert out["error"] == "masking_failed"
         assert "192.0.2.19" not in str(out)
         assert "walker bug" not in str(out)
+
+
+class TestCarriersFailClosedOnNestedShapes:
+    """A carrier key must never hand back a container it did not walk.
+
+    The composites were taught to fail closed per element, but only for
+    strings. A dict or a nested list under a carrier key still returned
+    verbatim, and worse, the walk stopped there: a carrier nested inside
+    that container was never reached. Measured on every shape below
+    before the fix, including through the scalar route, which the earlier
+    round did not touch at all.
+    """
+
+    @pytest.mark.parametrize(
+        ("payload", "secret"),
+        [
+            ({"ip": {"ip": "198.51.100.5"}}, "198.51.100.5"),
+            ({"ip": [{"ip": "192.0.2.1"}]}, "192.0.2.1"),
+            ({"source": {"gateway": "192.0.2.9"}}, "192.0.2.9"),
+            ({"subnet": [{"ip": "203.0.113.5"}]}, "203.0.113.5"),
+            ({"iprange": {"start_ip": "192.0.2.1"}}, "192.0.2.1"),
+            ({"iprange": [["192.0.2.1-192.0.2.10"]]}, "192.0.2.1-192.0.2.10"),
+            ({"fqdn": {"fqdn": "mail.example.com"}}, "mail.example.com"),
+            ({"ip6_address": [{"ip": "192.0.2.30"}]}, "192.0.2.30"),
+        ],
+    )
+    def test_no_carrier_returns_an_unwalked_container(
+        self, masker: OutputMasker, payload: dict[str, Any], secret: str
+    ) -> None:
+        assert secret not in str(masker.mask_result(payload))
+
+    def test_a_nested_range_still_masks_both_ends(self, masker: OutputMasker) -> None:
+        """Nested lists keep the composite handler, not the generic walk.
+
+        Recursing a nested list through ``mask_result`` would lose the key
+        context, so the strings inside would come back untouched.
+        """
+        out = masker.mask_result({"iprange": [["192.0.2.1-192.0.2.10"]]})
+        masked = out["iprange"][0][0]
+        assert masked.count("-") == 5, masked
+
+    def test_non_containers_under_a_carrier_are_left_alone(self, masker: OutputMasker) -> None:
+        assert masker.mask_result({"ip": 42}) == {"ip": 42}
+        assert masker.mask_result({"ip": None}) == {"ip": None}
+
+
+class TestDeviceSerialCarrier:
+    """``serial`` is the proxy envelope's spelling of a device serial.
+
+    ``get_device_realtime_status`` and ``get_device_interfaces`` return
+    the FortiOS response verbatim under ``data``, and every FortiOS
+    monitor envelope carries its serial at top level. Measured on a live
+    7.4.12 FortiGate. The table already masked ``sn`` and
+    ``serial_number``, so this spelling leaking was an inconsistency with
+    its own intent rather than a scope decision.
+    """
+
+    def test_the_proxy_envelope_serial_is_masked(
+        self, masker: OutputMasker, engine: FPEEngine
+    ) -> None:
+        payload = {
+            "status": "success",
+            "data": {
+                "results": {"wan1": {"mac": "ac:71:2e:71:74:9e", "ip": "104.167.217.70"}},
+                "serial": "FGT70FTK22019321",
+                "version": "v7.4.12",
+            },
+        }
+
+        out = masker.mask_result(payload)
+
+        assert "FGT70FTK22019321" not in str(out)
+        assert engine.unseal_serial(out["data"]["serial"]) == "FGT70FTK22019321"
+
+    def test_the_version_beside_it_is_untouched(self, masker: OutputMasker) -> None:
+        out = masker.mask_result({"serial": "FGT70FTK22019321", "version": "v7.4.12"})
+        assert out["version"] == "v7.4.12"
+
+
+class TestRedactionDoesNotInventSecrets:
+    """An unset field must not come back reading as a withheld credential.
+
+    ``password`` is a broad key the review did not ask for, so it lands on
+    shapes that hold no secret. Replacing an empty value with the constant
+    tells the caller a credential was withheld where none existed.
+    """
+
+    @pytest.mark.parametrize("empty", ["", None, 0, [], {}])
+    def test_an_empty_secret_field_is_left_as_it_is(self, masker: OutputMasker, empty: Any) -> None:
+        assert masker.mask_result({"password": empty}) == {"password": empty}
+
+    def test_a_real_secret_is_still_redacted(self, masker: OutputMasker) -> None:
+        assert masker.mask_result({"password": "hunter2"}) == {"password": REDACTED}
+        assert masker.mask_result({"adm_pass": ["enc", "enc"]}) == {"adm_pass": REDACTED}
+
+
+class TestRedactedConstantIsRefusedMidString:
+    """The whole-scalar tier was fixed; the embedded tier was not.
+
+    ``tokens`` claims the constant is reserved so that a model echoing a
+    masked device record into a write cannot set it as a real password.
+    That held only when the constant was the entire argument. Embedded in
+    script content or a JSON body it passed the guard, which is the shape
+    the claim is actually about.
+    """
+
+    @pytest.mark.parametrize(
+        "argument",
+        [
+            f'set passwd "{REDACTED}"',
+            f'{{"name": "fgt-01", "adm_pass": "{REDACTED}"}}',
+            f"prefix {REDACTED} suffix",
+        ],
+    )
+    def test_the_constant_is_refused_inside_a_larger_string(
+        self, engine: FPEEngine, argument: str
+    ) -> None:
+        pattern = strict_pattern(engine.str_alphabet, engine.mask_suffix)
+        with pytest.raises(TokenInInput):
+            guard_args({"content": argument}, pattern, engine.mask_suffix)
+
+    def test_ordinary_text_still_passes(self, engine: FPEEngine) -> None:
+        pattern = strict_pattern(engine.str_alphabet, engine.mask_suffix)
+        guard_args({"content": "set comment 'masked secret withheld'"}, pattern, engine.mask_suffix)
+
+
+class TestReviewCarriersThatHadNoTest:
+    """Every review-sourced carrier, exercised.
+
+    Eight entries were in the table with no test of any spelling, so
+    deleting them kept the suite green. A carrier nobody asserts on is a
+    carrier that can be dropped by a later edit without anything failing.
+    """
+
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [
+            ("ipunnumbered", "192.0.2.11"),
+            ("dhcp-relay-source-ip", "192.0.2.12"),
+            ("dhcp6-relay-ip", "2001:db8::12"),
+            ("dhcp6-relay-source-ip", "2001:db8::13"),
+            ("vrdst6", "2001:db8::14"),
+            ("virtual-mac", "00:11:22:33:44:55"),
+            ("sfp-dsl-mac", "00:11:22:33:44:56"),
+            ("substitute-dst-mac", "00:11:22:33:44:57"),
+        ],
+    )
+    def test_the_value_does_not_survive(self, masker: OutputMasker, key: str, value: str) -> None:
+        out = masker.mask_result({"interface": [{key: value}]})
+        assert value not in str(out)
