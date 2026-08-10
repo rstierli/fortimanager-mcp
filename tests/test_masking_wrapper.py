@@ -717,3 +717,50 @@ class TestDeviceSecretsAreRedactedAsDefenceInDepth:
     ) -> None:
         """FMG returns psk empty, so redacting it would invent a secret."""
         assert masker.mask_result({"psk": ""}) == {"psk": ""}
+
+
+class TestPairSecondElementMustBeAMask:
+    """Keeping element two in clear is only safe when it IS a mask.
+
+    Moving ``ip`` and ``remote-ip`` onto the subnet handler is what makes
+    this reachable. The handler assumed any two-element list was
+    ``[network, netmask]`` and kept the second verbatim, so an
+    address-plus-address pair published a real address that the previous
+    scalar route had masked. Measured against the old route::
+
+        {"ip": ["192.0.2.50", "192.0.2.51"]}
+          old -> ["ip4-...", "ip4-..."]
+          new -> ["ip4-...", "192.0.2.51"]
+
+    The maintainer measured address-plus-netmask on his hardware, so this
+    is not a shape anyone has seen on these keys. It is guarded anyway
+    because the cost of being wrong is a leak, and the check is cheap: a
+    mask is a contiguous run of bits from one end, an address is not.
+    """
+
+    def test_a_second_address_is_not_mistaken_for_a_mask(self, masker: OutputMasker) -> None:
+        out = masker.mask_result({"ip": ["192.0.2.50", "192.0.2.51"]})
+        assert "192.0.2.51" not in str(out)
+        assert "192.0.2.50" not in str(out)
+
+    def test_the_space_separated_string_form_is_guarded_too(self, masker: OutputMasker) -> None:
+        out = masker.mask_result({"ip": "192.0.2.50 192.0.2.51"})
+        assert "192.0.2.51" not in str(out)
+
+    @pytest.mark.parametrize(
+        ("key", "pair", "kept"),
+        [
+            ("subnet", ["203.0.113.0", "255.255.255.0"], "255.255.255.0"),
+            ("subnet", ["203.0.113.0", "255.255.0.0"], "255.255.0.0"),
+            ("wildcard", ["203.0.113.0", "0.0.0.255"], "0.0.0.255"),
+            ("ip", ["192.168.254.254", "255.255.255.0"], "255.255.255.0"),
+            ("ip6-address", ["2001:db8::1", "64"], "64"),
+        ],
+    )
+    def test_real_masks_are_still_kept(
+        self, masker: OutputMasker, key: str, pair: list[str], kept: str
+    ) -> None:
+        """Netmask, hostmask and bare prefix length all stay in clear."""
+        out = masker.mask_result({key: pair})
+        assert out[key][1] == kept
+        assert pair[0] not in str(out)

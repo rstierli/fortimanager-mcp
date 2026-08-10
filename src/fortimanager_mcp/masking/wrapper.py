@@ -144,7 +144,12 @@ class OutputMasker:
         not an identifier, so masking it would cost a round trip and buy
         no privacy.
         """
-        if isinstance(value, list) and len(value) == 2 and all(isinstance(p, str) for p in value):
+        if (
+            isinstance(value, list)
+            and len(value) == 2
+            and all(isinstance(p, str) for p in value)
+            and self._is_mask(value[1])
+        ):
             net, mask = value
             if net.strip().lower() in SKIP_VALUES:
                 return value
@@ -154,7 +159,7 @@ class OutputMasker:
                 return value
             for sep in ("/", " "):
                 net, found, tail = value.partition(sep)
-                if found and net and tail:
+                if found and net and tail and self._is_mask(tail):
                     if net.strip().lower() in SKIP_VALUES:
                         return value
                     return f"{self._mask_scalar(IP, net)}{sep}{tail}"
@@ -200,6 +205,38 @@ class OutputMasker:
         if self._is_ip(value):
             return self._mask_scalar(IP, value)
         return self.placeholder(value)
+
+    @staticmethod
+    def _is_mask(value: str) -> bool:
+        """True for a netmask, a hostmask, or a bare prefix length.
+
+        The pair and separator forms keep whatever follows the address,
+        which is only correct when that part is a mask. If it is another
+        ADDRESS, keeping it publishes one. Measured before this existed,
+        and reachable because ``ip`` and ``remote-ip`` moved onto this
+        handler in the round-3 review::
+
+            {"ip": ["192.0.2.50", "192.0.2.51"]}  ->  second kept verbatim
+
+        A mask is a contiguous run of set bits from one end of the word:
+        ``255.255.255.0`` from the left, and the ``0.0.0.255`` hostmask a
+        wildcard address carries from the right. An address is neither,
+        apart from the all-ones and all-zeros values that ``SKIP_VALUES``
+        already passes through before this is consulted.
+        """
+        candidate = value.strip()
+        if candidate.isdigit():
+            # Bare prefix length, the form an IPv6 address pair uses.
+            return int(candidate) <= 128
+        for family, width in ((ipaddress.IPv4Address, 32), (ipaddress.IPv6Address, 128)):
+            try:
+                bits = int(family(candidate))
+            except ValueError:
+                continue
+            inverted = bits ^ ((1 << width) - 1)
+            # x is 2**k - 1 exactly when x & (x + 1) == 0.
+            return bits & (bits + 1) == 0 or inverted & (inverted + 1) == 0
+        return False
 
     @staticmethod
     def _is_ip(value: str) -> bool:
