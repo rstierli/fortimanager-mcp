@@ -20,6 +20,7 @@ from fortimanager_mcp.utils.errors import client_safe_error
 from fortimanager_mcp.utils.validation import (
     ValidationError,
     validate_device_name,
+    validate_device_serial,
     validate_interface_name,
     validate_ipv4_address,
     validate_ipv4_subnet,
@@ -29,6 +30,15 @@ from fortimanager_mcp.utils.validation import (
 logger = logging.getLogger(__name__)
 
 INTERFACE_ROLES = {"lan", "wan", "dmz", "undefined"}
+
+#: FortiOS wtp-profile radio channel-bonding (width) values confirmed across
+#: 20/40/80/160MHz builds. Wi-Fi 7 profiles may add a 320MHz option on newer
+#: FortiOS trains; it is intentionally left out here since it could not be
+#: confirmed against a live appliance or schema dump (see PR description).
+WTP_PROFILE_CHANNEL_BONDING_MODES = {"20MHz", "40MHz", "80MHz", "160MHz"}
+
+#: FortiOS wireless-controller.wtp authorization states.
+WTP_ADMIN_STATES = {"discovered", "disable", "enable"}
 
 
 def _ip_mask_pair(ip: str) -> list[str]:
@@ -479,7 +489,7 @@ async def delete_device_dhcp_server(
 #: Credential fields FMG stores as ``type=password`` on ``wireless-controller
 #: vap``. WPA/WPA2 personal modes use ``passphrase``; WPA3-SAE keeps its own
 #: ``sae-password``, and transition mode carries both.
-_VAP_SECRET_FIELDS = ("passphrase", "sae-password")
+_VAP_SECRET_FIELDS = frozenset({"passphrase", "sae-password"})
 
 #: Security modes that authenticate with an SAE password.
 _VAP_SAE_MODES = frozenset({"wpa3-sae", "wpa3-sae-transition"})
@@ -488,27 +498,42 @@ _VAP_SAE_MODES = frozenset({"wpa3-sae", "wpa3-sae-transition"})
 _VAP_PSK_MODES = frozenset({"wpa-personal", "wpa-only-personal", "wpa2-only-personal"})
 
 
-def _sanitize_vap_result(result: Any) -> Any:
-    """Strip every credential field from anything FMG echoes back.
+def _strip_secret_fields(result: Any, secret_fields: frozenset[str]) -> Any:
+    """Strip named credential fields from anything FMG echoes back.
 
-    Recurses through dict VALUES as well as list items. The first version
-    stripped top-level keys only, so a credential one level down survived
-    the function whose entire purpose is that it cannot::
+    Recurses through dict VALUES as well as list items, at any depth. An
+    earlier version of this (in the VAP tools this was lifted from) stripped
+    top-level keys only, so a credential one level down survived the
+    function whose entire purpose is that it cannot::
 
         {"data": {"passphrase": "..."}}   ->   passphrase survived
 
-    The echo is flat today, so that was latent rather than live. It is
-    still wrong: the repo's own ``sanitize_for_logging`` recurses fully,
-    and a sanitizer that depends on the shape it is handed is one
+    That was latent rather than live there, since the echo was flat. It
+    would not be latent for a nested table: ``wireless-controller
+    wtp-profile`` carries ``radio-1``..``radio-4`` sub-objects, and
+    ``sam-private-key-password`` lives inside those, not at the top level.
+    The repo's own ``sanitize_for_logging`` recurses fully for the same
+    reason: a sanitizer that depends on the shape it is handed is one
     response format away from leaking.
+
+    ``secret_fields`` is matched against keys as-is (FortiOS field names,
+    e.g. ``"passphrase"``, ``"login-passwd"``), not normalized, matching
+    every other exact-key lookup in this module.
     """
     if isinstance(result, dict):
         return {
-            k: _sanitize_vap_result(v) for k, v in result.items() if k not in _VAP_SECRET_FIELDS
+            k: _strip_secret_fields(v, secret_fields)
+            for k, v in result.items()
+            if k not in secret_fields
         }
     if isinstance(result, list):
-        return [_sanitize_vap_result(item) for item in result]
+        return [_strip_secret_fields(item, secret_fields) for item in result]
     return result
+
+
+def _sanitize_vap_result(result: Any) -> Any:
+    """Strip every credential field from a ``wireless-controller vap`` echo."""
+    return _strip_secret_fields(result, _VAP_SECRET_FIELDS)
 
 
 @mcp.tool()
@@ -774,5 +799,500 @@ async def assign_vap_to_wtp_profile(
         }
     except Exception as e:
         logger.error(f"VAP assignment failed on {device}: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
+
+
+# =============================================================================
+# WTP-profile radio configuration (device DB, vdom scope) (issue #52)
+# =============================================================================
+
+#: Credential fields FMG stores as ``type=password`` on ``wireless-controller
+#: wtp-profile``. Confirmed against a live 7.6.x FMG (schema dump via
+#: ``option=syntax`` plus a real read-back on the mcp-dev-test sandbox,
+#: device FGT-MCP-TEST-01): every one of these came back as an ``ENC``-
+#: prefixed blob, the same shape ``adm_pass`` had in the dvmdb-device fix.
+#:
+#: ``login-passwd`` is the FortiAP admin password, set when
+#: ``login-passwd-change`` is ``yes``/``default`` -- the field this PR's
+#: review flagged. The rest were found alongside it while confirming that
+#: finding, via the same schema dump, and leak the same way for the same
+#: reason, so they are stripped here too rather than left for a second
+#: report: ``apcfg-auto-cert-est-http-password``/``apcfg-auto-cert-scep-
+#: password`` (cert-enrollment passwords), ``apcfg-mesh-passwd`` (AP mesh
+#: PSK), ``wan-port-auth-password`` (WAN port PPPoE/PAP auth), and
+#: ``sam-private-key-password`` -- nested under each ``radio-1``..``radio-4``
+#: sub-object rather than at the top level, which is exactly the case
+#: ``_strip_secret_fields`` recurses for.
+_WTP_PROFILE_SECRET_FIELDS = frozenset(
+    {
+        "login-passwd",
+        "apcfg-auto-cert-est-http-password",
+        "apcfg-auto-cert-scep-password",
+        "apcfg-mesh-passwd",
+        "wan-port-auth-password",
+        "sam-private-key-password",
+    }
+)
+
+#: Credential field FMG stores as ``type=password`` on ``wireless-controller
+#: wtp`` (the per-AP override of the profile setting above). Confirmed the
+#: same way: live read-back on FGT-MCP-TEST-01 with ``override-login-passwd-
+#: change`` and ``login-passwd-change`` both set returned ``login-passwd`` as
+#: an ``ENC``-prefixed blob.
+_WTP_SECRET_FIELDS = frozenset({"login-passwd"})
+
+
+def _sanitize_wtp_profile_result(result: Any) -> Any:
+    """Strip every credential field from a ``wireless-controller wtp-profile`` echo."""
+    return _strip_secret_fields(result, _WTP_PROFILE_SECRET_FIELDS)
+
+
+def _sanitize_wtp_result(result: Any) -> Any:
+    """Strip every credential field from a ``wireless-controller wtp`` echo."""
+    return _strip_secret_fields(result, _WTP_SECRET_FIELDS)
+
+
+@mcp.tool()
+async def list_device_wtp_profiles(
+    device: str,
+    vdom: str = "root",
+) -> dict[str, Any]:
+    """List FortiAP (WTP) profiles in a device's device DB.
+
+    Args:
+        device: Managed device name
+        vdom: VDOM to read (default "root")
+
+    Returns:
+        dict with device, vdom, count and profiles (credential fields
+        stripped -- see _WTP_PROFILE_SECRET_FIELDS)
+    """
+    client = get_fmg_client()
+    if not client:
+        return {"error": "FortiManager client not connected"}
+
+    try:
+        device = validate_device_name(device)
+        vdom = validate_object_name(vdom, "VDOM")
+        profiles = await client.list_device_wtp_profiles(device=device, vdom=vdom)
+        profiles = profiles if isinstance(profiles, list) else [profiles] if profiles else []
+        return {
+            "device": device,
+            "vdom": vdom,
+            "count": len(profiles),
+            "profiles": _sanitize_wtp_profile_result(profiles),
+        }
+    except Exception as e:
+        logger.error(f"WTP profile list failed on {device}: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
+
+
+@mcp.tool()
+async def get_device_wtp_profile(
+    device: str,
+    profile: str,
+    vdom: str = "root",
+) -> dict[str, Any]:
+    """Get a FortiAP (WTP) profile from a device's device DB, radios included.
+
+    Args:
+        device: Managed device name
+        profile: FortiAP (WTP) profile name
+        vdom: VDOM the profile lives in (default "root")
+
+    Returns:
+        dict with device, vdom and the stored profile object (credential
+        fields stripped -- see _WTP_PROFILE_SECRET_FIELDS), or a not_found
+        error if the profile does not exist
+    """
+    client = get_fmg_client()
+    if not client:
+        return {"error": "FortiManager client not connected"}
+
+    try:
+        device = validate_device_name(device)
+        vdom = validate_object_name(vdom, "VDOM")
+        profile = validate_object_name(profile, "wtp-profile")
+        stored = await client.get_device_wtp_profile(device=device, vdom=vdom, name=profile)
+        if isinstance(stored, list):
+            stored = stored[0] if stored else {}
+        if not isinstance(stored, dict) or not stored:
+            return {
+                "error": f"wtp-profile '{profile}' not found or returned no configuration",
+                "error_code": "not_found",
+            }
+        return {"device": device, "vdom": vdom, "profile": _sanitize_wtp_profile_result(stored)}
+    except Exception as e:
+        logger.error(f"WTP profile read failed on {device}: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
+
+
+@mcp.tool()
+async def update_device_wtp_profile_radio(
+    device: str,
+    profile: str,
+    radio: int,
+    channel: list[int] | None = None,
+    channel_bonding: str | None = None,
+    vdom: str = "root",
+) -> dict[str, Any]:
+    """Update a single radio's channel and/or channel width on a FortiAP profile.
+
+    This is a read-modify-write, like assign_vap_to_wtp_profile: the profile
+    is read first and every other field already on the target radio (band,
+    power, vap-all, vaps, mode, ...) is carried through unchanged.
+    FortiManager replaces a nested radio object rather than merging into it,
+    so writing back only channel/channel-bonding would reset the rest to
+    defaults on the next install_device_settings.
+
+    Args:
+        device: Managed device name
+        profile: FortiAP (WTP) profile name
+        radio: Radio to update, 1-3
+        channel: Channel(s) to pin the radio to. FortiOS stores this as a
+            list (it can also hold an auto-select candidate set); pass a
+            single-element list, e.g. [15], to pin one channel.
+        channel_bonding: Channel width/bonding, one of
+            WTP_PROFILE_CHANNEL_BONDING_MODES ("20MHz", "40MHz", "80MHz",
+            "160MHz")
+        vdom: VDOM the profile lives in (default "root")
+
+    Returns:
+        Update result
+    """
+    client = get_fmg_client()
+    if not client:
+        return {"error": "FortiManager client not connected"}
+
+    try:
+        device = validate_device_name(device)
+        vdom = validate_object_name(vdom, "VDOM")
+        profile = validate_object_name(profile, "wtp-profile")
+        if radio not in (1, 2, 3):
+            raise ValidationError(f"radio must be 1-3, got {radio}")
+        if channel is None and channel_bonding is None:
+            return {"error": "No update parameters provided"}
+
+        channel_values: list[str] | None = None
+        if channel is not None:
+            if not channel:
+                raise ValidationError("channel must contain at least one channel number")
+            for c in channel:
+                if not 1 <= c <= 233:
+                    raise ValidationError(f"channel values must be 1-233, got {c}")
+            channel_values = [str(c) for c in channel]
+
+        if channel_bonding is not None:
+            channel_bonding = channel_bonding.strip()
+            if channel_bonding not in WTP_PROFILE_CHANNEL_BONDING_MODES:
+                raise ValidationError(
+                    "channel_bonding must be one of "
+                    f"{sorted(WTP_PROFILE_CHANNEL_BONDING_MODES)}, got '{channel_bonding}'"
+                )
+
+        stored = await client.get_device_wtp_profile(device=device, vdom=vdom, name=profile)
+        if isinstance(stored, list):
+            stored = stored[0] if stored else {}
+        if not isinstance(stored, dict):
+            return {
+                "error": f"Unexpected wtp-profile shape for '{profile}'",
+                "error_code": "unexpected_response",
+            }
+        if not stored:
+            # An empty read is not a profile with no radios, it is a read
+            # that told us nothing. See assign_vap_to_wtp_profile for why
+            # continuing would invent radio objects from scratch.
+            return {
+                "error": f"wtp-profile '{profile}' not found or returned no configuration",
+                "error_code": "not_found",
+            }
+
+        key = f"radio-{radio}"
+        existing = stored.get(key)
+        if not isinstance(existing, dict) or not existing:
+            return {
+                "error": f"'{key}' not found on wtp-profile '{profile}'",
+                "error_code": "not_found",
+            }
+
+        # Carry the rest of the radio object through; see the docstring and
+        # assign_vap_to_wtp_profile for why a partial write is unsafe here.
+        updated_radio = dict(existing)
+        if channel_values is not None:
+            updated_radio["channel"] = channel_values
+        if channel_bonding is not None:
+            updated_radio["channel-bonding"] = channel_bonding
+
+        result = await client.update_device_wtp_profile(
+            device=device, vdom=vdom, name=profile, data={key: updated_radio}
+        )
+        return {
+            "success": True,
+            "message": f"{key} of profile '{profile}' updated in device DB of '{device}'. "
+            "Push with install_device_settings.",
+            "result": result,
+        }
+    except Exception as e:
+        logger.error(f"WTP profile radio update failed on {device}: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
+
+
+# =============================================================================
+# Managed FortiAPs / wtp registration (device DB, vdom scope) (issue #52)
+# =============================================================================
+
+
+@mcp.tool()
+async def list_device_wtps(
+    device: str,
+    vdom: str = "root",
+) -> dict[str, Any]:
+    """List managed FortiAPs registered in a device's device DB.
+
+    Args:
+        device: Managed device name (the wireless controller / FortiGate)
+        vdom: VDOM to read (default "root")
+
+    Returns:
+        dict with device, vdom, count and wtps (device-DB objects keyed by
+        wtp-id/serial, credential fields stripped -- see _WTP_SECRET_FIELDS)
+    """
+    client = get_fmg_client()
+    if not client:
+        return {"error": "FortiManager client not connected"}
+
+    try:
+        device = validate_device_name(device)
+        vdom = validate_object_name(vdom, "VDOM")
+        wtps = await client.list_device_wtps(device=device, vdom=vdom)
+        wtps = wtps if isinstance(wtps, list) else [wtps] if wtps else []
+        return {
+            "device": device,
+            "vdom": vdom,
+            "count": len(wtps),
+            "wtps": _sanitize_wtp_result(wtps),
+        }
+    except Exception as e:
+        logger.error(f"WTP list failed on {device}: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
+
+
+@mcp.tool()
+async def get_device_wtp(
+    device: str,
+    wtp_id: str,
+    vdom: str = "root",
+) -> dict[str, Any]:
+    """Get one managed FortiAP by wtp-id (serial number).
+
+    Args:
+        device: Managed device name
+        wtp_id: FortiAP serial number (the wtp-id / table mkey)
+        vdom: VDOM the AP is registered in (default "root")
+
+    Returns:
+        dict with device, vdom and the stored wtp object (credential fields
+        stripped -- see _WTP_SECRET_FIELDS), or a not_found error if it
+        does not exist
+    """
+    client = get_fmg_client()
+    if not client:
+        return {"error": "FortiManager client not connected"}
+
+    try:
+        device = validate_device_name(device)
+        vdom = validate_object_name(vdom, "VDOM")
+        wtp_id = validate_device_serial(wtp_id)
+        stored = await client.get_device_wtp(device=device, vdom=vdom, wtp_id=wtp_id)
+        if isinstance(stored, list):
+            stored = stored[0] if stored else {}
+        if not isinstance(stored, dict) or not stored:
+            return {
+                "error": f"wtp '{wtp_id}' not found or returned no configuration",
+                "error_code": "not_found",
+            }
+        return {"device": device, "vdom": vdom, "wtp": _sanitize_wtp_result(stored)}
+    except Exception as e:
+        logger.error(f"WTP read failed on {device}: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
+
+
+@mcp.tool()
+async def create_device_wtp(
+    device: str,
+    wtp_id: str,
+    wtp_profile: str,
+    name: str | None = None,
+    admin: str = "discovered",
+    location: str | None = None,
+    comment: str | None = None,
+    vdom: str = "root",
+) -> dict[str, Any]:
+    """Register a managed FortiAP in a device's device DB.
+
+    This is the wireless-controller.wtp table: the mapping from a physical
+    AP's serial number to the profile it runs. A wtp-profile that exists in
+    the device DB but is not referenced by any wtp entry is pruned by
+    FortiManager on install, so registering the AP here is required before
+    a profile-only setup survives install_device_settings.
+
+    Args:
+        device: Managed device name
+        wtp_id: FortiAP serial number (the wtp-id / table mkey)
+        wtp_profile: FortiAP (WTP) profile name to assign
+        name: Friendly display name
+        admin: Authorization state: "discovered" (awaiting authorization),
+            "enable" (authorized) or "disable"; default "discovered"
+        location: Free-text location string
+        comment: Free-text comment
+        vdom: VDOM to register the AP in (default "root")
+
+    Returns:
+        Creation result
+    """
+    client = get_fmg_client()
+    if not client:
+        return {"error": "FortiManager client not connected"}
+
+    try:
+        device = validate_device_name(device)
+        vdom = validate_object_name(vdom, "VDOM")
+        wtp_id = validate_device_serial(wtp_id)
+        wtp_profile = validate_object_name(wtp_profile, "wtp-profile")
+        admin = admin.strip().lower()
+        if admin not in WTP_ADMIN_STATES:
+            raise ValidationError(f"admin must be one of {sorted(WTP_ADMIN_STATES)}, got '{admin}'")
+
+        data: dict[str, Any] = {
+            "wtp-id": wtp_id,
+            "wtp-profile": wtp_profile,
+            "admin": admin,
+        }
+        if name is not None:
+            data["name"] = name
+        if location is not None:
+            data["location"] = location
+        if comment is not None:
+            data["comment"] = comment
+
+        result = await client.create_device_wtp(device=device, vdom=vdom, data=data)
+        return {
+            "success": True,
+            "message": f"WTP '{wtp_id}' registered on profile '{wtp_profile}' "
+            f"in device DB of '{device}'. Push with install_device_settings.",
+            "result": result,
+        }
+    except Exception as e:
+        logger.error(f"WTP create failed on {device}: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
+
+
+@mcp.tool()
+async def update_device_wtp(
+    device: str,
+    wtp_id: str,
+    wtp_profile: str | None = None,
+    name: str | None = None,
+    admin: str | None = None,
+    location: str | None = None,
+    comment: str | None = None,
+    vdom: str = "root",
+) -> dict[str, Any]:
+    """Update fields on a device-DB managed FortiAP. Only provided fields change.
+
+    Args:
+        device: Managed device name
+        wtp_id: FortiAP serial number (the wtp-id / table mkey)
+        wtp_profile: New FortiAP (WTP) profile name to assign
+        name: New friendly display name
+        admin: New authorization state: "discovered", "enable" or "disable"
+        location: New free-text location string
+        comment: New free-text comment
+        vdom: VDOM the AP is registered in (default "root")
+
+    Returns:
+        Update result
+    """
+    client = get_fmg_client()
+    if not client:
+        return {"error": "FortiManager client not connected"}
+
+    try:
+        device = validate_device_name(device)
+        vdom = validate_object_name(vdom, "VDOM")
+        wtp_id = validate_device_serial(wtp_id)
+        data: dict[str, Any] = {}
+        if wtp_profile is not None:
+            data["wtp-profile"] = validate_object_name(wtp_profile, "wtp-profile")
+        if name is not None:
+            data["name"] = name
+        if admin is not None:
+            admin = admin.strip().lower()
+            if admin not in WTP_ADMIN_STATES:
+                raise ValidationError(
+                    f"admin must be one of {sorted(WTP_ADMIN_STATES)}, got '{admin}'"
+                )
+            data["admin"] = admin
+        if location is not None:
+            data["location"] = location
+        if comment is not None:
+            data["comment"] = comment
+
+        if not data:
+            return {"error": "No update parameters provided"}
+
+        result = await client.update_device_wtp(device=device, vdom=vdom, wtp_id=wtp_id, data=data)
+        return {
+            "success": True,
+            "message": f"WTP '{wtp_id}' updated in device DB of '{device}'. "
+            "Push with install_device_settings.",
+            "result": result,
+        }
+    except Exception as e:
+        logger.error(f"WTP update failed on {device}: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
+
+
+@mcp.tool()
+async def delete_device_wtp(
+    device: str,
+    wtp_id: str,
+    vdom: str = "root",
+) -> dict[str, Any]:
+    """Delete a managed FortiAP registration from a device's device DB.
+
+    Args:
+        device: Managed device name
+        wtp_id: FortiAP serial number (the wtp-id / table mkey)
+        vdom: VDOM the AP is registered in (default "root")
+
+    Returns:
+        Deletion result
+    """
+    client = get_fmg_client()
+    if not client:
+        return {"error": "FortiManager client not connected"}
+
+    try:
+        device = validate_device_name(device)
+        vdom = validate_object_name(vdom, "VDOM")
+        wtp_id = validate_device_serial(wtp_id)
+        result = await client.delete_device_wtp(device=device, vdom=vdom, wtp_id=wtp_id)
+        return {
+            "success": True,
+            "message": f"WTP '{wtp_id}' deleted from device DB of '{device}'. "
+            "Push with install_device_settings.",
+            "result": result,
+        }
+    except Exception as e:
+        logger.error(f"WTP delete failed on {device}: {e}")
         msg, code = client_safe_error(e)
         return {"error": msg, "error_code": code}

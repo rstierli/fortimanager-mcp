@@ -2303,3 +2303,86 @@ class FortiManagerClient:
             f"/pm/config/device/{device}/vdom/{vdom}/wireless-controller/wtp-profile/{name}",
             data=data,
         )
+
+    async def list_device_wtp_profiles(
+        self,
+        device: str,
+        vdom: str = "root",
+    ) -> Any:
+        """List device-DB FortiAP (WTP) profiles.
+
+        FNDN: GET /pm/config/device/{device}/vdom/{vdom}/wireless-controller/wtp-profile
+        """
+        return await self.get(
+            f"/pm/config/device/{device}/vdom/{vdom}/wireless-controller/wtp-profile",
+        )
+
+    async def list_device_wtps(
+        self,
+        device: str,
+        vdom: str = "root",
+    ) -> Any:
+        """List managed FortiAPs (wireless-controller wtp) in a device's device DB.
+
+        FNDN: GET /pm/config/device/{device}/vdom/{vdom}/wireless-controller/wtp
+        """
+        return await self.get(f"/pm/config/device/{device}/vdom/{vdom}/wireless-controller/wtp")
+
+    async def get_device_wtp(
+        self,
+        device: str,
+        vdom: str,
+        wtp_id: str,
+    ) -> Any:
+        """Get one managed FortiAP by wtp-id (serial number).
+
+        FNDN: GET /pm/config/device/{device}/vdom/{vdom}/wireless-controller/wtp/{wtp_id}
+        """
+        return await self.get(
+            f"/pm/config/device/{device}/vdom/{vdom}/wireless-controller/wtp/{wtp_id}",
+        )
+
+    async def create_device_wtp(
+        self,
+        device: str,
+        vdom: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Register a managed FortiAP in a device's device DB.
+
+        FNDN: ADD /pm/config/device/{device}/vdom/{vdom}/wireless-controller/wtp
+        """
+        return await self.add(
+            f"/pm/config/device/{device}/vdom/{vdom}/wireless-controller/wtp",
+            data=data,
+        )
+
+    async def update_device_wtp(
+        self,
+        device: str,
+        vdom: str,
+        wtp_id: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Update a device-DB managed FortiAP by wtp-id (serial number).
+
+        FNDN: UPDATE /pm/config/device/{device}/vdom/{vdom}/wireless-controller/wtp/{wtp_id}
+        """
+        return await self.update(
+            f"/pm/config/device/{device}/vdom/{vdom}/wireless-controller/wtp/{wtp_id}",
+            data=data,
+        )
+
+    async def delete_device_wtp(
+        self,
+        device: str,
+        vdom: str,
+        wtp_id: str,
+    ) -> dict[str, Any]:
+        """Delete a device-DB managed FortiAP by wtp-id (serial number).
+
+        FNDN: DELETE /pm/config/device/{device}/vdom/{vdom}/wireless-controller/wtp/{wtp_id}
+        """
+        return await self.delete(
+            f"/pm/config/device/{device}/vdom/{vdom}/wireless-controller/wtp/{wtp_id}",
+        )
