@@ -30,6 +30,13 @@ oversight:
   design work, not a table entry.
 - Object and policy names that embed an address (``srv-192.0.2.10``).
   Names route calls, see above.
+- IPv6 prefix lists (``ipv6.ip6-prefix-list[].prefix`` on an interface).
+  Masking it needs the walk to scope a key by its parent, since
+  ``prefix`` on its own is also an integer id and a routing-prefix label,
+  so a global carrier would corrupt both. Settled on the PR after being
+  raised twice: the scoping mechanism is not worth building to hold two
+  keys, given that carrier-shape complexity is what produced this table's
+  leak bugs in the first place.
 - Device coordinates (``latitude``/``longitude`` on dvmdb records).
   Floats, so no format-preserving cipher covers them; masking would mean
   an irreversible placeholder on a value the issue #34 scope never
@@ -86,6 +93,18 @@ FIELD_TYPES: dict[str, str] = {
     # canonical_key folds onto these entries: "Serial Number" and
     # "Hostname" both observed live on 7.6.7 (get_system_status).
     "serial_number": SERIAL,  # live: 7.6.7 get_system_status "Serial Number"
+    # ADOM DNS servers. ``get_adom`` returns the ADOM record raw
+    # (system_tools.py:193), and the record carries these beside the
+    # quotas and the uuid. Measured on 7.6.7 and 8.0.0, both unset at
+    # ``0.0.0.0``, which SKIP_VALUES passes through, so this only shows on
+    # an ADOM that configures them.
+    #
+    # The IPv6 halves are deliberately absent: FortiManager splits them
+    # into four integers (``primary_dns_ip6_1`` through ``_4``). No cipher
+    # here covers an int, so masking one would mean an irreversible
+    # placeholder, the same reason the device coordinates are out of scope.
+    "primary_dns_ip4": IP,  # live: 7.6.7 + 8.0.0 get_adom
+    "secondary_dns_ip4": IP,  # live: 7.6.7 + 8.0.0 get_adom
     # The proxy envelope's spelling. ``get_device_realtime_status`` and
     # ``get_device_interfaces`` return the FortiOS response verbatim under
     # ``data`` (dvm_tools.py:752, :800), and every FortiOS monitor
@@ -202,9 +221,15 @@ COMPOSITE_SUBNET: tuple[str, ...] = (
     "trust_ip_2",  # review r3: was in clear
     "trust_ip_3",  # review r3: was in clear
 )
-#: The review also asked for "the IPv6 prefix keys" without naming them.
-#: They are not guessed at here: an invented key name is an entry that
-#: reads like coverage and masks nothing. Asked on the PR instead.
+#: The IPv6 prefix keys are a DOCUMENTED GAP, not an oversight. Masking
+#: ``ipv6.ip6-prefix-list[].prefix`` needs the walk to scope a key by its
+#: parent, because ``prefix`` alone also appears as an integer id and as a
+#: routing-prefix label, so a global entry would corrupt them. The
+#: maintainer settled it on the PR after it was raised twice: do not build
+#: the mechanism. Three rounds of real leak bugs in this table came out of
+#: carrier-shape complexity, and a new scoping surface is the same kind of
+#: complexity. Revisit only if it starts to matter, with the mutation
+#: harness that now exists to make that safer.
 
 #: Wildcard ADDRESS: an IP plus a wildcard mask, which FortiManager
 #: returns under this key on a ``type=wildcard`` address object. Distinct

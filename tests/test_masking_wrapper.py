@@ -797,3 +797,39 @@ class TestWildcardMasksAreNotDiscriminated:
         """The guard must stay where element two can be an address."""
         out = masker.mask_result({"ip": ["192.0.2.50", "192.0.2.51"]})
         assert "192.0.2.51" not in str(out)
+
+
+class TestAdomDnsServers:
+    """``get_adom`` returns the ADOM record raw, DNS servers included.
+
+    Measured on live 7.6.7 and 8.0.0: ``get_adom("root")`` answers with
+    ``primary_dns_ip4`` and ``secondary_dns_ip4`` beside the quotas and
+    the uuid, and ``system_tools.get_adom`` hands that object back
+    untouched. Both labs have them unset at ``0.0.0.0``, which
+    ``SKIP_VALUES`` passes through, so the leak only shows on an ADOM
+    that configures them.
+
+    The IPv6 halves are NOT carriers: FortiManager splits them into four
+    integers (``primary_dns_ip6_1`` through ``_4``, all ``0`` on both
+    appliances). No format-preserving cipher covers an int, and masking
+    one would mean an irreversible placeholder, which is the same reason
+    the device coordinates are out of scope.
+    """
+
+    @pytest.mark.parametrize("key", ["primary_dns_ip4", "secondary_dns_ip4"])
+    def test_a_configured_dns_server_is_masked(
+        self, masker: OutputMasker, engine: FPEEngine, key: str
+    ) -> None:
+        out = masker.mask_result({"adom": {"name": "root", key: "198.51.100.53"}})
+        masked = out["adom"][key]
+        assert engine.unmask_ip_token(masked) == "198.51.100.53"
+        assert out["adom"]["name"] == "root"
+
+    def test_the_unset_form_both_labs_return_is_left_alone(self, masker: OutputMasker) -> None:
+        record = {"primary_dns_ip4": "0.0.0.0", "secondary_dns_ip4": "0.0.0.0"}
+        assert masker.mask_result(record) == record
+
+    def test_the_ipv6_integer_quad_is_not_touched(self, masker: OutputMasker) -> None:
+        """Ints cannot round trip through the ciphers, so they stay out."""
+        record = {f"primary_dns_ip6_{n}": 0 for n in range(1, 5)}
+        assert masker.mask_result(record) == record
