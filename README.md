@@ -947,10 +947,11 @@ code. This check always runs (no environment toggle):
 
 - `profile_group` is mutually exclusive with `av_profile`, `ips_sensor`,
   `webfilter_profile`, `dnsfilter_profile`, `application_list`,
-  `file_filter_profile`, and `ssl_ssh_profile` -- FortiOS rejects a policy
-  that sets both a security-profile group and any individual profile it
-  bundles. `profile_protocol_options` is not part of a profile group and may
-  be combined with either path.
+  `file_filter_profile`, `ssl_ssh_profile`, and `profile_protocol_options` --
+  FortiOS rejects a policy that sets both a security-profile group and any
+  individual profile it bundles. `profile_protocol_options` is itself a
+  member of the `firewall profile-group` object, so it is part of this
+  exclusion set too.
 - Setting any of the fields above together with `utm_status=False` in the
   same call is rejected -- FortiOS ignores security profiles when
   `utm-status` is disabled, so the combination is almost certainly a mistake.

@@ -639,6 +639,7 @@ class TestValidateSecurityProfiles:
             "application_list": None,
             "file_filter_profile": None,
             "ssl_ssh_profile": None,
+            "profile_protocol_options": None,
         }
         args.update(overrides)
         return validate_security_profiles(**args)
@@ -655,6 +656,7 @@ class TestValidateSecurityProfiles:
                 av_profile="default",
                 ips_sensor="default",
                 ssl_ssh_profile="certificate-inspection",
+                profile_protocol_options="default",
             )
             is None
         )
@@ -668,6 +670,19 @@ class TestValidateSecurityProfiles:
         with pytest.raises(ValidationError, match="mutually exclusive"):
             self._call(profile_group="Corporate-Profiles", av_profile="default")
 
+    def test_profile_group_with_protocol_options_rejected(self):
+        """profile_group plus profile_protocol_options is rejected.
+
+        profile-protocol-options is a listed member of the FortiOS
+        firewall/profile-group object's attribute list (FNDN 7.6.7 schema,
+        adomobj76-3500-objects.htm / adomobj76-3693-objects.htm), so it is
+        part of the mutual-exclusion set like every other individual
+        profile field.
+        """
+        with pytest.raises(ValidationError, match="mutually exclusive") as exc_info:
+            self._call(profile_group="Corporate-Profiles", profile_protocol_options="default")
+        assert "profile-protocol-options" in str(exc_info.value)
+
     def test_profile_group_with_all_individual_fields_rejected(self):
         """profile_group plus every individual profile field lists them all."""
         with pytest.raises(ValidationError) as exc_info:
@@ -680,6 +695,7 @@ class TestValidateSecurityProfiles:
                 application_list="default",
                 file_filter_profile="default",
                 ssl_ssh_profile="certificate-inspection",
+                profile_protocol_options="default",
             )
         message = str(exc_info.value)
         for field in (
@@ -690,6 +706,7 @@ class TestValidateSecurityProfiles:
             "application-list",
             "file-filter-profile",
             "ssl-ssh-profile",
+            "profile-protocol-options",
         ):
             assert field in message
 

@@ -157,6 +157,7 @@ def _build_security_profile_fields(
             application_list,
             file_filter_profile,
             ssl_ssh_profile,
+            profile_protocol_options,
         )
     ):
         fields["profile-type"] = "single"
@@ -531,13 +532,15 @@ async def create_firewall_policy(
         file_filter_profile: File filter profile name (optional)
         ssl_ssh_profile: SSL/SSH inspection profile name, e.g.
             "certificate-inspection" (optional)
-        profile_protocol_options: Protocol options profile name (optional;
-            independent of profile_group -- may be combined with either the
-            individual profile fields or profile_group)
+        profile_protocol_options: Protocol options profile name (optional).
+            Mutually exclusive with profile_group -- it is itself a member
+            of the FortiOS `firewall profile-group` object, so FortiOS
+            rejects setting both
         profile_group: Security profile group name (optional). Mutually
             exclusive with av_profile, ips_sensor, webfilter_profile,
-            dnsfilter_profile, application_list, file_filter_profile, and
-            ssl_ssh_profile -- FortiOS rejects setting both
+            dnsfilter_profile, application_list, file_filter_profile,
+            ssl_ssh_profile, and profile_protocol_options -- FortiOS rejects
+            setting both
 
     Returns:
         dict: Create result with keys:
@@ -596,6 +599,7 @@ async def create_firewall_policy(
             application_list=application_list,
             file_filter_profile=file_filter_profile,
             ssl_ssh_profile=ssl_ssh_profile,
+            profile_protocol_options=profile_protocol_options,
         )
         client = _get_client()
 
@@ -721,12 +725,21 @@ async def update_firewall_policy(
         application_list: Application control list name (optional)
         file_filter_profile: File filter profile name (optional)
         ssl_ssh_profile: SSL/SSH inspection profile name (optional)
-        profile_protocol_options: Protocol options profile name (optional;
-            independent of profile_group)
+        profile_protocol_options: Protocol options profile name (optional).
+            Mutually exclusive with profile_group in the same call -- it is
+            itself a member of the FortiOS `firewall profile-group` object
         profile_group: Security profile group name (optional). Mutually
             exclusive with av_profile, ips_sensor, webfilter_profile,
-            dnsfilter_profile, application_list, file_filter_profile, and
-            ssl_ssh_profile in the same call
+            dnsfilter_profile, application_list, file_filter_profile,
+            ssl_ssh_profile, and profile_protocol_options in the same call
+
+    Note:
+        Sending any individual security-profile field (av_profile,
+        ssl_ssh_profile, profile_protocol_options, etc.) on a policy that is
+        currently in group mode flips `profile-type` to "single" on the
+        appliance. The previously-stored `profile-group` value becomes
+        dormant (not deleted) rather than staying active alongside the new
+        field -- FortiOS only honors one profile-type at a time.
 
     Returns:
         dict: Update result with keys:
@@ -786,6 +799,7 @@ async def update_firewall_policy(
             application_list=application_list,
             file_filter_profile=file_filter_profile,
             ssl_ssh_profile=ssl_ssh_profile,
+            profile_protocol_options=profile_protocol_options,
         )
         client = _get_client()
 

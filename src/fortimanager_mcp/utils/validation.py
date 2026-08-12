@@ -699,13 +699,12 @@ def validate_policy_id(policyid: int) -> int:
 
 # Individual security-profile fields on a firewall policy that FortiOS also
 # exposes bundled into a single `firewall profile-group` object. Verified
-# against the FNDN 7.6.7 `firewall/profile-group` schema: the group object
-# carries av-profile, ips-sensor, webfilter-profile, dnsfilter-profile,
-# application-list, file-filter-profile, and ssl-ssh-profile as members, so
-# FortiOS rejects a policy that sets both `profile-group` and any of these.
-# `profile-protocol-options` is deliberately excluded here -- it is not a
-# member of `firewall profile-group` in that schema, applies independently of
-# profile-type (single vs group), and may be combined with either path.
+# against the FNDN 7.6.7 `firewall/profile-group` schema
+# (adomobj76-3500-objects.htm, cross-checked adomobj76-3693-objects.htm): the
+# group object's attribute list carries av-profile, ips-sensor,
+# webfilter-profile, dnsfilter-profile, application-list, file-filter-profile,
+# ssl-ssh-profile, AND profile-protocol-options as members, so FortiOS rejects
+# a policy that sets both `profile-group` and any of these eight fields.
 _GROUPED_SECURITY_PROFILE_FIELDS = (
     ("av-profile", "av_profile"),
     ("ips-sensor", "ips_sensor"),
@@ -714,6 +713,7 @@ _GROUPED_SECURITY_PROFILE_FIELDS = (
     ("application-list", "application_list"),
     ("file-filter-profile", "file_filter_profile"),
     ("ssl-ssh-profile", "ssl_ssh_profile"),
+    ("profile-protocol-options", "profile_protocol_options"),
 )
 
 
@@ -727,6 +727,7 @@ def validate_security_profiles(
     application_list: str | None,
     file_filter_profile: str | None,
     ssl_ssh_profile: str | None,
+    profile_protocol_options: str | None,
 ) -> None:
     """Validate security-profile field combinations on a firewall policy.
 
@@ -752,6 +753,8 @@ def validate_security_profiles(
         application_list: application_list value passed to this call.
         file_filter_profile: file_filter_profile value passed to this call.
         ssl_ssh_profile: ssl_ssh_profile value passed to this call.
+        profile_protocol_options: profile_protocol_options value passed to
+            this call.
 
     Raises:
         ValidationError: If profile_group is combined with an individual
@@ -766,6 +769,7 @@ def validate_security_profiles(
         "application_list": application_list,
         "file_filter_profile": file_filter_profile,
         "ssl_ssh_profile": ssl_ssh_profile,
+        "profile_protocol_options": profile_protocol_options,
     }
     individual_set = sorted(
         field_name

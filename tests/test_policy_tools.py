@@ -354,12 +354,7 @@ class TestPolicySecurityProfiles:
         mock_fmg_instance: MagicMock,
         configure_mock_responses: None,
     ) -> None:
-        """profile_group serializes with profile-type=group and no individual profiles.
-
-        profile-protocol-options is independent of profile-type (verified
-        against the FNDN 7.6.7 schema: it is not a member of firewall
-        profile-group), so it may be combined with profile_group.
-        """
+        """profile_group alone serializes with profile-type=group and no individual profiles."""
         with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
             result = await policy_tools.create_firewall_policy(
                 adom="root",
@@ -373,7 +368,6 @@ class TestPolicySecurityProfiles:
                 action="accept",
                 utm_status=True,
                 profile_group="Corporate-Profiles",
-                profile_protocol_options="default",
             )
 
         assert result["status"] == "success"
@@ -381,7 +375,6 @@ class TestPolicySecurityProfiles:
         assert payload["utm-status"] == "enable"
         assert payload["profile-group"] == "Corporate-Profiles"
         assert payload["profile-type"] == "group"
-        assert payload["profile-protocol-options"] == "default"
         for field in (
             "av-profile",
             "ips-sensor",
@@ -390,8 +383,44 @@ class TestPolicySecurityProfiles:
             "application-list",
             "file-filter-profile",
             "ssl-ssh-profile",
+            "profile-protocol-options",
         ):
             assert field not in payload
+
+    @pytest.mark.asyncio
+    async def test_create_policy_profile_group_with_protocol_options_rejected(
+        self,
+        mock_client: MagicMock,
+        configure_mock_responses: None,
+    ) -> None:
+        """profile_group + profile_protocol_options is rejected before hitting FMG.
+
+        profile-protocol-options is a listed member of the FortiOS
+        firewall/profile-group object's attribute list (FNDN 7.6.7 schema,
+        adomobj76-3500-objects.htm / adomobj76-3693-objects.htm), so it is
+        part of the same mutual-exclusion set as the other individual
+        profile fields.
+        """
+        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
+            result = await policy_tools.create_firewall_policy(
+                adom="root",
+                package="default",
+                name="Bad-Group-Policy",
+                srcintf=["port1"],
+                dstintf=["port2"],
+                srcaddr=["LAN-Subnet"],
+                dstaddr=["all"],
+                service=["HTTP", "HTTPS"],
+                action="accept",
+                utm_status=True,
+                profile_group="Corporate-Profiles",
+                profile_protocol_options="default",
+            )
+
+        assert result["status"] == "error"
+        assert result["error_code"] == "validation_error"
+        assert "mutually exclusive" in result["message"]
+        assert "profile-protocol-options" in result["message"]
 
     @pytest.mark.asyncio
     async def test_create_policy_no_profile_fields_omits_profile_type(
@@ -523,6 +552,34 @@ class TestPolicySecurityProfiles:
         assert "utm-status" not in data
 
     @pytest.mark.asyncio
+    async def test_update_policy_protocol_options_partial_flips_to_single(
+        self,
+        mock_client: MagicMock,
+        mock_fmg_instance: MagicMock,
+        configure_mock_responses: None,
+    ) -> None:
+        """Sending profile_protocol_options alone on update derives profile-type=single.
+
+        Regression test: _build_security_profile_fields()'s profile-type
+        derivation previously omitted profile_protocol_options from the
+        tuple it checks, so this call silently no-op'd on profile-type
+        instead of correctly flipping a group-mode policy to single mode.
+        """
+        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
+            result = await policy_tools.update_firewall_policy(
+                adom="root",
+                package="default",
+                policyid=42,
+                profile_protocol_options="default",
+            )
+
+        assert result["status"] == "success"
+        data = mock_fmg_instance.update.call_args.kwargs
+        assert data["profile-protocol-options"] == "default"
+        assert data["profile-type"] == "single"
+        assert "profile-group" not in data
+
+    @pytest.mark.asyncio
     async def test_update_policy_profile_group_mutual_exclusion_error(
         self,
         mock_client: MagicMock,
@@ -542,6 +599,29 @@ class TestPolicySecurityProfiles:
         assert result["status"] == "error"
         assert result["error_code"] == "validation_error"
         assert "mutually exclusive" in result["message"]
+        mock_fmg_instance.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_update_policy_profile_group_protocol_options_mutual_exclusion_error(
+        self,
+        mock_client: MagicMock,
+        mock_fmg_instance: MagicMock,
+        configure_mock_responses: None,
+    ) -> None:
+        """profile_group + profile_protocol_options is rejected on update too."""
+        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
+            result = await policy_tools.update_firewall_policy(
+                adom="root",
+                package="default",
+                policyid=42,
+                profile_group="Corporate-Profiles",
+                profile_protocol_options="default",
+            )
+
+        assert result["status"] == "error"
+        assert result["error_code"] == "validation_error"
+        assert "mutually exclusive" in result["message"]
+        assert "profile-protocol-options" in result["message"]
         mock_fmg_instance.update.assert_not_called()
 
     @pytest.mark.asyncio
