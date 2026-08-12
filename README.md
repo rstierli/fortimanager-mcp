@@ -3,7 +3,7 @@
 [![CI](https://github.com/rstierli/fortimanager-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/rstierli/fortimanager-mcp/actions/workflows/ci.yml)
 [![Python Version](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.9.2-green)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.11.0-green)](CHANGELOG.md)
 [![FortiManager](https://img.shields.io/badge/FortiManager-7.0%20%7C%207.2%20%7C%207.4%20%7C%207.6-red)](README.md)
 
 A Model Context Protocol (MCP) server for FortiManager JSON-RPC API. This server enables AI assistants like Claude to interact with FortiManager for centralized firewall policy management, device provisioning, and network configuration.
@@ -16,9 +16,10 @@ A Model Context Protocol (MCP) server for FortiManager JSON-RPC API. This server
 
 This MCP server provides a comprehensive interface to FortiManager's capabilities, allowing AI assistants to:
 
-- Create and manage firewall policies and policy packages
+- Create and manage firewall policies and policy packages, including security-profile (UTM) inspection
 - Configure firewall objects (addresses, services, VIPs)
 - Add, provision, and manage FortiGate devices
+- Configure device-DB interfaces, DHCP scopes, and wireless (VAPs, FortiAP/WTP profiles, managed APs)
 - Execute CLI scripts on managed devices
 - Configure provisioning and SD-WAN templates
 - Monitor tasks and installations
@@ -28,9 +29,10 @@ This MCP server provides a comprehensive interface to FortiManager's capabilitie
 
 | Category | Capabilities |
 |----------|-------------|
-| **Policy Management** | Create/update/delete firewall policies, manage policy packages, clone packages |
+| **Policy Management** | Create/update/delete firewall policies, manage policy packages, clone packages, security-profile (UTM) inspection fields |
 | **Object Management** | Addresses, address groups, services, service groups, search objects |
 | **Device Management** | Add/delete devices, bulk operations, device status, VDOM management |
+| **Device Configuration** | Interfaces/VLAN subinterfaces, DHCP scopes, wireless VAPs/SSIDs, FortiAP (WTP) profiles and managed AP registration -- all via the device DB, credential fields stripped from every read |
 | **Script Execution** | Create/run CLI scripts, execute on devices/groups, view execution logs |
 | **Templates** | System templates, CLI template groups, template assignment and validation |
 | **SD-WAN** | SD-WAN templates, rule configuration, template assignment |
