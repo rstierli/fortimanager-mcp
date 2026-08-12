@@ -514,6 +514,14 @@ nothing talks to the FortiGate directly.
 
 ### Policy Tools (15 tools)
 
+`create_firewall_policy` and `update_firewall_policy` accept security-profile
+(UTM) fields -- `utm_status`, `av_profile`, `ips_sensor`, `webfilter_profile`,
+`dnsfilter_profile`, `application_list`, `file_filter_profile`,
+`ssl_ssh_profile`, `profile_protocol_options`, `profile_group` -- so a policy
+can actually apply inspection, not just route traffic. `profile_group` is
+mutually exclusive with the individual profile fields it bundles; see
+"Security Profile Field Validation" under Safety Guardrails below.
+
 | Tool | Description |
 |------|-------------|
 | `create_package` | Create a new policy package |
@@ -929,6 +937,24 @@ FMG_POLICY_SAFETY=strict    # Default: block overly permissive policies
 FMG_POLICY_SAFETY=warn      # Allow but include warning in response
 FMG_POLICY_SAFETY=disabled  # Allow all policies
 ```
+
+#### Security Profile Field Validation
+
+`create_firewall_policy` and `update_firewall_policy` validate security-profile
+(UTM) field combinations before sending the payload to FortiManager, so an
+invalid combination fails with a clear message instead of an opaque FMG error
+code. This check always runs (no environment toggle):
+
+- `profile_group` is mutually exclusive with `av_profile`, `ips_sensor`,
+  `webfilter_profile`, `dnsfilter_profile`, `application_list`,
+  `file_filter_profile`, `ssl_ssh_profile`, and `profile_protocol_options` --
+  FortiOS rejects a policy that sets both a security-profile group and any
+  individual profile it bundles. `profile_protocol_options` is itself a
+  member of the `firewall profile-group` object, so it is part of this
+  exclusion set too.
+- Setting any of the fields above together with `utm_status=False` in the
+  same call is rejected -- FortiOS ignores security profiles when
+  `utm-status` is disabled, so the combination is almost certainly a mistake.
 
 ### General Security
 

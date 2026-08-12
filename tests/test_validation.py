@@ -33,6 +33,7 @@ from fortimanager_mcp.utils.validation import (
     validate_policy_id,
     validate_policy_name,
     validate_port_range,
+    validate_security_profiles,
     validate_status,
 )
 
@@ -622,6 +623,110 @@ class TestValidatePolicyId:
         """Test string policy ID raises error."""
         with pytest.raises(ValidationError):
             validate_policy_id("123")
+
+
+class TestValidateSecurityProfiles:
+    """Tests for validate_security_profiles function (#48)."""
+
+    def _call(self, **overrides):
+        args = {
+            "utm_status": None,
+            "profile_group": None,
+            "av_profile": None,
+            "ips_sensor": None,
+            "webfilter_profile": None,
+            "dnsfilter_profile": None,
+            "application_list": None,
+            "file_filter_profile": None,
+            "ssl_ssh_profile": None,
+            "profile_protocol_options": None,
+        }
+        args.update(overrides)
+        return validate_security_profiles(**args)
+
+    def test_no_fields_set_is_valid(self):
+        """Nothing supplied is always valid (nothing to check)."""
+        assert self._call() is None
+
+    def test_individual_profiles_alone_valid(self):
+        """Individual profile fields with no profile_group are valid."""
+        assert (
+            self._call(
+                utm_status=True,
+                av_profile="default",
+                ips_sensor="default",
+                ssl_ssh_profile="certificate-inspection",
+                profile_protocol_options="default",
+            )
+            is None
+        )
+
+    def test_profile_group_alone_valid(self):
+        """profile_group with no individual profile fields is valid."""
+        assert self._call(utm_status=True, profile_group="Corporate-Profiles") is None
+
+    def test_profile_group_with_one_individual_field_rejected(self):
+        """profile_group plus a single individual profile field is rejected."""
+        with pytest.raises(ValidationError, match="mutually exclusive"):
+            self._call(profile_group="Corporate-Profiles", av_profile="default")
+
+    def test_profile_group_with_protocol_options_rejected(self):
+        """profile_group plus profile_protocol_options is rejected.
+
+        profile-protocol-options is a listed member of the FortiOS
+        firewall/profile-group object's attribute list (FNDN 7.6.7 schema,
+        adomobj76-3500-objects.htm / adomobj76-3693-objects.htm), so it is
+        part of the mutual-exclusion set like every other individual
+        profile field.
+        """
+        with pytest.raises(ValidationError, match="mutually exclusive") as exc_info:
+            self._call(profile_group="Corporate-Profiles", profile_protocol_options="default")
+        assert "profile-protocol-options" in str(exc_info.value)
+
+    def test_profile_group_with_all_individual_fields_rejected(self):
+        """profile_group plus every individual profile field lists them all."""
+        with pytest.raises(ValidationError) as exc_info:
+            self._call(
+                profile_group="Corporate-Profiles",
+                av_profile="default",
+                ips_sensor="default",
+                webfilter_profile="default",
+                dnsfilter_profile="default",
+                application_list="default",
+                file_filter_profile="default",
+                ssl_ssh_profile="certificate-inspection",
+                profile_protocol_options="default",
+            )
+        message = str(exc_info.value)
+        for field in (
+            "av-profile",
+            "ips-sensor",
+            "webfilter-profile",
+            "dnsfilter-profile",
+            "application-list",
+            "file-filter-profile",
+            "ssl-ssh-profile",
+            "profile-protocol-options",
+        ):
+            assert field in message
+
+    def test_utm_disabled_with_individual_profile_rejected(self):
+        """utm_status=False combined with an individual profile field is rejected."""
+        with pytest.raises(ValidationError, match="utm_status=False"):
+            self._call(utm_status=False, av_profile="default")
+
+    def test_utm_disabled_with_profile_group_rejected(self):
+        """utm_status=False combined with profile_group is rejected."""
+        with pytest.raises(ValidationError, match="utm_status=False"):
+            self._call(utm_status=False, profile_group="Corporate-Profiles")
+
+    def test_utm_disabled_alone_is_valid(self):
+        """utm_status=False with no profile fields is a legitimate disable."""
+        assert self._call(utm_status=False) is None
+
+    def test_utm_status_none_with_profiles_does_not_raise(self):
+        """utm_status omitted (None) never triggers the disabled-with-profile check."""
+        assert self._call(utm_status=None, av_profile="default") is None
 
 
 # =============================================================================
