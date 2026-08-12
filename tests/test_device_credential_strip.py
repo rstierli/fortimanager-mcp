@@ -15,7 +15,7 @@ Values here are invented; no credential from any estate appears.
 """
 
 import inspect
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -149,6 +149,9 @@ class TestTheStripCannotBeForgotten:
             (dvm_tools, "add_device"),
             (dvm_tools, "add_devices_bulk"),
             (dvm_tools, "list_device_vdoms"),
+            # Missed by the original sweep because its two siblings above
+            # already stripped, so the write paths read as covered (#53).
+            (dvm_tools, "add_model_device"),
         }
 
         for module, name in expected:
@@ -167,3 +170,41 @@ class TestTheStripCannotBeForgotten:
         assert '"adm_pass", "adm_passwd"' not in source, (
             "a literal credential-key list has reappeared; use DEVICE_CREDENTIAL_KEYS"
         )
+
+
+class TestModelDeviceEchoIsStripped:
+    """`add_model_device` returns FortiManager's echo unstripped (#53).
+
+    Same blind spot the read paths had, on a write path that was not in
+    the original sweep because its two siblings, `add_device` and
+    `add_devices_bulk`, already stripped theirs.
+
+    No credential is SUBMITTED when adding a model device, so no live or
+    adversarial review could demonstrate a secret leaving through here.
+    That is not the argument for leaving it: the echo carries whatever the
+    record holds rather than only what was sent, which is the same
+    reasoning that made the read paths a leak. A model-device record can
+    carry blanked or default-populated `psk` and `private_key` fields, and
+    those would pass through verbatim.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_echo_does_not_carry_a_credential(self) -> None:
+        client = MagicMock(spec=FortiManagerClient)
+        client.add_device = AsyncMock(return_value={"device": dict(DEVICE_WITH_CREDENTIAL)})
+
+        with patch.object(dvm_tools, "_get_client", return_value=client):
+            result = await dvm_tools.add_model_device(
+                adom="root",
+                name="FGT-01",
+                serial_number="FGT60F0000000001",
+                platform="FortiGate-60F",
+                os_version="7.6",
+            )
+
+        assert result["status"] == "success"
+        assert SECRET not in repr(result)
+        # The rest of the record still comes back, so this is a strip and
+        # not a blanket refusal to return the echo.
+        assert result["device"]["name"] == "FGT-01"
+        assert result["device"]["sn"] == "FGT60F0000000001"
