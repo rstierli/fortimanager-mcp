@@ -2,7 +2,7 @@
 
 Uses FastMCP pattern for tool registration.
 Supports two modes:
-- full: All 117 tools loaded (default)
+- full: All 125 tools loaded (default)
 - dynamic: Only discovery tools loaded (~90% context reduction)
 """
 
@@ -66,7 +66,7 @@ async def health_check() -> str:
     """Check FortiManager MCP server health and connection status."""
     mode = settings.FMG_TOOL_MODE
     if mode == "full":
-        tool_info = "All 117 tools loaded"
+        tool_info = "All 125 tools loaded"
     else:
         tool_info = "Discovery tools + dynamic execution"
     return f"FortiManager MCP Server is healthy (mode: {mode}, {tool_info})"
@@ -88,7 +88,7 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
         """
         op = operation.lower().strip()
 
-        # Define available tools and their categories (117 tools total)
+        # Define available tools and their categories (125 tools total)
         tool_catalog = {
             "system": [
                 ("get_system_status", "Get FortiManager system status and version info"),
@@ -143,6 +143,17 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
                 ("create_device_vap", "Create wireless VAP/SSID with VLAN mapping"),
                 ("delete_device_vap", "Delete wireless VAP"),
                 ("assign_vap_to_wtp_profile", "Add VAP to FortiAP profile radios"),
+                ("list_device_wtp_profiles", "List FortiAP (WTP) profiles in device DB"),
+                ("get_device_wtp_profile", "Get a FortiAP (WTP) profile, radios included"),
+                (
+                    "update_device_wtp_profile_radio",
+                    "Update one radio's channel/channel-bonding",
+                ),
+                ("list_device_wtps", "List managed FortiAPs (wtp) in device DB"),
+                ("get_device_wtp", "Get a managed FortiAP by wtp-id (serial)"),
+                ("create_device_wtp", "Register a managed FortiAP (wtp-id, wtp-profile)"),
+                ("update_device_wtp", "Update a managed FortiAP's fields"),
+                ("delete_device_wtp", "Delete a managed FortiAP registration"),
             ],
             "policy": [
                 ("create_package", "Create a new policy package"),
@@ -275,7 +286,7 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
             Categories with descriptions and tool counts
         """
         return {
-            "total_tools": 117,
+            "total_tools": 125,
             "categories": {
                 "system": {
                     "count": 17,
@@ -289,10 +300,11 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
                     ),
                 },
                 "device_config": {
-                    "count": 11,
+                    "count": 19,
                     "description": (
                         "Device-DB configuration: VLAN interfaces, DHCP servers, "
-                        "wireless VAPs/SSIDs, FortiAP profile assignment"
+                        "wireless VAPs/SSIDs, FortiAP profile assignment, WTP-profile "
+                        "radio channel/bonding, managed FortiAP (wtp) registration"
                     ),
                 },
                 "policy": {
@@ -388,6 +400,14 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
                     "create_device_vap",
                     "delete_device_vap",
                     "assign_vap_to_wtp_profile",
+                    "list_device_wtp_profiles",
+                    "get_device_wtp_profile",
+                    "update_device_wtp_profile_radio",
+                    "list_device_wtps",
+                    "get_device_wtp",
+                    "create_device_wtp",
+                    "update_device_wtp",
+                    "delete_device_wtp",
                 },
                 "policy_tools": {
                     "create_package",
@@ -514,7 +534,7 @@ if settings.FMG_TOOL_MODE == "dynamic":
 
 else:
     # Full mode: Load all tools (default behavior)
-    logger.info("Loading in FULL mode - all 117 tools")
+    logger.info("Loading in FULL mode - all 125 tools")
 
     # Import all tool modules (registers them with the server)
     from fortimanager_mcp.tools import (  # noqa: E402, F401

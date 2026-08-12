@@ -205,10 +205,10 @@ FortiManager MCP supports two tool loading modes to optimize context window usag
 
 | Mode | Tools Loaded | Context Usage | Best For |
 |------|-------------|---------------|----------|
-| `full` (default) | All 117 tools | ~100% | Large context windows, full functionality |
+| `full` (default) | All 125 tools | ~100% | Large context windows, full functionality |
 | `dynamic` | 4 discovery tools | ~10% | Smaller context windows, on-demand loading |
 
-**Full Mode** (default): All 117 tools are loaded at startup. Best when you have sufficient context window and need immediate access to all FortiManager operations.
+**Full Mode** (default): All 125 tools are loaded at startup. Best when you have sufficient context window and need immediate access to all FortiManager operations.
 
 **Dynamic Mode**: Only lightweight discovery tools are loaded:
 - `find_fortimanager_tool(operation)` - Search for tools by keyword
@@ -449,7 +449,7 @@ networks:
     external: true
 ```
 
-## Available Tools (117 tools)
+## Available Tools (125 tools)
 
 ### System Tools (17 tools)
 
@@ -492,9 +492,9 @@ networks:
 | `get_device_interface_config` | Read device-DB interface config objects, filterable by VLAN id / interface name (maps a client IP to its VLAN/interface/port) |
 | `get_device_client_location` | Asset Identity Center: locate a client (by ip/mac/hostname) via the live detected-device inventory — resolves the FortiAP/FortiSwitch, port and VLAN it is connected through |
 
-### Device Configuration Tools (11 tools)
+### Device Configuration Tools (19 tools)
 
-Typed device-DB configuration (issue #45): everything is staged in FortiManager's
+Typed device-DB configuration (issues #45, #52): everything is staged in FortiManager's
 device database and pushed with `preview_install` + `install_device_settings`;
 nothing talks to the FortiGate directly.
 
@@ -511,6 +511,14 @@ nothing talks to the FortiGate directly.
 | `create_device_vap` | Create a wireless VAP/SSID with security mode and VLAN mapping |
 | `delete_device_vap` | Delete a wireless VAP |
 | `assign_vap_to_wtp_profile` | Add a VAP to FortiAP profile radios so the SSID broadcasts |
+| `list_device_wtp_profiles` | List FortiAP (WTP) profiles in the device DB |
+| `get_device_wtp_profile` | Get a FortiAP (WTP) profile, radios included |
+| `update_device_wtp_profile_radio` | Update one radio's `channel`/`channel-bonding`, other fields untouched |
+| `list_device_wtps` | List managed FortiAPs (`wireless-controller wtp`) in the device DB |
+| `get_device_wtp` | Get a managed FortiAP by wtp-id (serial number) |
+| `create_device_wtp` | Register a managed FortiAP (wtp-id, wtp-profile, authorization state) |
+| `update_device_wtp` | Update a managed FortiAP's profile/name/admin/location/comment |
+| `delete_device_wtp` | Delete a managed FortiAP registration |
 
 ### Policy Tools (15 tools)
 
