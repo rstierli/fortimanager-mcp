@@ -1619,3 +1619,97 @@ class TestSixGhzWpa3Guard:
             )
 
         assert "ENC-not-a-real-secret" not in repr(result)
+
+    @pytest.mark.asyncio
+    async def test_the_vap_read_uses_the_per_name_url(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        # Nothing pinned this URL, so dropping the /{name} segment passed the
+        # whole suite: the guard would then read the WHOLE VAP collection,
+        # every encrypted credential included, to look at one field. The
+        # module pins delete_device_vap's per-name URL the same way.
+        self._gets(mock_fmg_instance, (0, {"security": "wpa3-sae"}))
+
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            await device_config_tools.assign_vap_to_wtp_profile(
+                device="FGT-01", profile="AP-profile", vap="corp", radios=[3]
+            )
+
+        vap_read = mock_fmg_instance.get.call_args_list[1]
+        assert vap_read[0][0] == "/pm/config/device/FGT-01/vdom/root/wireless-controller/vap/corp"
+
+    @pytest.mark.asyncio
+    async def test_only_the_targeted_radios_are_checked(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        # The profile HAS a 6 GHz radio, but it was not requested. Scanning
+        # every radio in the profile instead of the requested ones passed the
+        # whole suite, because no other test has a 6 GHz radio present and
+        # untargeted at the same time.
+        mock_fmg_instance.get.return_value = (0, dict(self.PROFILE_6G))
+        mock_fmg_instance.update.return_value = (0, {"name": "AP-profile"})
+
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.assign_vap_to_wtp_profile(
+                device="FGT-01", profile="AP-profile", vap="guest", radios=[1]
+            )
+
+        assert result.get("success") is True
+        assert "warning" not in result
+        assert mock_fmg_instance.get.call_count == 1, "an untargeted 6 GHz radio was checked"
+
+    @pytest.mark.asyncio
+    async def test_an_already_assigned_vap_is_still_checked(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        # BEHAVIOUR CHANGE, pinned deliberately. Before the guard, a VAP
+        # already present on a manual radio short-circuited to a success
+        # ("already assigned") without looking at security. It now errors.
+        #
+        # Intended: the misconfiguration is already staged on the device and
+        # will fail at install, so reporting success would be telling the
+        # operator their 6 GHz SSID is fine when it is not. Nothing is
+        # written either way.
+        mock_fmg_instance.get.side_effect = [
+            (
+                0,
+                {
+                    "name": "AP-profile",
+                    "radio-3": {"vap-all": "manual", "vaps": ["guest"], "band": "802.11ax-6G"},
+                },
+            ),
+            (0, {"security": "open"}),
+        ]
+
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.assign_vap_to_wtp_profile(
+                device="FGT-01", profile="AP-profile", vap="guest", radios=[3]
+            )
+
+        assert result.get("error_code") == "validation_error"
+        mock_fmg_instance.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_already_assigned_vap_can_still_warn(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        # The warn-tier half of the same path: success, no write, warning.
+        mock_fmg_instance.get.side_effect = [
+            (
+                0,
+                {
+                    "name": "AP-profile",
+                    "radio-3": {"vap-all": "manual", "vaps": ["corp"], "band": "802.11ax-6G"},
+                },
+            ),
+            (0, {"security": "wpa3-sae-transition"}),
+        ]
+
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.assign_vap_to_wtp_profile(
+                device="FGT-01", profile="AP-profile", vap="corp", radios=[3]
+            )
+
+        assert result.get("success") is True
+        assert "warning" in result
+        mock_fmg_instance.update.assert_not_called()
