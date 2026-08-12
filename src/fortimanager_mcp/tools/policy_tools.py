@@ -22,6 +22,7 @@ from fortimanager_mcp.utils.validation import (
     validate_move_position,
     validate_package_name,
     validate_policy_name,
+    validate_security_profiles,
 )
 
 logger = logging.getLogger(__name__)
@@ -96,6 +97,71 @@ def _check_policy_safety(
         return {"_safety_warning": note}
 
     return None
+
+
+def _build_security_profile_fields(
+    utm_status: bool | None,
+    av_profile: str | None,
+    ips_sensor: str | None,
+    webfilter_profile: str | None,
+    dnsfilter_profile: str | None,
+    application_list: str | None,
+    file_filter_profile: str | None,
+    ssl_ssh_profile: str | None,
+    profile_protocol_options: str | None,
+    profile_group: str | None,
+) -> dict[str, Any]:
+    """Build the security-profile portion of a firewall policy payload.
+
+    Caller must run `validate_security_profiles(...)` first -- this assumes
+    the profile_group / individual-profile combination is already valid.
+
+    `profile-type` is not itself a tool argument; it is derived here to
+    match what the combination actually requires on the appliance
+    (`"group"` when `profile_group` is set, `"single"` when any individual
+    profile field is set, omitted otherwise) so a caller supplying
+    `profile_group` doesn't also need to know to set `profile-type=group`
+    for FortiOS to honor it.
+    """
+    fields: dict[str, Any] = {}
+
+    if utm_status is not None:
+        fields["utm-status"] = "enable" if utm_status else "disable"
+    if av_profile is not None:
+        fields["av-profile"] = av_profile
+    if ips_sensor is not None:
+        fields["ips-sensor"] = ips_sensor
+    if webfilter_profile is not None:
+        fields["webfilter-profile"] = webfilter_profile
+    if dnsfilter_profile is not None:
+        fields["dnsfilter-profile"] = dnsfilter_profile
+    if application_list is not None:
+        fields["application-list"] = application_list
+    if file_filter_profile is not None:
+        fields["file-filter-profile"] = file_filter_profile
+    if ssl_ssh_profile is not None:
+        fields["ssl-ssh-profile"] = ssl_ssh_profile
+    if profile_protocol_options is not None:
+        fields["profile-protocol-options"] = profile_protocol_options
+
+    if profile_group is not None:
+        fields["profile-group"] = profile_group
+        fields["profile-type"] = "group"
+    elif any(
+        v is not None
+        for v in (
+            av_profile,
+            ips_sensor,
+            webfilter_profile,
+            dnsfilter_profile,
+            application_list,
+            file_filter_profile,
+            ssl_ssh_profile,
+        )
+    ):
+        fields["profile-type"] = "single"
+
+    return fields
 
 
 # =============================================================================
@@ -418,6 +484,16 @@ async def create_firewall_policy(
     srcaddr_negate: bool | None = None,
     dstaddr_negate: bool | None = None,
     service_negate: bool | None = None,
+    utm_status: bool | None = None,
+    av_profile: str | None = None,
+    ips_sensor: str | None = None,
+    webfilter_profile: str | None = None,
+    dnsfilter_profile: str | None = None,
+    application_list: str | None = None,
+    file_filter_profile: str | None = None,
+    ssl_ssh_profile: str | None = None,
+    profile_protocol_options: str | None = None,
+    profile_group: str | None = None,
 ) -> dict[str, Any]:
     """Create a new firewall policy.
 
@@ -444,6 +520,24 @@ async def create_firewall_policy(
             from the payload when not set, leaving the FortiManager default)
         dstaddr_negate: Match all destinations EXCEPT dstaddr (optional)
         service_negate: Match all services EXCEPT service (optional)
+        utm_status: Enable/disable security profile inspection on this policy
+            (optional). Required (True) for any of the profile fields below
+            to actually apply.
+        av_profile: Antivirus profile name, e.g. "default" (optional)
+        ips_sensor: IPS sensor name, e.g. "default" (optional)
+        webfilter_profile: Web filter profile name (optional)
+        dnsfilter_profile: DNS filter profile name (optional)
+        application_list: Application control list name (optional)
+        file_filter_profile: File filter profile name (optional)
+        ssl_ssh_profile: SSL/SSH inspection profile name, e.g.
+            "certificate-inspection" (optional)
+        profile_protocol_options: Protocol options profile name (optional;
+            independent of profile_group -- may be combined with either the
+            individual profile fields or profile_group)
+        profile_group: Security profile group name (optional). Mutually
+            exclusive with av_profile, ips_sensor, webfilter_profile,
+            dnsfilter_profile, application_list, file_filter_profile, and
+            ssl_ssh_profile -- FortiOS rejects setting both
 
     Returns:
         dict: Create result with keys:
@@ -462,7 +556,10 @@ async def create_firewall_policy(
         ...     dstaddr=["all"],
         ...     service=["HTTP", "HTTPS"],
         ...     action="accept",
-        ...     nat=True
+        ...     nat=True,
+        ...     utm_status=True,
+        ...     av_profile="default",
+        ...     ips_sensor="default",
         ... )
     """
     # Safety check for overly permissive policies
@@ -489,6 +586,17 @@ async def create_firewall_policy(
         adom = validate_adom(adom)
         package = validate_package_name(package)
         name = validate_policy_name(name)
+        validate_security_profiles(
+            utm_status=utm_status,
+            profile_group=profile_group,
+            av_profile=av_profile,
+            ips_sensor=ips_sensor,
+            webfilter_profile=webfilter_profile,
+            dnsfilter_profile=dnsfilter_profile,
+            application_list=application_list,
+            file_filter_profile=file_filter_profile,
+            ssl_ssh_profile=ssl_ssh_profile,
+        )
         client = _get_client()
 
         policy: dict[str, Any] = {
@@ -515,6 +623,20 @@ async def create_firewall_policy(
             policy["dstaddr-negate"] = "enable" if dstaddr_negate else "disable"
         if service_negate is not None:
             policy["service-negate"] = "enable" if service_negate else "disable"
+        policy.update(
+            _build_security_profile_fields(
+                utm_status=utm_status,
+                av_profile=av_profile,
+                ips_sensor=ips_sensor,
+                webfilter_profile=webfilter_profile,
+                dnsfilter_profile=dnsfilter_profile,
+                application_list=application_list,
+                file_filter_profile=file_filter_profile,
+                ssl_ssh_profile=ssl_ssh_profile,
+                profile_protocol_options=profile_protocol_options,
+                profile_group=profile_group,
+            )
+        )
 
         result = await client.create_firewall_policy(adom, package, policy)
 
@@ -554,6 +676,16 @@ async def update_firewall_policy(
     srcaddr_negate: bool | None = None,
     dstaddr_negate: bool | None = None,
     service_negate: bool | None = None,
+    utm_status: bool | None = None,
+    av_profile: str | None = None,
+    ips_sensor: str | None = None,
+    webfilter_profile: str | None = None,
+    dnsfilter_profile: str | None = None,
+    application_list: str | None = None,
+    file_filter_profile: str | None = None,
+    ssl_ssh_profile: str | None = None,
+    profile_protocol_options: str | None = None,
+    profile_group: str | None = None,
 ) -> dict[str, Any]:
     """Update an existing firewall policy.
 
@@ -581,6 +713,20 @@ async def update_firewall_policy(
             leaves the field untouched, like every other optional field)
         dstaddr_negate: Match all destinations EXCEPT dstaddr (optional)
         service_negate: Match all services EXCEPT service (optional)
+        utm_status: Enable/disable security profile inspection (optional)
+        av_profile: Antivirus profile name (optional)
+        ips_sensor: IPS sensor name (optional)
+        webfilter_profile: Web filter profile name (optional)
+        dnsfilter_profile: DNS filter profile name (optional)
+        application_list: Application control list name (optional)
+        file_filter_profile: File filter profile name (optional)
+        ssl_ssh_profile: SSL/SSH inspection profile name (optional)
+        profile_protocol_options: Protocol options profile name (optional;
+            independent of profile_group)
+        profile_group: Security profile group name (optional). Mutually
+            exclusive with av_profile, ips_sensor, webfilter_profile,
+            dnsfilter_profile, application_list, file_filter_profile, and
+            ssl_ssh_profile in the same call
 
     Returns:
         dict: Update result with keys:
@@ -630,6 +776,17 @@ async def update_firewall_policy(
         package = validate_package_name(package)
         if name is not None:
             name = validate_policy_name(name)
+        validate_security_profiles(
+            utm_status=utm_status,
+            profile_group=profile_group,
+            av_profile=av_profile,
+            ips_sensor=ips_sensor,
+            webfilter_profile=webfilter_profile,
+            dnsfilter_profile=dnsfilter_profile,
+            application_list=application_list,
+            file_filter_profile=file_filter_profile,
+            ssl_ssh_profile=ssl_ssh_profile,
+        )
         client = _get_client()
 
         data: dict[str, Any] = {}
@@ -668,6 +825,20 @@ async def update_firewall_policy(
             data["dstaddr-negate"] = "enable" if dstaddr_negate else "disable"
         if service_negate is not None:
             data["service-negate"] = "enable" if service_negate else "disable"
+        data.update(
+            _build_security_profile_fields(
+                utm_status=utm_status,
+                av_profile=av_profile,
+                ips_sensor=ips_sensor,
+                webfilter_profile=webfilter_profile,
+                dnsfilter_profile=dnsfilter_profile,
+                application_list=application_list,
+                file_filter_profile=file_filter_profile,
+                ssl_ssh_profile=ssl_ssh_profile,
+                profile_protocol_options=profile_protocol_options,
+                profile_group=profile_group,
+            )
+        )
 
         if not data:
             return {"status": "error", "message": "No update parameters provided"}

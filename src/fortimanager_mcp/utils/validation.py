@@ -694,6 +694,103 @@ def validate_policy_id(policyid: int) -> int:
 
 
 # =============================================================================
+# Security Profile Validation
+# =============================================================================
+
+# Individual security-profile fields on a firewall policy that FortiOS also
+# exposes bundled into a single `firewall profile-group` object. Verified
+# against the FNDN 7.6.7 `firewall/profile-group` schema: the group object
+# carries av-profile, ips-sensor, webfilter-profile, dnsfilter-profile,
+# application-list, file-filter-profile, and ssl-ssh-profile as members, so
+# FortiOS rejects a policy that sets both `profile-group` and any of these.
+# `profile-protocol-options` is deliberately excluded here -- it is not a
+# member of `firewall profile-group` in that schema, applies independently of
+# profile-type (single vs group), and may be combined with either path.
+_GROUPED_SECURITY_PROFILE_FIELDS = (
+    ("av-profile", "av_profile"),
+    ("ips-sensor", "ips_sensor"),
+    ("webfilter-profile", "webfilter_profile"),
+    ("dnsfilter-profile", "dnsfilter_profile"),
+    ("application-list", "application_list"),
+    ("file-filter-profile", "file_filter_profile"),
+    ("ssl-ssh-profile", "ssl_ssh_profile"),
+)
+
+
+def validate_security_profiles(
+    utm_status: bool | None,
+    profile_group: str | None,
+    av_profile: str | None,
+    ips_sensor: str | None,
+    webfilter_profile: str | None,
+    dnsfilter_profile: str | None,
+    application_list: str | None,
+    file_filter_profile: str | None,
+    ssl_ssh_profile: str | None,
+) -> None:
+    """Validate security-profile field combinations on a firewall policy.
+
+    FortiOS rejects a policy that sets both `profile-group` and any
+    individual security-profile field the group bundles (see
+    `_GROUPED_SECURITY_PROFILE_FIELDS`). This checks that combination at the
+    tool boundary with a clear message instead of letting FortiManager
+    reject it with an opaque error code.
+
+    Also rejects setting any of these fields (individual or profile-group)
+    while `utm_status` is explicitly False in the same call: FortiOS ignores
+    security profiles when utm-status is disabled, so the combination is
+    almost certainly a caller mistake rather than an intentional no-op.
+
+    Args:
+        utm_status: The utm_status value passed to this call (None means
+            utm_status is not being set in this call).
+        profile_group: profile_group value passed to this call.
+        av_profile: av_profile value passed to this call.
+        ips_sensor: ips_sensor value passed to this call.
+        webfilter_profile: webfilter_profile value passed to this call.
+        dnsfilter_profile: dnsfilter_profile value passed to this call.
+        application_list: application_list value passed to this call.
+        file_filter_profile: file_filter_profile value passed to this call.
+        ssl_ssh_profile: ssl_ssh_profile value passed to this call.
+
+    Raises:
+        ValidationError: If profile_group is combined with an individual
+            security-profile field, or any security-profile field is set
+            together with utm_status=False.
+    """
+    individual_values = {
+        "av_profile": av_profile,
+        "ips_sensor": ips_sensor,
+        "webfilter_profile": webfilter_profile,
+        "dnsfilter_profile": dnsfilter_profile,
+        "application_list": application_list,
+        "file_filter_profile": file_filter_profile,
+        "ssl_ssh_profile": ssl_ssh_profile,
+    }
+    individual_set = sorted(
+        field_name
+        for field_name, arg_name in _GROUPED_SECURITY_PROFILE_FIELDS
+        if individual_values[arg_name] is not None
+    )
+
+    if profile_group is not None and individual_set:
+        raise ValidationError(
+            "profile_group is mutually exclusive with individual security profile "
+            f"fields. Remove profile_group or remove: {', '.join(individual_set)}."
+        )
+
+    if utm_status is False:
+        active = sorted(individual_set + (["profile-group"] if profile_group is not None else []))
+        if active:
+            raise ValidationError(
+                f"Security profile field(s) {', '.join(active)} were set together "
+                "with utm_status=False. FortiOS ignores security profiles when "
+                "utm-status is disabled -- set utm_status=True (or omit it) to "
+                "apply them."
+            )
+
+
+# =============================================================================
 # Path Validation
 # =============================================================================
 

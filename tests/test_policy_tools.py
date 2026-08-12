@@ -300,6 +300,272 @@ class TestPolicyNegateFields:
         assert "service-negate" not in data
 
 
+class TestPolicySecurityProfiles:
+    """Test UTM/security-profile fields on policy create/update (#48)."""
+
+    @pytest.mark.asyncio
+    async def test_create_policy_individual_profiles(
+        self,
+        mock_client: MagicMock,
+        mock_fmg_instance: MagicMock,
+        configure_mock_responses: None,
+    ) -> None:
+        """Individual profile fields serialize verbatim and derive profile-type=single."""
+        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
+            result = await policy_tools.create_firewall_policy(
+                adom="root",
+                package="default",
+                name="UTM-Policy",
+                srcintf=["port1"],
+                dstintf=["port2"],
+                srcaddr=["LAN-Subnet"],
+                dstaddr=["all"],
+                service=["HTTP", "HTTPS"],
+                action="accept",
+                utm_status=True,
+                av_profile="default",
+                ips_sensor="default",
+                webfilter_profile="default",
+                dnsfilter_profile="default",
+                application_list="default",
+                file_filter_profile="default",
+                ssl_ssh_profile="certificate-inspection",
+                profile_protocol_options="default",
+            )
+
+        assert result["status"] == "success"
+        payload = mock_fmg_instance.add.call_args.kwargs["data"]
+        assert payload["utm-status"] == "enable"
+        assert payload["av-profile"] == "default"
+        assert payload["ips-sensor"] == "default"
+        assert payload["webfilter-profile"] == "default"
+        assert payload["dnsfilter-profile"] == "default"
+        assert payload["application-list"] == "default"
+        assert payload["file-filter-profile"] == "default"
+        assert payload["ssl-ssh-profile"] == "certificate-inspection"
+        assert payload["profile-protocol-options"] == "default"
+        assert payload["profile-type"] == "single"
+        assert "profile-group" not in payload
+
+    @pytest.mark.asyncio
+    async def test_create_policy_profile_group(
+        self,
+        mock_client: MagicMock,
+        mock_fmg_instance: MagicMock,
+        configure_mock_responses: None,
+    ) -> None:
+        """profile_group serializes with profile-type=group and no individual profiles.
+
+        profile-protocol-options is independent of profile-type (verified
+        against the FNDN 7.6.7 schema: it is not a member of firewall
+        profile-group), so it may be combined with profile_group.
+        """
+        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
+            result = await policy_tools.create_firewall_policy(
+                adom="root",
+                package="default",
+                name="UTM-Group-Policy",
+                srcintf=["port1"],
+                dstintf=["port2"],
+                srcaddr=["LAN-Subnet"],
+                dstaddr=["all"],
+                service=["HTTP", "HTTPS"],
+                action="accept",
+                utm_status=True,
+                profile_group="Corporate-Profiles",
+                profile_protocol_options="default",
+            )
+
+        assert result["status"] == "success"
+        payload = mock_fmg_instance.add.call_args.kwargs["data"]
+        assert payload["utm-status"] == "enable"
+        assert payload["profile-group"] == "Corporate-Profiles"
+        assert payload["profile-type"] == "group"
+        assert payload["profile-protocol-options"] == "default"
+        for field in (
+            "av-profile",
+            "ips-sensor",
+            "webfilter-profile",
+            "dnsfilter-profile",
+            "application-list",
+            "file-filter-profile",
+            "ssl-ssh-profile",
+        ):
+            assert field not in payload
+
+    @pytest.mark.asyncio
+    async def test_create_policy_no_profile_fields_omits_profile_type(
+        self,
+        mock_client: MagicMock,
+        mock_fmg_instance: MagicMock,
+        configure_mock_responses: None,
+    ) -> None:
+        """No profile fields supplied -> no utm-status/profile-type in payload at all."""
+        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
+            result = await policy_tools.create_firewall_policy(
+                adom="root",
+                package="default",
+                name="Plain-Policy",
+                srcintf=["port1"],
+                dstintf=["port2"],
+                srcaddr=["LAN-Subnet"],
+                dstaddr=["all"],
+                service=["HTTP"],
+                action="accept",
+            )
+
+        assert result["status"] == "success"
+        payload = mock_fmg_instance.add.call_args.kwargs["data"]
+        for field in ("utm-status", "profile-type", "profile-group", "av-profile"):
+            assert field not in payload
+
+    @pytest.mark.asyncio
+    async def test_create_policy_profile_group_mutual_exclusion_error(
+        self,
+        mock_client: MagicMock,
+        configure_mock_responses: None,
+    ) -> None:
+        """profile_group + an individual profile field is rejected before hitting FMG."""
+        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
+            result = await policy_tools.create_firewall_policy(
+                adom="root",
+                package="default",
+                name="Bad-Policy",
+                srcintf=["port1"],
+                dstintf=["port2"],
+                srcaddr=["LAN-Subnet"],
+                dstaddr=["all"],
+                service=["HTTP"],
+                action="accept",
+                utm_status=True,
+                profile_group="Corporate-Profiles",
+                av_profile="default",
+            )
+
+        assert result["status"] == "error"
+        assert result["error_code"] == "validation_error"
+        assert "mutually exclusive" in result["message"]
+        assert "av-profile" in result["message"]
+
+    @pytest.mark.asyncio
+    async def test_create_policy_utm_disabled_with_profile_error(
+        self,
+        mock_client: MagicMock,
+        configure_mock_responses: None,
+    ) -> None:
+        """Setting a profile field while utm_status=False is rejected, not silently dropped."""
+        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
+            result = await policy_tools.create_firewall_policy(
+                adom="root",
+                package="default",
+                name="Bad-Policy",
+                srcintf=["port1"],
+                dstintf=["port2"],
+                srcaddr=["LAN-Subnet"],
+                dstaddr=["all"],
+                service=["HTTP"],
+                action="accept",
+                utm_status=False,
+                av_profile="default",
+            )
+
+        assert result["status"] == "error"
+        assert result["error_code"] == "validation_error"
+        assert "utm_status=False" in result["message"]
+        assert "av-profile" in result["message"]
+
+    @pytest.mark.asyncio
+    async def test_update_policy_profile_group_partial(
+        self,
+        mock_client: MagicMock,
+        mock_fmg_instance: MagicMock,
+        configure_mock_responses: None,
+    ) -> None:
+        """A profile_group-only update sends only profile-group/profile-type/utm-status."""
+        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
+            result = await policy_tools.update_firewall_policy(
+                adom="root",
+                package="default",
+                policyid=42,
+                utm_status=True,
+                profile_group="Corporate-Profiles",
+            )
+
+        assert result["status"] == "success"
+        data = mock_fmg_instance.update.call_args.kwargs
+        assert data["utm-status"] == "enable"
+        assert data["profile-group"] == "Corporate-Profiles"
+        assert data["profile-type"] == "group"
+        for untouched in ("srcaddr", "dstaddr", "service", "av-profile", "ips-sensor"):
+            assert untouched not in data
+
+    @pytest.mark.asyncio
+    async def test_update_policy_individual_profile_partial(
+        self,
+        mock_client: MagicMock,
+        mock_fmg_instance: MagicMock,
+        configure_mock_responses: None,
+    ) -> None:
+        """A single individual-profile update derives profile-type=single."""
+        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
+            result = await policy_tools.update_firewall_policy(
+                adom="root",
+                package="default",
+                policyid=42,
+                av_profile="default",
+            )
+
+        assert result["status"] == "success"
+        data = mock_fmg_instance.update.call_args.kwargs
+        assert data["av-profile"] == "default"
+        assert data["profile-type"] == "single"
+        assert "profile-group" not in data
+        assert "utm-status" not in data
+
+    @pytest.mark.asyncio
+    async def test_update_policy_profile_group_mutual_exclusion_error(
+        self,
+        mock_client: MagicMock,
+        mock_fmg_instance: MagicMock,
+        configure_mock_responses: None,
+    ) -> None:
+        """profile_group + an individual profile field is rejected on update too."""
+        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
+            result = await policy_tools.update_firewall_policy(
+                adom="root",
+                package="default",
+                policyid=42,
+                profile_group="Corporate-Profiles",
+                webfilter_profile="default",
+            )
+
+        assert result["status"] == "error"
+        assert result["error_code"] == "validation_error"
+        assert "mutually exclusive" in result["message"]
+        mock_fmg_instance.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_update_policy_utm_disabled_with_profile_error(
+        self,
+        mock_client: MagicMock,
+        mock_fmg_instance: MagicMock,
+        configure_mock_responses: None,
+    ) -> None:
+        """Disabling utm_status while touching a profile field is rejected on update too."""
+        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
+            result = await policy_tools.update_firewall_policy(
+                adom="root",
+                package="default",
+                policyid=42,
+                utm_status=False,
+                ips_sensor="default",
+            )
+
+        assert result["status"] == "error"
+        assert result["error_code"] == "validation_error"
+        mock_fmg_instance.update.assert_not_called()
+
+
 class TestPackageTools:
     """Test package management tools."""
 
