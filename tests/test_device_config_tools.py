@@ -4,6 +4,7 @@ Uses only neutral/example values (RFC 5737 documentation IPs, generic
 interface names) since this is a public repository.
 """
 
+import inspect
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1260,6 +1261,149 @@ class TestCredentialSanitizerRecurses:
         )
 
         assert out == {"name": "TEST", "ssid": "corp"}
+
+
+#: A wtp-profile record shaped like the live read confirmed on the
+#: mcp-dev-test sandbox (FGT-MCP-TEST-01): login-passwd-change enabled with
+#: an ENC-blob login-passwd, plus the sibling credential fields found via
+#: the same schema dump, including one nested under a radio sub-object.
+#: Values here are invented; no credential from any estate appears.
+SECRET_ENC_BLOB = ["ENC", "not-a-real-enc-blob"]
+
+WTP_PROFILE_WITH_CREDENTIALS = {
+    "name": "AP-profile",
+    "login-passwd-change": 1,
+    "login-passwd": SECRET_ENC_BLOB,
+    "apcfg-auto-cert-est-http-password": SECRET_ENC_BLOB,
+    "apcfg-auto-cert-scep-password": SECRET_ENC_BLOB,
+    "apcfg-mesh-passwd": SECRET_ENC_BLOB,
+    "wan-port-auth-password": SECRET_ENC_BLOB,
+    "radio-1": {
+        "band": "802.11ax-5G",
+        "sam-private-key-password": SECRET_ENC_BLOB,
+    },
+}
+
+WTP_WITH_CREDENTIAL = {
+    "wtp-id": "FP231FTF24000123",
+    "name": "ap-hallway",
+    "wtp-profile": "AP-profile",
+    "override-login-passwd-change": 1,
+    "login-passwd-change": 1,
+    "login-passwd": SECRET_ENC_BLOB,
+}
+
+
+class TestNoWtpReadPathReturnsTheCredential:
+    """The review that found this: both wireless-controller.wtp-profile and
+    wireless-controller.wtp can carry login-passwd (the FortiAP admin
+    password) whenever login-passwd-change is enabled. Confirmed live
+    against the mcp-dev-test sandbox (FGT-MCP-TEST-01): FMG echoes it back
+    as an ENC-prefixed blob on every read, the same shape adm_pass had
+    before the dvmdb-device fix. The sibling fields here were found
+    alongside it via the same schema dump.
+    """
+
+    @pytest.mark.asyncio
+    async def test_list_device_wtp_profiles(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        mock_fmg_instance.get.return_value = (0, [dict(WTP_PROFILE_WITH_CREDENTIALS)])
+
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.list_device_wtp_profiles(device="FGT-01")
+
+        assert "not-a-real-enc-blob" not in repr(result)
+        assert result["profiles"][0]["name"] == "AP-profile"
+        assert result["profiles"][0]["radio-1"]["band"] == "802.11ax-5G"
+
+    @pytest.mark.asyncio
+    async def test_get_device_wtp_profile(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        mock_fmg_instance.get.return_value = (0, dict(WTP_PROFILE_WITH_CREDENTIALS))
+
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.get_device_wtp_profile(
+                device="FGT-01", profile="AP-profile"
+            )
+
+        assert "not-a-real-enc-blob" not in repr(result)
+        assert result["profile"]["name"] == "AP-profile"
+        # login-passwd-change (the enable/disable flag) is not a credential
+        # and must survive -- only the password value itself is stripped.
+        assert result["profile"]["login-passwd-change"] == 1
+
+    @pytest.mark.asyncio
+    async def test_list_device_wtps(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        mock_fmg_instance.get.return_value = (0, [dict(WTP_WITH_CREDENTIAL)])
+
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.list_device_wtps(device="FGT-01")
+
+        assert "not-a-real-enc-blob" not in repr(result)
+        assert result["wtps"][0]["wtp-id"] == "FP231FTF24000123"
+
+    @pytest.mark.asyncio
+    async def test_get_device_wtp(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        mock_fmg_instance.get.return_value = (0, dict(WTP_WITH_CREDENTIAL))
+
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.get_device_wtp(
+                device="FGT-01", wtp_id="FP231FTF24000123"
+            )
+
+        assert "not-a-real-enc-blob" not in repr(result)
+        assert result["wtp"]["name"] == "ap-hallway"
+
+
+class TestWtpCredentialSanitizerRecurses:
+    """Same shape hazard as the VAP sanitizer: wtp-profile nests
+    sam-private-key-password inside radio-1..radio-4, not at the top level.
+    """
+
+    def test_a_credential_nested_under_a_radio_is_stripped(self) -> None:
+        nested = {
+            "name": "AP-profile",
+            "radio-1": {"band": "802.11ax-5G", "sam-private-key-password": SECRET_ENC_BLOB},
+        }
+
+        out = device_config_tools._sanitize_wtp_profile_result(nested)
+
+        assert "not-a-real-enc-blob" not in repr(out)
+        assert out["radio-1"]["band"] == "802.11ax-5G"
+
+    def test_a_credential_inside_a_list_of_dicts_is_stripped(self) -> None:
+        nested = {"results": [{"wtp-id": "FP1", "login-passwd": SECRET_ENC_BLOB}]}
+
+        out = device_config_tools._sanitize_wtp_result(nested)
+
+        assert "not-a-real-enc-blob" not in repr(out)
+        assert out["results"][0]["wtp-id"] == "FP1"
+
+
+class TestTheWtpStripCannotBeForgotten:
+    """A future wtp/wtp-profile-returning tool must not silently miss the
+    strip. Same discipline as PR #51's dvmdb-device equivalent."""
+
+    def test_every_wtp_returning_tool_calls_a_sanitizer(self) -> None:
+        expected = {
+            "list_device_wtp_profiles": "_sanitize_wtp_profile_result",
+            "get_device_wtp_profile": "_sanitize_wtp_profile_result",
+            "list_device_wtps": "_sanitize_wtp_result",
+            "get_device_wtp": "_sanitize_wtp_result",
+        }
+
+        for tool_name, helper_name in expected.items():
+            source = inspect.getsource(getattr(device_config_tools, tool_name))
+            assert helper_name in source, (
+                f"device_config_tools.{tool_name} returns wtp/wtp-profile records "
+                f"without calling {helper_name}"
+            )
 
 
 class TestOweMode:

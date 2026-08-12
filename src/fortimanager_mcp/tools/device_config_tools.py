@@ -489,7 +489,7 @@ async def delete_device_dhcp_server(
 #: Credential fields FMG stores as ``type=password`` on ``wireless-controller
 #: vap``. WPA/WPA2 personal modes use ``passphrase``; WPA3-SAE keeps its own
 #: ``sae-password``, and transition mode carries both.
-_VAP_SECRET_FIELDS = ("passphrase", "sae-password")
+_VAP_SECRET_FIELDS = frozenset({"passphrase", "sae-password"})
 
 #: Security modes that authenticate with an SAE password.
 _VAP_SAE_MODES = frozenset({"wpa3-sae", "wpa3-sae-transition"})
@@ -498,27 +498,42 @@ _VAP_SAE_MODES = frozenset({"wpa3-sae", "wpa3-sae-transition"})
 _VAP_PSK_MODES = frozenset({"wpa-personal", "wpa-only-personal", "wpa2-only-personal"})
 
 
-def _sanitize_vap_result(result: Any) -> Any:
-    """Strip every credential field from anything FMG echoes back.
+def _strip_secret_fields(result: Any, secret_fields: frozenset[str]) -> Any:
+    """Strip named credential fields from anything FMG echoes back.
 
-    Recurses through dict VALUES as well as list items. The first version
-    stripped top-level keys only, so a credential one level down survived
-    the function whose entire purpose is that it cannot::
+    Recurses through dict VALUES as well as list items, at any depth. An
+    earlier version of this (in the VAP tools this was lifted from) stripped
+    top-level keys only, so a credential one level down survived the
+    function whose entire purpose is that it cannot::
 
         {"data": {"passphrase": "..."}}   ->   passphrase survived
 
-    The echo is flat today, so that was latent rather than live. It is
-    still wrong: the repo's own ``sanitize_for_logging`` recurses fully,
-    and a sanitizer that depends on the shape it is handed is one
+    That was latent rather than live there, since the echo was flat. It
+    would not be latent for a nested table: ``wireless-controller
+    wtp-profile`` carries ``radio-1``..``radio-4`` sub-objects, and
+    ``sam-private-key-password`` lives inside those, not at the top level.
+    The repo's own ``sanitize_for_logging`` recurses fully for the same
+    reason: a sanitizer that depends on the shape it is handed is one
     response format away from leaking.
+
+    ``secret_fields`` is matched against keys as-is (FortiOS field names,
+    e.g. ``"passphrase"``, ``"login-passwd"``), not normalized, matching
+    every other exact-key lookup in this module.
     """
     if isinstance(result, dict):
         return {
-            k: _sanitize_vap_result(v) for k, v in result.items() if k not in _VAP_SECRET_FIELDS
+            k: _strip_secret_fields(v, secret_fields)
+            for k, v in result.items()
+            if k not in secret_fields
         }
     if isinstance(result, list):
-        return [_sanitize_vap_result(item) for item in result]
+        return [_strip_secret_fields(item, secret_fields) for item in result]
     return result
+
+
+def _sanitize_vap_result(result: Any) -> Any:
+    """Strip every credential field from a ``wireless-controller vap`` echo."""
+    return _strip_secret_fields(result, _VAP_SECRET_FIELDS)
 
 
 @mcp.tool()
@@ -792,6 +807,51 @@ async def assign_vap_to_wtp_profile(
 # WTP-profile radio configuration (device DB, vdom scope) (issue #52)
 # =============================================================================
 
+#: Credential fields FMG stores as ``type=password`` on ``wireless-controller
+#: wtp-profile``. Confirmed against a live 7.6.x FMG (schema dump via
+#: ``option=syntax`` plus a real read-back on the mcp-dev-test sandbox,
+#: device FGT-MCP-TEST-01): every one of these came back as an ``ENC``-
+#: prefixed blob, the same shape ``adm_pass`` had in the dvmdb-device fix.
+#:
+#: ``login-passwd`` is the FortiAP admin password, set when
+#: ``login-passwd-change`` is ``yes``/``default`` -- the field this PR's
+#: review flagged. The rest were found alongside it while confirming that
+#: finding, via the same schema dump, and leak the same way for the same
+#: reason, so they are stripped here too rather than left for a second
+#: report: ``apcfg-auto-cert-est-http-password``/``apcfg-auto-cert-scep-
+#: password`` (cert-enrollment passwords), ``apcfg-mesh-passwd`` (AP mesh
+#: PSK), ``wan-port-auth-password`` (WAN port PPPoE/PAP auth), and
+#: ``sam-private-key-password`` -- nested under each ``radio-1``..``radio-4``
+#: sub-object rather than at the top level, which is exactly the case
+#: ``_strip_secret_fields`` recurses for.
+_WTP_PROFILE_SECRET_FIELDS = frozenset(
+    {
+        "login-passwd",
+        "apcfg-auto-cert-est-http-password",
+        "apcfg-auto-cert-scep-password",
+        "apcfg-mesh-passwd",
+        "wan-port-auth-password",
+        "sam-private-key-password",
+    }
+)
+
+#: Credential field FMG stores as ``type=password`` on ``wireless-controller
+#: wtp`` (the per-AP override of the profile setting above). Confirmed the
+#: same way: live read-back on FGT-MCP-TEST-01 with ``override-login-passwd-
+#: change`` and ``login-passwd-change`` both set returned ``login-passwd`` as
+#: an ``ENC``-prefixed blob.
+_WTP_SECRET_FIELDS = frozenset({"login-passwd"})
+
+
+def _sanitize_wtp_profile_result(result: Any) -> Any:
+    """Strip every credential field from a ``wireless-controller wtp-profile`` echo."""
+    return _strip_secret_fields(result, _WTP_PROFILE_SECRET_FIELDS)
+
+
+def _sanitize_wtp_result(result: Any) -> Any:
+    """Strip every credential field from a ``wireless-controller wtp`` echo."""
+    return _strip_secret_fields(result, _WTP_SECRET_FIELDS)
+
 
 @mcp.tool()
 async def list_device_wtp_profiles(
@@ -805,7 +865,8 @@ async def list_device_wtp_profiles(
         vdom: VDOM to read (default "root")
 
     Returns:
-        dict with device, vdom, count and profiles (raw device-DB objects)
+        dict with device, vdom, count and profiles (credential fields
+        stripped -- see _WTP_PROFILE_SECRET_FIELDS)
     """
     client = get_fmg_client()
     if not client:
@@ -820,7 +881,7 @@ async def list_device_wtp_profiles(
             "device": device,
             "vdom": vdom,
             "count": len(profiles),
-            "profiles": profiles,
+            "profiles": _sanitize_wtp_profile_result(profiles),
         }
     except Exception as e:
         logger.error(f"WTP profile list failed on {device}: {e}")
@@ -842,8 +903,9 @@ async def get_device_wtp_profile(
         vdom: VDOM the profile lives in (default "root")
 
     Returns:
-        dict with device, vdom and the stored profile object, or a
-        not_found error if the profile does not exist
+        dict with device, vdom and the stored profile object (credential
+        fields stripped -- see _WTP_PROFILE_SECRET_FIELDS), or a not_found
+        error if the profile does not exist
     """
     client = get_fmg_client()
     if not client:
@@ -861,7 +923,7 @@ async def get_device_wtp_profile(
                 "error": f"wtp-profile '{profile}' not found or returned no configuration",
                 "error_code": "not_found",
             }
-        return {"device": device, "vdom": vdom, "profile": stored}
+        return {"device": device, "vdom": vdom, "profile": _sanitize_wtp_profile_result(stored)}
     except Exception as e:
         logger.error(f"WTP profile read failed on {device}: {e}")
         msg, code = client_safe_error(e)
@@ -996,8 +1058,8 @@ async def list_device_wtps(
         vdom: VDOM to read (default "root")
 
     Returns:
-        dict with device, vdom, count and wtps (raw device-DB objects, keyed
-        by wtp-id/serial)
+        dict with device, vdom, count and wtps (device-DB objects keyed by
+        wtp-id/serial, credential fields stripped -- see _WTP_SECRET_FIELDS)
     """
     client = get_fmg_client()
     if not client:
@@ -1012,7 +1074,7 @@ async def list_device_wtps(
             "device": device,
             "vdom": vdom,
             "count": len(wtps),
-            "wtps": wtps,
+            "wtps": _sanitize_wtp_result(wtps),
         }
     except Exception as e:
         logger.error(f"WTP list failed on {device}: {e}")
@@ -1034,8 +1096,9 @@ async def get_device_wtp(
         vdom: VDOM the AP is registered in (default "root")
 
     Returns:
-        dict with device, vdom and the stored wtp object, or a not_found
-        error if it does not exist
+        dict with device, vdom and the stored wtp object (credential fields
+        stripped -- see _WTP_SECRET_FIELDS), or a not_found error if it
+        does not exist
     """
     client = get_fmg_client()
     if not client:
@@ -1053,7 +1116,7 @@ async def get_device_wtp(
                 "error": f"wtp '{wtp_id}' not found or returned no configuration",
                 "error_code": "not_found",
             }
-        return {"device": device, "vdom": vdom, "wtp": stored}
+        return {"device": device, "vdom": vdom, "wtp": _sanitize_wtp_result(stored)}
     except Exception as e:
         logger.error(f"WTP read failed on {device}: {e}")
         msg, code = client_safe_error(e)
