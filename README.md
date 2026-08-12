@@ -205,10 +205,10 @@ FortiManager MCP supports two tool loading modes to optimize context window usag
 
 | Mode | Tools Loaded | Context Usage | Best For |
 |------|-------------|---------------|----------|
-| `full` (default) | All 106 tools | ~100% | Large context windows, full functionality |
+| `full` (default) | All 117 tools | ~100% | Large context windows, full functionality |
 | `dynamic` | 4 discovery tools | ~10% | Smaller context windows, on-demand loading |
 
-**Full Mode** (default): All 106 tools are loaded at startup. Best when you have sufficient context window and need immediate access to all FortiManager operations.
+**Full Mode** (default): All 117 tools are loaded at startup. Best when you have sufficient context window and need immediate access to all FortiManager operations.
 
 **Dynamic Mode**: Only lightweight discovery tools are loaded:
 - `find_fortimanager_tool(operation)` - Search for tools by keyword
@@ -449,7 +449,7 @@ networks:
     external: true
 ```
 
-## Available Tools (106 tools)
+## Available Tools (117 tools)
 
 ### System Tools (17 tools)
 
@@ -491,6 +491,26 @@ networks:
 | `get_device_interfaces` | Get device interface information |
 | `get_device_interface_config` | Read device-DB interface config objects, filterable by VLAN id / interface name (maps a client IP to its VLAN/interface/port) |
 | `get_device_client_location` | Asset Identity Center: locate a client (by ip/mac/hostname) via the live detected-device inventory — resolves the FortiAP/FortiSwitch, port and VLAN it is connected through |
+
+### Device Configuration Tools (11 tools)
+
+Typed device-DB configuration (issue #45): everything is staged in FortiManager's
+device database and pushed with `preview_install` + `install_device_settings`;
+nothing talks to the FortiGate directly.
+
+| Tool | Description |
+|------|-------------|
+| `create_device_interface` | Create a VLAN subinterface (parent, vlanid, ip, allowaccess, role, alias) |
+| `update_device_interface` | Update device-DB interface fields |
+| `delete_device_interface` | Delete a device-DB interface |
+| `list_device_dhcp_servers` | List DHCP server scopes in the device DB |
+| `create_device_dhcp_server` | Create a DHCP scope (interface, range, netmask, gateway, DNS) |
+| `update_device_dhcp_server` | Update a DHCP scope by id |
+| `delete_device_dhcp_server` | Delete a DHCP scope by id |
+| `list_device_vaps` | List wireless VAPs (SSIDs), passphrases stripped |
+| `create_device_vap` | Create a wireless VAP/SSID with security mode and VLAN mapping |
+| `delete_device_vap` | Delete a wireless VAP |
+| `assign_vap_to_wtp_profile` | Add a VAP to FortiAP profile radios so the SSID broadcasts |
 
 ### Policy Tools (15 tools)
 
