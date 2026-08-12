@@ -218,10 +218,10 @@ FortiManager MCP supports two tool loading modes to optimize context window usag
 
 | Mode | Tools Loaded | Context Usage | Best For |
 |------|-------------|---------------|----------|
-| `full` (default) | All 125 tools | ~100% | Large context windows, full functionality |
+| `full` (default) | All 127 tools | ~100% | Large context windows, full functionality |
 | `dynamic` | 4 discovery tools | ~10% | Smaller context windows, on-demand loading |
 
-**Full Mode** (default): All 125 tools are loaded at startup. Best when you have sufficient context window and need immediate access to all FortiManager operations.
+**Full Mode** (default): All 127 tools are loaded at startup. Best when you have sufficient context window and need immediate access to all FortiManager operations.
 
 **Dynamic Mode**: Only lightweight discovery tools are loaded:
 - `find_fortimanager_tool(operation)` - Search for tools by keyword
@@ -462,7 +462,7 @@ networks:
     external: true
 ```
 
-## Available Tools (125 tools)
+## Available Tools (127 tools)
 
 ### System Tools (17 tools)
 

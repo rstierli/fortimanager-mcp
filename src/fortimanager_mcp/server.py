@@ -92,7 +92,7 @@ async def health_check() -> str:
     """Check FortiManager MCP server health and connection status."""
     mode = settings.FMG_TOOL_MODE
     if mode == "full":
-        tool_info = "All 125 tools loaded"
+        tool_info = "All 127 tools loaded"
     else:
         tool_info = "Discovery tools + dynamic execution"
     return f"FortiManager MCP Server is healthy (mode: {mode}, {tool_info})"
@@ -114,7 +114,7 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
         """
         op = operation.lower().strip()
 
-        # Define available tools and their categories (125 tools total)
+        # Define available tools and their categories (127 tools total)
         tool_catalog = {
             "system": [
                 ("get_system_status", "Get FortiManager system status and version info"),
@@ -188,6 +188,7 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
                 ("assign_package", "Assign package to devices"),
                 ("list_firewall_policies", "List policies in a package"),
                 ("get_firewall_policy", "Get policy details"),
+                ("get_policy_services", "Resolve a policy's services to details"),
                 ("create_firewall_policy", "Create a new firewall policy"),
                 ("update_firewall_policy", "Update an existing policy"),
                 ("delete_firewall_policy", "Delete a firewall policy"),
@@ -220,6 +221,7 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
                 ("list_service_groups", "List service groups"),
                 ("get_service_group", "Get service group details"),
                 ("create_service_group", "Create service group"),
+                ("update_service_group", "Update service group members and comment"),
                 ("delete_service_group", "Delete service group"),
                 ("search_objects", "Search all object types"),
             ],
@@ -312,7 +314,7 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
             Categories with descriptions and tool counts
         """
         return {
-            "total_tools": 125,
+            "total_tools": 127,
             "categories": {
                 "system": {
                     "count": 17,
@@ -442,6 +444,7 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
                     "assign_package",
                     "list_firewall_policies",
                     "get_firewall_policy",
+                    "get_policy_services",
                     "create_firewall_policy",
                     "update_firewall_policy",
                     "delete_firewall_policy",
@@ -487,6 +490,7 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
                     "list_service_groups",
                     "get_service_group",
                     "create_service_group",
+                    "update_service_group",
                     "delete_service_group",
                     "search_objects",
                 },
