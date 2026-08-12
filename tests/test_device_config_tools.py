@@ -5,6 +5,7 @@ interface names) since this is a public repository.
 """
 
 import inspect
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1430,3 +1431,191 @@ class TestOweMode:
         assert data["pmf"] == "enable"
         assert "passphrase" not in data
         assert "sae-password" not in data
+
+
+class TestSixGhzWpa3Guard:
+    """6 GHz radios are WPA3-only, so check the VAP before staging (#47).
+
+    The guard keys off the radio's ``band``, never the radio index. The
+    maintainer retracted the claim that radio-3 is special after checking a
+    live 120G, and the schema offers the 6 GHz bands on every index, so an
+    index-keyed guard would refuse a legitimate WPA2 SSID on an AP whose
+    radio-3 is 5 GHz.
+
+    The tiers are asymmetric on purpose. Refusal is reserved for modes the
+    maintainer's review attested are rejected; everything uncertain warns and
+    still stages, because the install is the real gate and a false refusal
+    tells the operator something untrue.
+    """
+
+    PROFILE_6G = {
+        "name": "AP-profile",
+        "radio-1": {"vap-all": "tunnel", "band": "802.11ax-5G"},
+        "radio-3": {"vap-all": "tunnel", "band": "802.11ax-6G"},
+    }
+
+    @staticmethod
+    def _gets(mock_fmg_instance: MagicMock, vap_reply: Any) -> None:
+        """Profile read first, then the VAP read the guard adds."""
+        mock_fmg_instance.get.side_effect = [
+            (0, dict(TestSixGhzWpa3Guard.PROFILE_6G)),
+            vap_reply,
+        ]
+        mock_fmg_instance.update.return_value = (0, {"name": "AP-profile"})
+
+    @pytest.mark.asyncio
+    async def test_a_wpa2_vap_on_a_6ghz_radio_is_refused_and_nothing_is_staged(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        self._gets(mock_fmg_instance, (0, {"name": "guest", "security": "wpa2-only-personal"}))
+
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.assign_vap_to_wtp_profile(
+                device="FGT-01", profile="AP-profile", vap="guest", radios=[3]
+            )
+
+        assert result.get("error_code") == "validation_error"
+        assert "wpa2-only-personal" in result["error"]
+        mock_fmg_instance.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_one_bad_radio_refuses_the_whole_call(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        # Staging radio-1 and silently dropping radio-3 would be a change of
+        # scope the caller never asked for. Refuse everything instead.
+        self._gets(mock_fmg_instance, (0, {"security": "open"}))
+
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.assign_vap_to_wtp_profile(
+                device="FGT-01", profile="AP-profile", vap="guest", radios=[1, 3]
+            )
+
+        assert result.get("error_code") == "validation_error"
+        mock_fmg_instance.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", ["wpa3-sae", "owe", "WPA3-SAE"])
+    async def test_a_wpa3_vap_is_staged_without_a_warning(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock, mode: str
+    ) -> None:
+        self._gets(mock_fmg_instance, (0, {"security": mode}))
+
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.assign_vap_to_wtp_profile(
+                device="FGT-01", profile="AP-profile", vap="corp", radios=[3]
+            )
+
+        assert result.get("success") is True
+        assert "warning" not in result
+        mock_fmg_instance.update.assert_called_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "vap_reply",
+        [
+            (0, {"security": "wpa3-sae-transition"}),
+            (0, {"security": "wpa3-only-enterprise"}),
+            (0, {"name": "corp"}),
+            (0, {}),
+            (0, []),
+        ],
+        ids=["transition", "enterprise", "no-security-key", "empty-dict", "empty-list"],
+    )
+    async def test_an_unconfirmed_mode_warns_but_still_stages(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock, vap_reply: Any
+    ) -> None:
+        # Every one of these is something nobody has measured on a 6 GHz
+        # radio. Refusing them would be shipping recollection as a rule.
+        self._gets(mock_fmg_instance, vap_reply)
+
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.assign_vap_to_wtp_profile(
+                device="FGT-01", profile="AP-profile", vap="corp", radios=[3]
+            )
+
+        assert result.get("success") is True
+        assert "warning" in result
+        assert "6 GHz" in result["warning"]
+        mock_fmg_instance.update.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_vap_warns_but_still_stages(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        # Refusing here would make a 6 GHz target stricter about a dangling
+        # VAP name than radios 1 and 2, which stage one happily today.
+        mock_fmg_instance.get.side_effect = [
+            (0, dict(self.PROFILE_6G)),
+            RuntimeError("boom"),
+        ]
+        mock_fmg_instance.update.return_value = (0, {"name": "AP-profile"})
+
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.assign_vap_to_wtp_profile(
+                device="FGT-01", profile="AP-profile", vap="ghost", radios=[3]
+            )
+
+        assert result.get("success") is True
+        assert "could not be read" in result["warning"]
+        mock_fmg_instance.update.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_a_band_stored_as_a_one_element_list_is_still_detected(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        # FortiManager stores some scalars as one-element lists; channel is
+        # documented that way in this module and vaps arrives as a list.
+        mock_fmg_instance.get.side_effect = [
+            (0, {"name": "AP-profile", "radio-3": {"band": ["802.11be-6G"]}}),
+            (0, {"security": "open"}),
+        ]
+
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.assign_vap_to_wtp_profile(
+                device="FGT-01", profile="AP-profile", vap="guest", radios=[3]
+            )
+
+        assert result.get("error_code") == "validation_error"
+        mock_fmg_instance.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "radio",
+        [{"vap-all": "tunnel"}, {"band": "802.11ax-5G"}, {"band": ""}, {"band": ["a", "b"]}],
+        ids=["band-absent", "five-ghz", "band-empty", "band-multi-list"],
+    )
+    async def test_a_non_6ghz_or_unknown_band_costs_no_extra_read(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock, radio: dict
+    ) -> None:
+        # Fail-open, and cheap: a radio with no band is the ordinary case,
+        # and the VAP read must not happen at all on that path.
+        mock_fmg_instance.get.return_value = (0, {"name": "AP-profile", "radio-1": radio})
+        mock_fmg_instance.update.return_value = (0, {"name": "AP-profile"})
+
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.assign_vap_to_wtp_profile(
+                device="FGT-01", profile="AP-profile", vap="guest", radios=[1]
+            )
+
+        assert result.get("success") is True
+        assert "warning" not in result
+        assert mock_fmg_instance.get.call_count == 1, "the VAP read must not fire"
+
+    @pytest.mark.asyncio
+    async def test_the_vap_object_is_never_echoed(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        # The VAP carries encrypted passphrase and sae-password blobs. Only
+        # the security field is read out of it.
+        self._gets(
+            mock_fmg_instance,
+            (0, {"security": "wpa2-only-personal", "passphrase": "ENC-not-a-real-secret"}),
+        )
+
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.assign_vap_to_wtp_profile(
+                device="FGT-01", profile="AP-profile", vap="guest", radios=[3]
+            )
+
+        assert "ENC-not-a-real-secret" not in repr(result)

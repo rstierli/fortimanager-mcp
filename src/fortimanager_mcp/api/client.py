@@ -2245,6 +2245,25 @@ class FortiManagerClient:
         """
         return await self.get(f"/pm/config/device/{device}/vdom/{vdom}/wireless-controller/vap")
 
+    async def get_device_vap(
+        self,
+        device: str,
+        vdom: str,
+        name: str,
+    ) -> Any:
+        """Get a device-DB wireless VAP (SSID) by name.
+
+        FNDN: GET /pm/config/device/{device}/vdom/{vdom}/wireless-controller/vap/{name}
+
+        Separate from ``list_device_vaps`` on purpose: reading one VAP's
+        security mode through the collection would haul every VAP on the
+        device across the wire, each carrying its encrypted ``passphrase``
+        and ``sae-password`` blobs, to look at a single field.
+        """
+        return await self.get(
+            f"/pm/config/device/{device}/vdom/{vdom}/wireless-controller/vap/{name}",
+        )
+
     async def create_device_vap(
         self,
         device: str,
