@@ -19,7 +19,7 @@ from fortimanager_mcp.utils.install_gate import (
     recorded_revision,
     task_state,
 )
-from fortimanager_mcp.utils.responses import error_response
+from fortimanager_mcp.utils.responses import error_response, strip_device_credentials
 from fortimanager_mcp.utils.task_guard import (
     MAX_TASK_POLL_FAILURES,
     MAX_TASK_WAIT_TIMEOUT,
@@ -237,7 +237,7 @@ async def list_devices(
         return {
             "status": "success",
             "count": len(devices),
-            "devices": devices,
+            "devices": strip_device_credentials(devices),
         }
     except Exception as e:
         logger.error(f"Failed to list devices in ADOM {adom}: {e}")
@@ -278,7 +278,7 @@ async def get_device(
         device = await client.get_device(name, adom, loadsub=loadsub)
         return {
             "status": "success",
-            "device": device,
+            "device": strip_device_credentials(device),
         }
     except Exception as e:
         logger.error(f"Failed to get device {name}: {e}")

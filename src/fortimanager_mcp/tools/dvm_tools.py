@@ -12,6 +12,10 @@ from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_default_adom, get_default_device
 from fortimanager_mcp.utils.errors import client_safe_error
+from fortimanager_mcp.utils.responses import (
+    DEVICE_CREDENTIAL_KEYS,
+    strip_device_credentials,
+)
 from fortimanager_mcp.utils.validation import (
     ValidationError,
     validate_adom,
@@ -99,7 +103,10 @@ async def list_device_vdoms(
         return {
             "status": "success",
             "count": len(vdoms),
-            "vdoms": vdoms,
+            # Same record class get_device(include_details=True) returns as a
+            # subobject, where it is stripped. Left raw here, the same VDOM
+            # record would be safe by one route and not the other.
+            "vdoms": strip_device_credentials(vdoms),
         }
     except Exception as e:
         logger.error(f"Failed to list VDOMs for device {device}: {e}")
@@ -154,7 +161,7 @@ async def get_device_status(
         return {
             "status": "success",
             "count": len(decoded_devices),
-            "devices": decoded_devices,
+            "devices": strip_device_credentials(decoded_devices),
         }
     except Exception as e:
         logger.error(f"Failed to get device status: {e}")
@@ -230,7 +237,7 @@ async def search_devices(
         return {
             "status": "success",
             "count": len(decoded_devices),
-            "devices": decoded_devices,
+            "devices": strip_device_credentials(decoded_devices),
         }
     except Exception as e:
         logger.error(f"Failed to search devices: {e}")
@@ -341,7 +348,7 @@ async def add_device(
         device_safe = {
             k: v
             for k, v in (echoed if isinstance(echoed, dict) else device_config).items()
-            if k not in ("adm_pass", "adm_passwd")
+            if k not in DEVICE_CREDENTIAL_KEYS
         }
 
         return {
@@ -543,7 +550,7 @@ async def add_devices_bulk(
 
         # Sanitize: strip credentials from device dicts before returning
         devices_safe = [
-            {k: v for k, v in d.items() if k not in ("adm_pass", "adm_passwd")} for d in devices
+            {k: v for k, v in d.items() if k not in DEVICE_CREDENTIAL_KEYS} for d in devices
         ]
 
         return {
