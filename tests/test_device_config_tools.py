@@ -689,6 +689,32 @@ class TestAssignVapToWtpProfile:
         assert "error" in result
         mock_fmg_instance.get.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_strips_readonly_keys_from_the_carried_through_radio(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """Same read-only-key bug as update_device_wtp_profile_radio: "oid"
+        echoed back on write makes FortiManager reject the whole request.
+        Confirmed live against the FGT-MCP-TEST-01 sandbox (2026-08-13)."""
+        mock_fmg_instance.get.return_value = (
+            0,
+            {
+                "name": "AP-profile",
+                "radio-1": {"vap-all": "tunnel", "oid": 9187, "unset attrs": ["band"]},
+            },
+        )
+        mock_fmg_instance.update.return_value = (0, {"name": "AP-profile"})
+
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.assign_vap_to_wtp_profile(
+                device="FGT-01", profile="AP-profile", vap="TEST", radios=[1]
+            )
+
+        assert result.get("success") is True
+        data = mock_fmg_instance.update.call_args.kwargs["data"]
+        assert "oid" not in data["radio-1"]
+        assert "unset attrs" not in data["radio-1"]
+
 
 MOCK_WTP_PROFILES = [
     {
@@ -749,9 +775,96 @@ class TestGetDeviceWtpProfile:
 
 class TestUpdateDeviceWtpProfileRadio:
     @pytest.mark.asyncio
-    async def test_pins_a_single_channel(
+    async def test_pins_a_single_channel_on_radio_1(
         self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
     ) -> None:
+        """radio-1/2 (2.4/5GHz) genuinely are a single-element pin -- no
+        member-list expansion applies outside radio-3."""
+        mock_fmg_instance.get.return_value = (
+            0,
+            {
+                "name": "AP-profile",
+                "radio-1": {
+                    "vap-all": "manual",
+                    "vaps": ["corp"],
+                    "band": "802.11ax-2G",
+                    "channel-bonding": "20MHz",
+                    "power-level": 50,
+                },
+            },
+        )
+        mock_fmg_instance.update.return_value = (0, {"name": "AP-profile"})
+
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.update_device_wtp_profile_radio(
+                device="FGT-01", profile="AP-profile", radio=1, channel=[6]
+            )
+
+        assert result.get("success") is True
+        data = mock_fmg_instance.update.call_args.kwargs["data"]
+        assert data["radio-1"] == {
+            "vap-all": "manual",
+            "vaps": ["corp"],
+            "band": "802.11ax-2G",
+            "channel-bonding": "20MHz",
+            "power-level": 50,
+            "channel": ["6"],
+        }
+
+    @pytest.mark.asyncio
+    async def test_strips_readonly_keys_from_the_carried_through_radio(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """ "oid" and "unset attrs" are read-only bookkeeping the API injects
+        on GET. Confirmed live against the FGT-MCP-TEST-01 sandbox
+        (2026-08-13): echoing "oid" back on write makes FortiManager reject
+        the ENTIRE request with a generic "data is invalid for the selected
+        URL" error, on every radio -- not just radio-3. Before this fix,
+        update_device_wtp_profile_radio always carried the raw GET dict
+        through verbatim, so it could never succeed against a real device.
+        """
+        mock_fmg_instance.get.return_value = (
+            0,
+            {
+                "name": "AP-profile",
+                "radio-1": {
+                    "vap-all": "manual",
+                    "band": "802.11ax-2G",
+                    "oid": 9187,
+                    "unset attrs": ["band"],
+                },
+            },
+        )
+        mock_fmg_instance.update.return_value = (0, {"name": "AP-profile"})
+
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.update_device_wtp_profile_radio(
+                device="FGT-01", profile="AP-profile", radio=1, channel=[6]
+            )
+
+        assert result.get("success") is True
+        data = mock_fmg_instance.update.call_args.kwargs["data"]
+        assert "oid" not in data["radio-1"]
+        assert "unset attrs" not in data["radio-1"]
+        assert data["radio-1"]["vap-all"] == "manual"
+        assert data["radio-1"]["band"] == "802.11ax-2G"
+
+    @pytest.mark.asyncio
+    async def test_expands_a_6ghz_wide_channel_label_to_its_member_channels(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """A 6GHz radio-3 channel at bonding widths above 20MHz is stored by
+        FortiOS as the full list of member 20MHz sub-channels, not a single
+        wide-channel label. Confirmed live against myfw01's FAP23JK-AP1
+        wtp-profile (2026-08-13): a working 160MHz pin to channel 15 is
+        `channel: ["1","5","9","13","17","21","25","29"]`. FortiManager's
+        device-DB write does NOT reject a single-element `["15"]` at 160MHz
+        bonding (confirmed on the FGT-MCP-TEST-01 sandbox) -- it silently
+        accepts it, which is worse than a loud failure: a caller following
+        the pre-fix docstring's advice ("pass [15] to pin one channel")
+        would get a config that looks like it worked and doesn't match
+        anything a real AP considers channel 15 at 160MHz.
+        """
         mock_fmg_instance.get.return_value = (
             0,
             {
@@ -787,8 +900,111 @@ class TestUpdateDeviceWtpProfileRadio:
             "band": "802.11ax-6G",
             "channel-bonding": "160MHz",
             "power-level": 50,
-            "channel": ["15"],
+            "channel": ["1", "5", "9", "13", "17", "21", "25", "29"],
         }
+
+    @pytest.mark.asyncio
+    async def test_expands_a_second_6ghz_wide_channel_label(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """Channel 47 at 160MHz, verified against myfw01's FAP23JK-AP2."""
+        mock_fmg_instance.get.return_value = (
+            0,
+            {"name": "AP-profile", "radio-3": {"channel-bonding": "160MHz"}},
+        )
+        mock_fmg_instance.update.return_value = (0, {"name": "AP-profile"})
+
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.update_device_wtp_profile_radio(
+                device="FGT-01", profile="AP-profile", radio=3, channel=[47]
+            )
+
+        assert result.get("success") is True
+        data = mock_fmg_instance.update.call_args.kwargs["data"]
+        assert data["radio-3"]["channel"] == ["33", "37", "41", "45", "49", "53", "57", "61"]
+
+    @pytest.mark.asyncio
+    async def test_accepts_an_explicit_member_channel_list_for_radio_3(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """A caller who already knows the member list can pass it directly
+        instead of the wide-channel label; it must pass through untouched."""
+        mock_fmg_instance.get.return_value = (
+            0,
+            {"name": "AP-profile", "radio-3": {"channel-bonding": "160MHz"}},
+        )
+        mock_fmg_instance.update.return_value = (0, {"name": "AP-profile"})
+
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.update_device_wtp_profile_radio(
+                device="FGT-01",
+                profile="AP-profile",
+                radio=3,
+                channel=[1, 5, 9, 13, 17, 21, 25, 29],
+            )
+
+        assert result.get("success") is True
+        data = mock_fmg_instance.update.call_args.kwargs["data"]
+        assert data["radio-3"]["channel"] == ["1", "5", "9", "13", "17", "21", "25", "29"]
+
+    @pytest.mark.asyncio
+    async def test_rejects_a_misaligned_6ghz_wide_channel_label(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """5 is a valid 20MHz channel but not a valid 160MHz-wide center --
+        must be rejected rather than silently written wrong (see
+        test_expands_a_6ghz_wide_channel_label_to_its_member_channels for
+        why silent is the failure mode being guarded against here)."""
+        mock_fmg_instance.get.return_value = (
+            0,
+            {"name": "AP-profile", "radio-3": {"channel-bonding": "160MHz"}},
+        )
+
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.update_device_wtp_profile_radio(
+                device="FGT-01", profile="AP-profile", radio=3, channel=[5]
+            )
+
+        assert "error" in result
+        mock_fmg_instance.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_rejects_a_wrong_length_member_list_for_radio_3(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        mock_fmg_instance.get.return_value = (
+            0,
+            {"name": "AP-profile", "radio-3": {"channel-bonding": "160MHz"}},
+        )
+
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.update_device_wtp_profile_radio(
+                device="FGT-01", profile="AP-profile", radio=3, channel=[1, 5, 9]
+            )
+
+        assert "error" in result
+        mock_fmg_instance.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_radio_3_at_20mhz_bonding_is_a_plain_single_pin(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """No expansion logic kicks in below 40MHz -- radio-3 at 20MHz
+        bonding behaves like radio-1/2's plain single-channel pin."""
+        mock_fmg_instance.get.return_value = (
+            0,
+            {"name": "AP-profile", "radio-3": {"channel-bonding": "20MHz"}},
+        )
+        mock_fmg_instance.update.return_value = (0, {"name": "AP-profile"})
+
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.update_device_wtp_profile_radio(
+                device="FGT-01", profile="AP-profile", radio=3, channel=[37]
+            )
+
+        assert result.get("success") is True
+        data = mock_fmg_instance.update.call_args.kwargs["data"]
+        assert data["radio-3"]["channel"] == ["37"]
 
     @pytest.mark.asyncio
     async def test_updates_channel_bonding_only(
