@@ -196,6 +196,17 @@ DEFAULT_ADOM=root
 # MCP_MAX_REQUEST_BYTES=10485760     # Max request body; oversize gets 413. 0 disables.
 # MCP_MAX_CONCURRENT_REQUESTS=64     # Max in-flight requests; excess gets 503. 0 disables.
 
+# Reversible data masking (optional - off by default, issue #34)
+# Masks IOC-bearing VALUES in tool outputs (IPs, subnets, serials, FQDNs,
+# admin usernames). Names (object/ADOM/package/VDOM/device) route calls
+# and are never masked. Masked values are read-only context: a token sent
+# back as a tool argument is refused, so create and modify with real
+# values. Requires 32/48/64 hex chars; enabling without a key aborts
+# startup. Shares token compatibility with the FortiAnalyzer sibling when
+# both use the same key, which also means one shared blast radius.
+# MASKING_ENABLED=false
+# FMG_MASKING_KEY=
+
 # Safety Guardrails (optional - strict by default)
 # FMG_SCRIPT_SAFETY=strict    # Block dangerous CLI commands in scripts (factory-reset, reboot, etc.)
 # FMG_POLICY_SAFETY=strict    # Block overly permissive policies (srcaddr=all + dstaddr=all + accept)

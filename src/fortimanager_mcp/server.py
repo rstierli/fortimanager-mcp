@@ -59,6 +59,21 @@ mcp = FastMCP(
     transport_security=_transport_security,
 )
 
+if settings.MASKING_ENABLED:
+    # Must run before ANY tool is registered, including health_check below:
+    # tool modules self-register at import time, and this patches mcp.tool.
+    #
+    # Fail-closed by design: MaskingError propagates and aborts startup when
+    # FMG_MASKING_KEY is missing or invalid. A deployment that asked for
+    # masking must not run without it.
+    from fortimanager_mcp.masking.wrapper import install_masking  # noqa: E402
+
+    install_masking(mcp)
+    logger.info(
+        "MASKING_ENABLED - tool outputs are masked and masking tokens are "
+        "refused as tool arguments (issue #34)"
+    )
+
 
 # Health check tool (always available)
 @mcp.tool()

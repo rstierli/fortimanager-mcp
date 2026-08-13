@@ -12,6 +12,7 @@ dependencies = [
     # every fresh install; stay on 1.x until a deliberate migration. The 1.28.1
     # floor clears PYSEC-2026-3483.
     "mcp>=1.28.1,<2",
+    "ff3>=1.0.3",
     "pydantic>=2.0.0",
     # Security floors: pinning mcp to 1.x holds back its transitive resolution,
     # which otherwise lands on pydantic-settings 2.14.1 (GHSA-4xgf-cpjx-pc3j)
@@ -95,6 +96,10 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = "pyFMG.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "ff3.*"
 ignore_missing_imports = true
 
 # api.client wraps pyfmg, an untyped SDK whose response is `Any` for every

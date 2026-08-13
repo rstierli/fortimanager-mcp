@@ -133,6 +133,22 @@ class Settings(BaseSettings):
         "queue only grows latency. Set 0 to disable the bound.",
     )
 
+    # Reversible data masking (FPE), issue #34 / FAZ RFC #40
+    MASKING_ENABLED: bool = Field(
+        default=False,
+        description="Mask IOC-bearing values in tool outputs via format-preserving "
+        "encryption (requires FMG_MASKING_KEY). Off by default; enabling without a "
+        "valid key fails closed at startup. Object, ADOM and package names are never "
+        "masked: they route follow-up calls.",
+    )
+
+    FMG_MASKING_KEY: str | None = Field(
+        default=None,
+        description="FPE key (32/48/64 hex chars) for masking. Read here so it resolves "
+        "from .env consistently with MASKING_ENABLED; the masking engine otherwise reads "
+        "the process environment.",
+    )
+
     # MCP Allowed Hosts (for reverse proxy / Docker deployments)
     MCP_ALLOWED_HOSTS: Annotated[list[str], NoDecode] = Field(
         default_factory=list,

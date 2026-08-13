@@ -27,6 +27,20 @@ Security fix release: device credentials were leaking in cleartext from four rea
 
   The VAP credential is routed by security mode, since FortiManager keeps the WPA3-SAE password in its own field: `sae-password` for `wpa3-sae` and `wpa3-sae-transition` (with `pmf` enabled, which SAE requires), `passphrase` for the personal modes, and both for transition mode, which runs a WPA2 leg alongside SAE. Sending `passphrase` for SAE is rejected by the appliance with "vap sae password must be not empty". Modes needing credentials these tools do not set (enterprise, WEP) are refused up front rather than creating an unusable SSID. Both credential fields are stripped from every response, list and the FMG create echo alike. Field names confirmed against the `wireless-controller vap` schema on 7.6.7 and 8.0.0. 33 new unit tests (645 total), including dynamic-mode resolution of the new module.
 
+### Added
+
+- **Reversible data masking (FPE), opt-in and off by default** ([#34](https://github.com/rstierli/fortimanager-mcp/issues/34)). `MASKING_ENABLED=true` plus a 32/48/64 hex-character `FMG_MASKING_KEY` masks the identifier-bearing *values* in tool outputs (addresses, subnets, MACs, device serials, FQDNs, admin usernames) with format-preserving encryption, so a model can still correlate a value across calls without seeing it. Enabling the flag without a valid key aborts startup rather than running unmasked. The ciphers are shared with the FortiAnalyzer sibling under `faz-mcp-fpe:v1`, so one key produces matching tokens on both, which also means one blast radius: rotate them together.
+
+  **Names are never masked.** Object, ADOM, package, VDOM, device, template and script names are routing keys; masking one would not hide an identifier, it would break every follow-up call that used it.
+
+  **Masked values are read-only context.** A token supplied as a tool argument is refused rather than restored. FortiManager arguments become estate configuration, and the v1 token format carries no integrity tag, so a stale, rotated or foreign token would decrypt to a plausible wrong address and be written with nothing to catch it. An authenticated envelope that would make restoration safe is the subject of the joint protocol v2 RFC.
+
+  **Fail-closed by construction.** A value the ciphers cannot represent becomes an irreversible keyed placeholder, never the raw value, and is never logged. A carrier key holding a container is walked rather than returned. If masking a whole result fails, the tool returns an error envelope and the raw result is withheld. Secrets are replaced by a fixed constant instead of a token, since a token is reversible by design, and that constant is itself refused on the way back in.
+
+  Deliberately out of scope for this version, each with a reason rather than an oversight: free text, script bodies, install previews and task detail, and names that embed an address.
+
+  Carrier coverage was set by static derivation over every tool module plus read-only sweeps of live FortiManager 7.6.7 and 8.0.0, then corrected three times by review against a live FortiGate device DB: the SD-WAN source and gateway fields, the interface IPv4 and IPv6 address, relay and VRRP fields, MAC-type address objects, wildcard FQDNs, service IP ranges, the proxy envelope's device serial, and the interface address fields that carry a netmask alongside the address. `adm_pass` and its siblings are redacted rather than tokenised.
+
 ## [1.10.0] - 2026-08-09
 
 Minor release: new device-config read tools and an SD-WAN reader, a service-group update tool, address/service negation on policies, HTTP transport hardening, and error-handling fixes.
