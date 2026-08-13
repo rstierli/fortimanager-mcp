@@ -40,6 +40,77 @@ WTP_PROFILE_CHANNEL_BONDING_MODES = {"20MHz", "40MHz", "80MHz", "160MHz"}
 #: FortiOS wireless-controller.wtp authorization states.
 WTP_ADMIN_STATES = {"discovered", "disable", "enable"}
 
+#: Read-only / server-injected bookkeeping keys that show up in a wtp-profile
+#: radio object as returned by a GET but break the whole request if echoed
+#: back on a write. Confirmed live against the FGT-MCP-TEST-01 sandbox
+#: (2026-08-13): an update payload that includes "oid" is rejected with a
+#: generic "The data is invalid for the selected URL" error, independent of
+#: anything else in the payload, on every radio (2.4/5/6GHz alike) -- not
+#: just radio-3 or wide-bonding channels. "unset attrs" is the same kind of
+#: read-only marker (lists fields the API has never had an explicit value
+#: for) and gets stripped for the same reason.
+_WTP_RADIO_READONLY_KEYS = ("oid", "unset attrs")
+
+
+def _carry_through_radio(radio: dict[str, Any]) -> dict[str, Any]:
+    """Copy a radio object for a read-modify-write, dropping keys the API
+    injects on read but rejects on write (see _WTP_RADIO_READONLY_KEYS)."""
+    return {k: v for k, v in radio.items() if k not in _WTP_RADIO_READONLY_KEYS}
+
+
+#: FortiOS wtp-profile channel-bonding device-DB integer codes. 2=80MHz and
+#: 5=160MHz confirmed live (FGT-MCP-TEST-01 sandbox and myfw01, 2026-08-13);
+#: 3/4/6 filled in by the same enum ordering (40/20/320MHz) but not
+#: independently exercised against a live appliance.
+_CHANNEL_BONDING_INT_TO_MHZ = {2: 80, 3: 40, 4: 20, 5: 160, 6: 320}
+
+
+def _channel_bonding_mhz(value: Any) -> int | None:
+    """Resolve a stored or requested channel-bonding value to a width in
+    MHz, whether it's the human string ("160MHz") or the device-DB integer
+    code. Returns None if it can't be resolved."""
+    if isinstance(value, str) and value.endswith("MHz"):
+        try:
+            return int(value[:-3])
+        except ValueError:
+            return None
+    if isinstance(value, int):
+        return _CHANNEL_BONDING_INT_TO_MHZ.get(value)
+    return None
+
+
+def _radio3_wide_channel_members(label: int, width_mhz: int) -> list[int] | None:
+    """Expand a 6GHz wide-channel label (e.g. 15 at 160MHz) into its member
+    20MHz sub-channels (e.g. 1,5,9,...,29).
+
+    Confirmed live against myfw01's FAP23JK-AP1/AP2 wtp-profiles
+    (2026-08-13): a working, FortiOS-accepted 160MHz pin to 6GHz channel 15
+    is stored as `channel: ["1","5","9","13","17","21","25","29"]`, and
+    channel 47 as `["33","37","41","45","49","53","57","61"]` -- NOT as a
+    single-element `["15"]`/`["47"]`. FortiManager's device-DB write does
+    NOT reject a single-element channel at wide bonding (confirmed on the
+    FGT-MCP-TEST-01 sandbox: it writes `["15"]` at 160MHz bonding without
+    complaint), so a caller relying on server-side validation to catch this
+    would not be warned -- it is a silent misconfiguration, not a loud
+    failure.
+
+    This matches the general IEEE 802.11 6GHz channelization: a width-N*20
+    MHz channel is N member 20MHz channels spaced 4 apart, and the
+    conventional wide-channel label is the arithmetic midpoint of the first
+    and last member (verified against both real examples above, and
+    against the public 160MHz label sequence 15/47/79/111/...).
+
+    Returns None if `label` is not a valid midpoint for `width_mhz` (i.e.
+    the request doesn't line up with any real member-channel set).
+    """
+    n = width_mhz // 20
+    if n <= 1:
+        return None
+    first = label - 2 * (n - 1)
+    if first < 1 or (first - 1) % (4 * n) != 0:
+        return None
+    return [first + 4 * i for i in range(n)]
+
 
 def _ip_mask_pair(ip: str) -> list[str]:
     """Normalize an interface address to the [address, netmask] pair the
@@ -923,7 +994,10 @@ async def assign_vap_to_wtp_profile(
             # those would reset to defaults and the next
             # install_device_settings would push the reset to a live AP.
             # Changing two fields must not be a way to reset the rest.
-            data[key] = {**radio, "vap-all": "manual", "vaps": merged}
+            # _carry_through_radio drops read-only bookkeeping keys ("oid",
+            # "unset attrs") the API injects on GET but rejects on write --
+            # see update_device_wtp_profile_radio for how this was found.
+            data[key] = {**_carry_through_radio(radio), "vap-all": "manual", "vaps": merged}
 
         if not data:
             response: dict[str, Any] = {
@@ -1094,18 +1168,26 @@ async def update_device_wtp_profile_radio(
 
     This is a read-modify-write, like assign_vap_to_wtp_profile: the profile
     is read first and every other field already on the target radio (band,
-    power, vap-all, vaps, mode, ...) is carried through unchanged.
-    FortiManager replaces a nested radio object rather than merging into it,
-    so writing back only channel/channel-bonding would reset the rest to
-    defaults on the next install_device_settings.
+    power, vap-all, vaps, mode, ...) is carried through unchanged, minus a
+    couple of read-only bookkeeping keys the API injects on GET but rejects
+    on write (see _WTP_RADIO_READONLY_KEYS). FortiManager replaces a nested
+    radio object rather than merging into it, so writing back only
+    channel/channel-bonding would reset the rest to defaults on the next
+    install_device_settings.
 
     Args:
         device: Managed device name
         profile: FortiAP (WTP) profile name
         radio: Radio to update, 1-3
-        channel: Channel(s) to pin the radio to. FortiOS stores this as a
-            list (it can also hold an auto-select candidate set); pass a
-            single-element list, e.g. [15], to pin one channel.
+        channel: Channel(s) to pin the radio to. For radio 1/2 (2.4/5GHz)
+            this is a single-element list, e.g. [36], to pin one channel.
+            For radio 3 (6GHz) at a bonding width above 20MHz, FortiOS
+            represents the wide channel as the full list of its member
+            20MHz sub-channels rather than a single label -- pass either
+            the single conventional wide-channel label (e.g. [15] for
+            160MHz channel 15) and it is expanded to the correct member
+            list automatically, or the explicit member list itself
+            (e.g. [1, 5, 9, 13, 17, 21, 25, 29]).
         channel_bonding: Channel width/bonding, one of
             WTP_PROFILE_CHANNEL_BONDING_MODES ("20MHz", "40MHz", "80MHz",
             "160MHz")
@@ -1169,9 +1251,39 @@ async def update_device_wtp_profile_radio(
                 "error_code": "not_found",
             }
 
+        # radio-3 (6GHz) at bonding widths above 20MHz needs the channel
+        # expressed as its full set of member 20MHz sub-channels, not a
+        # single wide-channel label -- see _radio3_wide_channel_members.
+        if channel is not None and channel_values is not None and radio == 3:
+            effective_bonding = (
+                channel_bonding if channel_bonding is not None else existing.get("channel-bonding")
+            )
+            width_mhz = _channel_bonding_mhz(effective_bonding)
+            if width_mhz and width_mhz > 20:
+                n = width_mhz // 20
+                if len(channel) == 1:
+                    members = _radio3_wide_channel_members(channel[0], width_mhz)
+                    if members is None:
+                        raise ValidationError(
+                            f"channel {channel[0]} is not a valid 6GHz {width_mhz}MHz "
+                            f"wide-channel label for radio-3 -- either pass a valid "
+                            "center label (e.g. 15 or 47 at 160MHz) or the full list "
+                            f"of {n} member 20MHz sub-channels"
+                        )
+                    channel_values = [str(c) for c in members]
+                elif len(channel) != n:
+                    raise ValidationError(
+                        f"radio-3 at {width_mhz}MHz bonding needs either 1 value (a "
+                        f"wide-channel label, e.g. 15) or exactly {n} values (the full "
+                        f"list of member 20MHz sub-channels) -- got {len(channel)}"
+                    )
+                # else: caller already passed the explicit n-member list; trust it.
+
         # Carry the rest of the radio object through; see the docstring and
         # assign_vap_to_wtp_profile for why a partial write is unsafe here.
-        updated_radio = dict(existing)
+        # _carry_through_radio drops read-only bookkeeping keys ("oid",
+        # "unset attrs") the API injects on GET but rejects on write.
+        updated_radio = _carry_through_radio(existing)
         if channel_values is not None:
             updated_radio["channel"] = channel_values
         if channel_bonding is not None:
