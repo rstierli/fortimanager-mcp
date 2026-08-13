@@ -497,6 +497,128 @@ _VAP_SAE_MODES = frozenset({"wpa3-sae", "wpa3-sae-transition"})
 #: Security modes that authenticate with a WPA pre-shared key.
 _VAP_PSK_MODES = frozenset({"wpa-personal", "wpa-only-personal", "wpa2-only-personal"})
 
+#: Security modes certain to be refused on a 6 GHz radio.
+#:
+#: The authority for this set is the maintainer's review on #47, against a
+#: live FortiGate 120G: "6GHz is WPA3-only ... a non-WPA3 SSID assigned to
+#: radio-3 would be rejected at install time". Wi-Fi Alliance rules agree,
+#: but those are recollection, and this list is cited to the measurement.
+#:
+#: Anything neither here nor in ``_VAP_6GHZ_KNOWN_GOOD`` warns rather than
+#: refuses. That asymmetry is the design: an allow-tier mistake costs nothing
+#: new, since the install still refuses and says why, which is exactly
+#: today's behaviour. A refuse-tier mistake blocks a legitimate change and
+#: tells the operator something false.
+_VAP_6GHZ_REFUSED_MODES = frozenset(
+    {"open", "wep64", "wep128", "wpa-personal", "wpa-only-personal", "wpa2-only-personal"}
+)
+
+#: Modes known good on 6 GHz, so they pass without a warning. SAE is the
+#: maintainer's own words on #47: "SAE is the case that matters (it's
+#: mandatory on 6 GHz)". OWE rests on weaker evidence -- this module already
+#: treats it as PMF-mandatory alongside SAE, and the rest is recollection --
+#: so it sits in the allow tier, where being wrong is harmless.
+_VAP_6GHZ_KNOWN_GOOD = frozenset({"wpa3-sae", "owe"})
+
+#: Substring identifying a 6 GHz band, matched case-insensitively against a
+#: radio's ``band``. Observed values are ``802.11ax-6G`` and ``802.11be-6G``;
+#: the maintainer's schema dump says the enum "includes" those, so the full
+#: list is not known here and a substring keeps future 6 GHz bands covered.
+#: No other FortiOS band token contains "6g" -- ``802.11g`` ends in a bare
+#: "g" -- but that sweep is recollection rather than a measurement.
+_SIX_GHZ_BAND_MARK = "6g"
+
+
+def _radio_band(radio: dict[str, Any]) -> str | None:
+    """A radio's band as a string, or None when it cannot be determined.
+
+    FortiManager omits fields at their default and stores some scalars as
+    one-element lists (``channel`` is documented that way in this module and
+    ``vaps`` arrives as a list), so neither absence nor a list shape means
+    the response is malformed.
+    """
+    band = radio.get("band")
+    if isinstance(band, list):
+        band = band[0] if len(band) == 1 else None
+    return band if isinstance(band, str) and band.strip() else None
+
+
+def _is_six_ghz(radio: dict[str, Any]) -> bool:
+    """Is this a 6 GHz radio? False when the band cannot be determined.
+
+    Fail-open, deliberately. A radio with no ``band`` is the ordinary case
+    rather than a suspicious one: FortiManager omits defaults, and this tool
+    invents an empty radio dict when the profile has no entry for an index.
+    Treating unknown as 6 GHz would refuse the majority workflow. The guard
+    is early warning; the install is the real gate and it tells the truth.
+    """
+    band = _radio_band(radio)
+    return band is not None and _SIX_GHZ_BAND_MARK in band.lower()
+
+
+async def _check_six_ghz_vap(
+    client: Any,
+    device: str,
+    vdom: str,
+    vap: str,
+    six_ghz_radios: list[int],
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Classify a VAP's security mode for assignment to a 6 GHz radio.
+
+    Returns ``(refusal, warning)``. A refusal is an error envelope the caller
+    must return before writing anything; a warning rides along with a
+    successful write.
+
+    Every uncertain outcome warns rather than refuses, including a VAP that
+    cannot be read, one that does not exist, and one whose ``security`` key
+    is absent. Refusing an unreadable VAP would make 6 GHz targets stricter
+    about dangling VAP names than radios 1 and 2, which stage them happily
+    today, and that is a scope change rather than a guard.
+
+    The VAP object carries encrypted credential blobs, so only ``security``
+    is read out of it and the object itself is never logged or echoed.
+    """
+    try:
+        stored = await client.get_device_vap(device=device, vdom=vdom, name=vap)
+    except Exception as exc:  # noqa: BLE001 - any read failure warns, never refuses
+        logger.warning(f"could not read VAP '{vap}' to check 6 GHz security: {exc}")
+        return None, (
+            f"Radio(s) {six_ghz_radios} are 6 GHz, which is WPA3-only, and VAP "
+            f"'{vap}' could not be read to confirm its security mode. Staged "
+            "anyway; the install will refuse it if the mode is wrong."
+        )
+
+    if isinstance(stored, list):
+        stored = stored[0] if stored else {}
+    security = stored.get("security") if isinstance(stored, dict) else None
+    if isinstance(security, list):
+        security = security[0] if len(security) == 1 else None
+    if not isinstance(security, str) or not security.strip():
+        return None, (
+            f"Radio(s) {six_ghz_radios} are 6 GHz, which is WPA3-only, and VAP "
+            f"'{vap}' did not report a security mode. Staged anyway; the "
+            "install will refuse it if the mode is wrong."
+        )
+
+    mode = security.strip().lower()
+    if mode in _VAP_6GHZ_REFUSED_MODES:
+        return {
+            "error": (
+                f"VAP '{vap}' uses security '{mode}', which a 6 GHz radio does not "
+                f"accept, and radio(s) {six_ghz_radios} are 6 GHz. Nothing was "
+                "staged. Either drop those radios from the request, or assign a "
+                "WPA3 VAP (wpa3-sae) or an OWE one."
+            ),
+            "error_code": "validation_error",
+        }, None
+    if mode in _VAP_6GHZ_KNOWN_GOOD:
+        return None, None
+    return None, (
+        f"Radio(s) {six_ghz_radios} are 6 GHz and VAP '{vap}' uses security "
+        f"'{mode}', which has not been confirmed on a 6 GHz radio. It may be "
+        "refused at install; 6 GHz typically wants wpa3-sae or owe."
+    )
+
 
 def _strip_secret_fields(result: Any, secret_fields: frozenset[str]) -> Any:
     """Strip named credential fields from anything FMG echoes back.
@@ -758,6 +880,29 @@ async def assign_vap_to_wtp_profile(
                 "error_code": "not_found",
             }
 
+        # 6 GHz radios are WPA3-only, so a VAP with the wrong security mode
+        # is rejected at install time, possibly bundled with unrelated
+        # changes. Check before staging anything, and refuse the WHOLE call
+        # rather than skipping the 6 GHz radio: a partial write is a silent
+        # change of scope, which is worse than an explicit refusal.
+        #
+        # Keyed off the radio's band, never the radio index. The index does
+        # not determine the band -- the schema offers the 6 GHz bands on
+        # every index, and the maintainer retracted the opposite claim on #47
+        # after checking a live 120G.
+        six_ghz = {
+            n
+            for n in radios
+            if isinstance(stored.get(f"radio-{n}"), dict) and _is_six_ghz(stored[f"radio-{n}"])
+        }
+        warning: str | None = None
+        if six_ghz:
+            # Only reached when a targeted radio really is 6 GHz, so the
+            # 2.4/5 GHz path costs no extra round trip.
+            refusal, warning = await _check_six_ghz_vap(client, device, vdom, vap, sorted(six_ghz))
+            if refusal:
+                return refusal
+
         data: dict[str, Any] = {}
         for radio_num in radios:
             key = f"radio-{radio_num}"
@@ -781,22 +926,28 @@ async def assign_vap_to_wtp_profile(
             data[key] = {**radio, "vap-all": "manual", "vaps": merged}
 
         if not data:
-            return {
+            response: dict[str, Any] = {
                 "success": True,
                 "message": f"VAP '{vap}' already assigned to "
                 f"radio(s) {radios} of profile '{profile}'.",
             }
+            if warning:
+                response["warning"] = warning
+            return response
 
         result = await client.update_device_wtp_profile(
             device=device, vdom=vdom, name=profile, data=data
         )
-        return {
+        response = {
             "success": True,
             "message": f"VAP '{vap}' added to {', '.join(sorted(data))} of profile "
             f"'{profile}' in device DB of '{device}'. Push with "
             "install_device_settings.",
             "result": result,
         }
+        if warning:
+            response["warning"] = warning
+        return response
     except Exception as e:
         logger.error(f"VAP assignment failed on {device}: {e}")
         msg, code = client_safe_error(e)
