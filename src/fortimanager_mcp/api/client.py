@@ -3357,11 +3357,23 @@ class FortiManagerClient:
         FNDN: GET um/image/upgrade/report (How-To Guide 007_device_management.rst
         "How to get the Upgrade Report for managed devices?"; no bundled
         swagger schema -- see section note above)
+
+        Shape note (live-verified 2026-08-14 against fmg-prod-01): pyfmg's
+        common_datagram_params flat-merges kwargs for the 'get' method type
+        by default (each becomes a sibling of 'url'), but the guide's
+        captured request nests adom/devices/flags/name under 'data'. A
+        flat call was confirmed live to fail with "The data is invalid for
+        the selected URL". Passing a single `data=` kwarg works around this:
+        common_datagram_params still flat-merges (method_type == 'get'), but
+        the only kwarg being merged is itself named 'data', so it lands
+        correctly nested rather than spread across the top level.
         """
         return await self.get(
             "um/image/upgrade/report",
-            adom=adom,
-            devices=devices,
-            flags=0,
-            name=profile_name,
+            data={
+                "adom": adom,
+                "devices": devices,
+                "flags": 0,
+                "name": profile_name,
+            },
         )

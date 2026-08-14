@@ -310,6 +310,31 @@ class TestGetFirmwareUpgradeReport:
         assert result["report"][0][0]["name"] == "FGT-01"
 
     @pytest.mark.asyncio
+    async def test_sends_fields_nested_under_data(
+        self, mock_client_configured: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """Live-verified against fmg-prod-01: pyfmg flat-merges kwargs for
+        the 'get' method type, but the How-To Guide's captured request nests
+        adom/devices/flags/name under 'data' -- a flat call fails live with
+        "The data is invalid for the selected URL". Must send a single
+        data= kwarg, not spread fields as separate kwargs."""
+        from fortimanager_mcp.tools import firmware_tools
+
+        with patch.object(firmware_tools, "get_fmg_client", return_value=mock_client_configured):
+            await firmware_tools.get_firmware_upgrade_report(
+                device="FGT-01", profile_name="fgt_to_740"
+            )
+
+        _, kwargs = mock_fmg_instance.get.call_args
+        assert "data" in kwargs
+        assert kwargs["data"]["devices"] == [{"name": "FGT-01"}]
+        assert kwargs["data"]["name"] == "fgt_to_740"
+        assert kwargs["data"]["flags"] == 0
+        # nothing spread as a top-level sibling kwarg
+        assert "devices" not in kwargs
+        assert "name" not in kwargs
+
+    @pytest.mark.asyncio
     async def test_invalid_profile_name_rejected(
         self, mock_client_configured: FortiManagerClient
     ) -> None:
