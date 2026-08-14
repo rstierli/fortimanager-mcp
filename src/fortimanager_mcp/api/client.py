@@ -656,6 +656,32 @@ class FortiManagerClient:
 
         return await self._execute_resilient(_factory)
 
+    async def clone(self, url: str, **kwargs: Any) -> Any:
+        """Execute CLONE request with bounded reconnect + transient-retry resilience."""
+        return await self._generic_request("clone", url, **kwargs)
+
+    async def _flat_request(self, verb: str, url: str, payload: dict[str, Any]) -> Any:
+        """Run `verb` with `payload` merged at the params top level, not under 'data'.
+
+        pyfmg's ``common_datagram_params`` only flat-merges kwargs for the
+        'get'/'clone' method types; every other verb (exec, update, ...) always
+        wraps kwargs one level deeper, under a ``data`` key. Passing `payload`
+        positionally -- the same trick ``move()`` above uses -- bypasses that
+        wrapping, so a key the FMG How-To guide shows as a *sibling* of 'data'
+        (``token`` on a ``/cache/diff/*`` exec call, ``revision note`` on a
+        firewall-policy revert) lands where the guide's own examples put it,
+        instead of nested one level too deep where FortiManager would not find
+        it.
+        """
+
+        async def _factory() -> Any:
+            fmg = self._ensure_connected()
+            method = getattr(fmg, verb)
+            code, response = await self._run_fmg_call(method, url, payload)
+            return self._handle_response(code, response, f"{verb.upper()} {url}")
+
+        return await self._execute_resilient(_factory)
+
     # =========================================================================
     # System Status (from sys.json)
     # =========================================================================
@@ -703,6 +729,54 @@ class FortiManagerClient:
         FNDN: GET /dvmdb/adom/{adom}
         """
         return await self.get(f"/dvmdb/adom/{name}", loadsub=loadsub)
+
+    # =========================================================================
+    # ADOM Revisions (issue: revision-tools)
+    # =========================================================================
+
+    async def list_adom_revisions(
+        self,
+        adom: str,
+        fields: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """List the ADOM DB revision history for an ADOM.
+
+        FNDN: GET /dvmdb/adom/{adom}/revision (dvmdb.json)
+        """
+        params: dict[str, Any] = {}
+        if fields:
+            params["fields"] = fields
+
+        result = await self.get(f"/dvmdb/adom/{adom}/revision", **params)
+        return result if isinstance(result, list) else [result] if result else []
+
+    async def get_adom_revision(self, adom: str, revision: int) -> dict[str, Any]:
+        """Get a single ADOM DB revision's metadata.
+
+        FNDN: GET /dvmdb/adom/{adom}/revision/{revision} (dvmdb.json)
+        """
+        return await self.get(f"/dvmdb/adom/{adom}/revision/{revision}")
+
+    async def clone_adom_revision(
+        self,
+        adom: str,
+        revision: int,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Clone an ADOM DB revision -- the documented "revert" mechanism.
+
+        FortiManager has no dedicated revert-ADOM-revision call; the How-To
+        guide's "How to revert an ADOM Revision?" section instead clones the
+        target past revision, which both restores the live ADOM DB to that
+        historical state and records the clone as a brand-new revision (see
+        docs/guides/.../013_adom_management.rst).
+
+        FNDN: CLONE /dvmdb/adom/{adom}/revision/{revision} (dvmdb.json)
+
+        Returns:
+            {"version": <new revision number>}
+        """
+        return await self.clone(f"/dvmdb/adom/{adom}/revision/{revision}", data=data)
 
     async def list_devices(
         self,
@@ -962,6 +1036,67 @@ class FortiManagerClient:
         return result if isinstance(result, list) else [result] if result else []
 
     # =========================================================================
+    # Device DB Revisions (issue: revision-tools)
+    #
+    # Not in the FNDN swagger set (no cdb-device*.json path covers these) --
+    # confirmed instead against the How-To guide's "Device revisions" section
+    # (docs/guides/.../007_device_management/007_device_management.rst). These
+    # operate on the device DB copy FortiManager keeps for each managed
+    # device, never the live FortiGate: install_device_settings is still the
+    # only path that pushes a device DB change to the appliance.
+    # =========================================================================
+
+    async def get_device_revisions(self, device: str) -> dict[str, Any]:
+        """List the device DB revision history for one managed device.
+
+        FNDN: EXEC /deployment/get/device/revision (How-To 007, "How to get
+        the list of device revisions for a particular device?")
+
+        Returns:
+            {"base_ver": <int>, "revinfo": [{"revision": <int>, ...}, ...]}
+        """
+        return await self.execute("/deployment/get/device/revision", device=device)
+
+    async def get_device_revision_content(self, device: str, revision: int) -> dict[str, Any]:
+        """Check out one device DB revision's stored configuration text.
+
+        FNDN: EXEC /deployment/checkout/revision (How-To 007, "How to get a
+        specific device revision for a particular device?")
+
+        Args:
+            device: Managed device name
+            revision: Revision number, or -1 for the latest revision
+
+        Returns:
+            {"content": <str>, "revision": <int>}
+        """
+        return await self.execute("/deployment/checkout/revision", device=device, revision=revision)
+
+    async def get_device_current_config(self, device: str) -> dict[str, Any]:
+        """Export the device's CURRENT device DB configuration (not a past revision).
+
+        FNDN: EXEC /deployment/export/config (How-To 007, "How to get the
+        current device database configuration for a particular device?")
+
+        Returns:
+            {"content": <str>}
+        """
+        return await self.execute("/deployment/export/config", device=device)
+
+    async def revert_device_revision(self, device: str, revision: int) -> dict[str, Any]:
+        """Revert a device's device DB to a past revision.
+
+        This only rewrites FortiManager's own device DB copy for `device` --
+        it does not touch the live FortiGate. Push the reverted device DB with
+        install_device_settings the same way any other device DB edit is
+        pushed.
+
+        FNDN: EXEC /deployment/revert (How-To 007, "How to revert to a
+        specific device revision?")
+        """
+        return await self.execute("/deployment/revert", device=device, revision=revision)
+
+    # =========================================================================
     # Security Console - Installation Operations
     # =========================================================================
 
@@ -1050,6 +1185,60 @@ class FortiManagerClient:
             adom=adom,
             scope=scope,
         )
+
+    # =========================================================================
+    # Cache Diff -- ADOM/package revision comparison (issue: revision-tools)
+    #
+    # Not in the FNDN swagger set -- no cache*.json exists there. Confirmed
+    # against the How-To guide's "How to diff an ADOM revision with current
+    # configuration?" section (docs/guides/.../013_adom_management.rst), the
+    # only documented way to diff a past revision against the live ADOM/
+    # package. Read-only: nothing here writes to the ADOM, device, or package.
+    # =========================================================================
+
+    async def cache_diff_start(self, dst: str, src: str) -> dict[str, Any]:
+        """Start an ADOM-DB diff job between two revision paths.
+
+        FNDN: EXEC /cache/diff/start (How-To 013, "How to diff an ADOM
+        revision with current configuration?")
+
+        Args:
+            dst: Comparison target, e.g. "adom/{adom}" for the live ADOM
+            src: Comparison source, e.g. "adom/{adom}/revision/{revision}"
+
+        Returns:
+            {"token": <str>} -- pass to cache_diff_get_summary/cache_diff_end
+        """
+        return await self.execute("/cache/diff/start", dst=dst, src=src)
+
+    async def cache_diff_get_summary(self, token: str, pkg: str | None = None) -> dict[str, Any]:
+        """Poll a diff job's summary; check `percent` for completion.
+
+        FNDN: EXEC /cache/diff/get/summary[/pkg/{pkg}] (How-To 013). `token`
+        must be a sibling of `url` in the request body, not nested under
+        `data` -- see FortiManagerClient._flat_request.
+
+        Args:
+            token: Token returned by cache_diff_start
+            pkg: Scope the summary to one policy package instead of the
+                whole ADOM (matches /cache/diff/get/summary/pkg/{pkg})
+
+        Returns:
+            {"percent": <int 0-100>, "obj": {...}, "pkg": {...}} -- the diff is
+            not ready until "percent" reaches 100
+        """
+        url = "/cache/diff/get/summary"
+        if pkg:
+            url = f"{url}/pkg/{pkg}"
+        return await self._flat_request("execute", url, {"token": token})
+
+    async def cache_diff_end(self, token: str) -> dict[str, Any]:
+        """Close a diff job and free its server-side cache entry.
+
+        FNDN: EXEC cache/diff/end (How-To 013: "Always good to end the diff
+        task")
+        """
+        return await self._flat_request("execute", "cache/diff/end", {"token": token})
 
     # =========================================================================
     # Policy Package Management
@@ -1289,6 +1478,69 @@ class FortiManagerClient:
             option,
             str(target),
         )
+
+    # =========================================================================
+    # Firewall Policy Revisions (issue: revision-tools)
+    #
+    # Not in the FNDN swagger set -- no path in pkg*.json covers `_objrev`.
+    # Confirmed against the How-To guide's "Policy Package Revision" /
+    # "Firewall Policy Revision" sections (docs/guides/.../
+    # 008_policy_package_management.rst). There is no dedicated revert
+    # endpoint for a firewall policy; the guide's documented mechanism is to
+    # capture a past change's `config` snapshot from this change log and
+    # `update` the live policy with it.
+    # =========================================================================
+
+    async def list_policy_revisions(
+        self,
+        adom: str,
+        pkg: str,
+        policyid: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """List the change log for a package's firewall policies, or one policy.
+
+        FNDN: GET /pm/config/adom/{adom}/_objrev/pkg/{pkg}/firewall/policy[/{policyid}]
+        (How-To 008, "How to get list of changes made on a Policy Package?" /
+        "How to get list of changes made in a firewall policy?")
+
+        Each entry's ``act`` is 1 (created), 2 (deleted) or 3 (modified);
+        ``key`` is the policyid; ``config`` is the JSON-encoded policy
+        snapshot at that change -- the value to hand to
+        revert_firewall_policy_snapshot.
+
+        Returns:
+            List of change-log entries, oldest first
+        """
+        url = f"/pm/config/adom/{adom}/_objrev/pkg/{pkg}/firewall/policy"
+        if policyid is not None:
+            url = f"{url}/{policyid}"
+        result = await self.get(url)
+        return result if isinstance(result, list) else [result] if result else []
+
+    async def revert_firewall_policy_snapshot(
+        self,
+        adom: str,
+        pkg: str,
+        config: dict[str, Any],
+        revision_note: str | None = None,
+    ) -> dict[str, Any]:
+        """Restore a firewall policy to a past change-log snapshot.
+
+        `config` must be a snapshot captured from list_policy_revisions
+        (its ``policyid`` selects which policy is updated; no policyid is
+        appended to the URL -- the guide's example targets the package's
+        policy collection directly). `revision_note` must be a sibling of
+        `url`/`data`, not nested inside `data` -- see
+        FortiManagerClient._flat_request.
+
+        FNDN: UPDATE /pm/config/adom/{adom}/pkg/{pkg}/firewall/policy (How-To
+        008, "How to revert a firewall policy from a past changes?")
+        """
+        url = f"/pm/config/adom/{adom}/pkg/{pkg}/firewall/policy"
+        payload: dict[str, Any] = {"data": config}
+        if revision_note:
+            payload["revision note"] = revision_note
+        return await self._flat_request("update", url, payload)
 
     # =========================================================================
     # Firewall Objects - Addresses
