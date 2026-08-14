@@ -150,6 +150,7 @@ class TestRestore:
                 filename="tmp/fmg_backup.dat",
                 username="tiger",
                 userpasswd="fortinet",
+                confirm=True,
             )
 
         assert result["status"] == "success"
@@ -165,6 +166,7 @@ class TestRestore:
                 service="ftp",
                 server="10.210.35.207; rm -rf /",
                 filename="tmp/fmg_backup.dat",
+                confirm=True,
             )
 
         assert result["status"] == "error"
@@ -178,9 +180,54 @@ class TestRestore:
                 service="ftp",
                 server="10.210.35.207",
                 filename="tmp/fmg_backup.dat",
+                confirm=True,
             )
 
         assert result["status"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_restore_blocked_without_confirm(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """Under the default FMG_RESTORE_SAFETY=strict, restore must be
+        refused -- with no FMG call attempted -- unless confirm=True is
+        explicitly passed. Restoring replaces FMG's entire configuration."""
+        with patch.object(fmg_ops_tools, "get_fmg_client", return_value=mock_client):
+            result = await fmg_ops_tools.trigger_fmg_restore(
+                service="ftp",
+                server="10.210.35.207",
+                filename="tmp/fmg_backup.dat",
+            )
+
+        assert result["status"] == "error"
+        assert result["error_code"] == "confirmation_required"
+        mock_fmg_instance.execute.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_restore_allowed_when_safety_disabled(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from fortimanager_mcp.utils.config import get_settings
+
+        monkeypatch.setenv("FMG_RESTORE_SAFETY", "disabled")
+        get_settings.cache_clear()
+        mock_fmg_instance.execute.return_value = (0, {"status": {"code": 0, "message": "OK"}})
+
+        try:
+            with patch.object(fmg_ops_tools, "get_fmg_client", return_value=mock_client):
+                result = await fmg_ops_tools.trigger_fmg_restore(
+                    service="ftp",
+                    server="10.210.35.207",
+                    filename="tmp/fmg_backup.dat",
+                )
+        finally:
+            get_settings.cache_clear()
+
+        assert result["status"] == "success"
+        mock_fmg_instance.execute.assert_called_once()
 
 
 class TestPacketCaptureList:

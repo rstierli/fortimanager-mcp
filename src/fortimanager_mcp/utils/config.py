@@ -204,6 +204,14 @@ class Settings(BaseSettings):
         "(factory-reset, reboot, shutdown, format). 'disabled' allows all commands.",
     )
 
+    # Restore Safety
+    FMG_RESTORE_SAFETY: Literal["strict", "disabled"] = Field(
+        default="strict",
+        description="FortiManager-restore safety mode. 'strict' refuses trigger_fmg_restore "
+        "unless the caller also passes confirm=True (restoring replaces FMG's entire "
+        "configuration and interrupts the service). 'disabled' allows it unconditionally.",
+    )
+
     # Policy Safety
     FMG_POLICY_SAFETY: Literal["strict", "warn", "disabled"] = Field(
         default="strict",

@@ -69,6 +69,7 @@ from typing import Any
 
 from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.server import get_fmg_client, mcp
+from fortimanager_mcp.utils.config import get_settings
 from fortimanager_mcp.utils.errors import client_safe_error
 from fortimanager_mcp.utils.validation import ValidationError, validate_interface_name
 
@@ -244,14 +245,23 @@ async def trigger_fmg_restore(
     userpasswd: str | None = None,
     port: int | None = None,
     passwd: str | None = None,
+    confirm: bool = False,
 ) -> dict[str, Any]:
     """Restore the FortiManager system from a backup on a remote server.
 
     Restores the FortiManager's own configuration from a backup file
     previously uploaded to an external FTP/SCP/SFTP/TFTP server (see
     trigger_fmg_backup). This is a disruptive, FortiManager-itself
-    operation -- it does not touch any managed device, but it does replace
-    FMG's own configuration and will interrupt the FMG service.
+    operation -- it does not touch any managed device, but it does REPLACE
+    FMG's ENTIRE configuration and will interrupt the FMG service.
+
+    Safety: governed by FMG_RESTORE_SAFETY (default "strict"). Under
+    strict, this call is refused unless confirm=True is also passed --
+    unlike install_package (gated by a verified preview) or firewall
+    policy writes (gated by content screening), there is no dry-run or
+    content check possible for a restore, so the gate is a plain explicit
+    confirmation instead. Set FMG_RESTORE_SAFETY=disabled to remove the
+    gate entirely.
 
     Args:
         service: Transfer protocol - "ftp", "scp", "sftp", or "tftp"
@@ -262,6 +272,8 @@ async def trigger_fmg_restore(
         port: Remote server port (optional; protocol default used if unset)
         passwd: Password to decrypt the backup file, if it was encrypted
             (optional)
+        confirm: Must be True to proceed under FMG_RESTORE_SAFETY=strict
+            (default). Ignored when FMG_RESTORE_SAFETY=disabled.
 
     Returns:
         dict: Restore result with keys:
@@ -275,9 +287,21 @@ async def trigger_fmg_restore(
         ...     filename="tmp/fmg_backup.dat",
         ...     username="tiger",
         ...     userpasswd="fortinet",
+        ...     confirm=True,
         ... )
     """
     try:
+        settings = get_settings()
+        if settings.FMG_RESTORE_SAFETY == "strict" and not confirm:
+            logger.warning("FortiManager restore blocked — confirm=True not passed")
+            return {
+                "status": "error",
+                "message": "Restore refused: this replaces FortiManager's entire "
+                "configuration and interrupts the service. Pass confirm=True to "
+                "proceed, or set FMG_RESTORE_SAFETY=disabled to remove this gate.",
+                "error_code": "confirmation_required",
+            }
+
         service = _validate_remote_service(service)
         server = _validate_remote_host(server)
         filename = _validate_remote_path(filename, "filename")
