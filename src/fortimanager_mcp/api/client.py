@@ -1038,10 +1038,31 @@ class FortiManagerClient:
     # =========================================================================
     # Device DB Revisions (issue: revision-tools)
     #
-    # Not in the FNDN swagger set (no cdb-device*.json path covers these) --
-    # confirmed instead against the How-To guide's "Device revisions" section
-    # (docs/guides/.../007_device_management/007_device_management.rst). These
-    # operate on the device DB copy FortiManager keeps for each managed
+    # Live-published, non-deprecated "Deployment Manager" daemon commands --
+    # docs/fndn/{7.6.7,8.0.0}/json_api_reference/swagger/dmserver.json (public
+    # swagger, not just html-internal) and the matching FNDN HTML reference
+    # both list get/device/revision, checkout/revision, export/config, and
+    # revert with the exact request/response shape used below, with no
+    # deprecation marker. (An earlier version of this comment claimed these
+    # don't appear in the swagger set at all -- that search only grepped
+    # cdb-device*/pkg*/dvmdb.json and missed dmserver.json, which doesn't have
+    # an obviously-named file. The separate /dmworker/* daemon -- a different,
+    # internal-only command family with similar-looking names like
+    # config/checkout and get/dev/revision -- IS uniformly marked "depreciated
+    # or not published" in html-internal/dmworker-objects.htm; don't confuse
+    # the two.) Also confirmed against the How-To guide's "Device revisions"
+    # section (docs/guides/.../007_device_management/007_device_management.rst).
+    #
+    # Live-verified 2026-08-14 against fmg-prod-01 (7.6.7-build3737): all four
+    # calls succeed against a device with real device-DB revision history
+    # (trafsim-fw-prod01, base_ver 151). get/device/revision and
+    # checkout/revision return "Internal server error: runtime error 0:
+    # invalid value" against a device that has never been installed to /
+    # retrieved from and so has zero revisions on record (e.g. a freshly
+    # added model device) -- that is an FMG-side edge case for an empty
+    # revision table, not evidence the command itself is broken or removed.
+    #
+    # These operate on the device DB copy FortiManager keeps for each managed
     # device, never the live FortiGate: install_device_settings is still the
     # only path that pushes a device DB change to the appliance.
     # =========================================================================

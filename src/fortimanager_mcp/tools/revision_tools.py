@@ -16,13 +16,28 @@ RPC surface:
   revert call either; the documented mechanism is to capture a past change's
   snapshot and ``update`` the live policy with it.
 
-None of ``/deployment/*``, ``/dvmdb/*/revision*``, ``/cache/diff/*``, or
-``/pm/config/*/_objrev/*`` appear in the FNDN 8.0.0 swagger set (no
-cdb-device*/pkg*/dvmdb.json path covers them). Every RPC shape here is
-instead grounded in the bundled How-To guide, sections 007 ("Device
-revisions"), 008 ("Policy Package Revision" / "Firewall Policy Revision"),
-and 013 ("ADOM Revision") -- see
+``/deployment/*`` (device DB revisions) is published, non-deprecated API --
+see ``docs/fndn/{7.6.7,8.0.0}/json_api_reference/swagger/dmserver.json`` (the
+"Deployment Manager" daemon) -- not the similarly-named but internal-only,
+uniformly-deprecated ``/dmworker/*`` daemon. ``/dvmdb/*/revision*`` (ADOM DB
+revisions) is likewise published, in ``dvmdb.json``. ``/cache/diff/*`` and
+``/pm/config/*/_objrev/*`` genuinely do not appear anywhere in the public
+swagger or HTML reference (only in ``html-internal/``), so those two stay
+grounded solely in the bundled How-To guide. Every RPC shape here matches the
+How-To guide, sections 007 ("Device revisions"), 008 ("Policy Package
+Revision" / "Firewall Policy Revision"), and 013 ("ADOM Revision") -- see
 ``docs/guides/FortiManager API - How-To Guide/howto_jsonrpc_api-main/``.
+
+Device DB revision calls (``get_device_revisions``/``list_device_revisions``
+and ``get_device_revision``/``diff_device_revision``) require the target
+device to actually have device-DB revision history -- i.e. it has been
+installed to or retrieved from at least once. Live-verified 2026-08-14
+against fmg-prod-01 (FMG 7.6.7-build3737): both calls succeed against a
+device with real history, but fail with a generic "Internal server error:
+runtime error 0: invalid value" against a freshly added / never-installed
+model device with zero revisions on record -- that is FMG's own handling of
+an empty revision table, not an indicator that the API is deprecated or
+removed.
 
 Diffing is read-only everywhere. Reverting is a device-DB or ADOM-DB/package
 write, never a live-device write -- see each tool's docstring for the exact
@@ -180,6 +195,14 @@ async def list_device_revisions(device: str) -> dict[str, Any]:
     revision. ``base_ver`` is the revision FortiManager currently considers
     in sync with the real device configuration.
 
+    Note:
+        Requires the device to have at least one device DB revision on
+        record (i.e. it has been installed to or retrieved from at least
+        once). A freshly added device that has never gone through either
+        will make FortiManager return a generic internal-server error here
+        rather than an empty list -- that is FMG's own handling of an empty
+        revision table, not a sign this tool or the underlying API is broken.
+
     Args:
         device: Managed device name
 
@@ -213,6 +236,10 @@ async def list_device_revisions(device: str) -> dict[str, Any]:
 @mcp.tool()
 async def get_device_revision(device: str, revision: int = -1) -> dict[str, Any]:
     """Check out one device DB revision's stored configuration text.
+
+    Note:
+        Requires the device to have at least one device DB revision on
+        record -- see the note on list_device_revisions.
 
     Args:
         device: Managed device name
@@ -251,6 +278,11 @@ async def diff_device_revision(device: str, revision: int) -> dict[str, Any]:
     ADOM DB revisions -- see diff_adom_revision). This instead fetches both
     the past revision's config text (checkout) and the current device DB
     export, then computes a client-side unified line diff. Read-only.
+
+    Note:
+        The checkout half of this requires the device to have at least one
+        device DB revision on record -- see the note on
+        list_device_revisions.
 
     Args:
         device: Managed device name
@@ -303,6 +335,15 @@ async def revert_device_revision(device: str, revision: int) -> dict[str, Any]:
     the live FortiGate is not touched. Push the reverted device DB to the
     device the same way any other device DB change is pushed: preview_install
     then install_device_settings.
+
+    Note:
+        Requires the device to have at least one device DB revision on
+        record -- see the note on list_device_revisions. Not live-tested
+        (reverting a device's config is a real, consequential write); the
+        request shape matches the FNDN-documented, non-deprecated
+        ``/deployment/revert`` command exactly (see client.py), which the
+        sibling get/checkout calls confirm works correctly on this FMG
+        generation for devices that have revision history.
 
     Args:
         device: Managed device name
