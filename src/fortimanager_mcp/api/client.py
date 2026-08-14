@@ -2672,3 +2672,204 @@ class FortiManagerClient:
         return await self.delete(
             f"/pm/config/device/{device}/vdom/{vdom}/wireless-controller/wtp/{wtp_id}",
         )
+
+    # =========================================================================
+    # VPN: IPsec phase1/phase2 interfaces, SSL-VPN settings/portal (device DB)
+    # =========================================================================
+
+    async def list_device_ipsec_phase1_interfaces(
+        self,
+        device: str,
+        vdom: str = "root",
+    ) -> Any:
+        """List device-DB IPsec phase1-interface (remote gateway) definitions.
+
+        FNDN: GET /pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase1-interface
+        """
+        return await self.get(f"/pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase1-interface")
+
+    async def get_device_ipsec_phase1_interface(
+        self,
+        device: str,
+        vdom: str,
+        name: str,
+    ) -> Any:
+        """Get a device-DB IPsec phase1-interface by name.
+
+        FNDN: GET /pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase1-interface/{name}
+        """
+        return await self.get(
+            f"/pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase1-interface/{name}",
+        )
+
+    async def create_device_ipsec_phase1_interface(
+        self,
+        device: str,
+        vdom: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Create a device-DB IPsec phase1-interface (remote gateway).
+
+        FNDN: ADD /pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase1-interface
+        """
+        return await self.add(
+            f"/pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase1-interface",
+            data=data,
+        )
+
+    async def update_device_ipsec_phase1_interface(
+        self,
+        device: str,
+        vdom: str,
+        name: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Update a device-DB IPsec phase1-interface.
+
+        FNDN: UPDATE /pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase1-interface/{name}
+        """
+        return await self.update(
+            f"/pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase1-interface/{name}",
+            data=data,
+        )
+
+    async def delete_device_ipsec_phase1_interface(
+        self,
+        device: str,
+        vdom: str,
+        name: str,
+    ) -> dict[str, Any]:
+        """Delete a device-DB IPsec phase1-interface.
+
+        FNDN: DELETE /pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase1-interface/{name}
+        """
+        return await self.delete(
+            f"/pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase1-interface/{name}",
+        )
+
+    async def list_device_ipsec_phase2_interfaces(
+        self,
+        device: str,
+        vdom: str = "root",
+    ) -> Any:
+        """List device-DB IPsec phase2-interface (tunnel/selector) definitions.
+
+        FNDN: GET /pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase2-interface
+        """
+        return await self.get(f"/pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase2-interface")
+
+    async def get_device_ipsec_phase2_interface(
+        self,
+        device: str,
+        vdom: str,
+        name: str,
+    ) -> Any:
+        """Get a device-DB IPsec phase2-interface by name.
+
+        FNDN: GET /pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase2-interface/{name}
+        """
+        return await self.get(
+            f"/pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase2-interface/{name}",
+        )
+
+    async def create_device_ipsec_phase2_interface(
+        self,
+        device: str,
+        vdom: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Create a device-DB IPsec phase2-interface (tunnel/selector).
+
+        FNDN: ADD /pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase2-interface
+        """
+        return await self.add(
+            f"/pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase2-interface",
+            data=data,
+        )
+
+    async def update_device_ipsec_phase2_interface(
+        self,
+        device: str,
+        vdom: str,
+        name: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Update a device-DB IPsec phase2-interface.
+
+        FNDN: UPDATE /pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase2-interface/{name}
+        """
+        return await self.update(
+            f"/pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase2-interface/{name}",
+            data=data,
+        )
+
+    async def delete_device_ipsec_phase2_interface(
+        self,
+        device: str,
+        vdom: str,
+        name: str,
+    ) -> dict[str, Any]:
+        """Delete a device-DB IPsec phase2-interface.
+
+        FNDN: DELETE /pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase2-interface/{name}
+        """
+        return await self.delete(
+            f"/pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase2-interface/{name}",
+        )
+
+    async def get_device_sslvpn_settings(
+        self,
+        device: str,
+        vdom: str,
+    ) -> Any:
+        """Get the device-DB SSL-VPN (Agentless VPN) settings object.
+
+        FNDN: GET /pm/config/device/{device}/vdom/{vdom}/vpn/ssl/settings
+        """
+        return await self.get(f"/pm/config/device/{device}/vdom/{vdom}/vpn/ssl/settings")
+
+    async def update_device_sslvpn_settings(
+        self,
+        device: str,
+        vdom: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Update the device-DB SSL-VPN (Agentless VPN) settings object.
+
+        FNDN: UPDATE /pm/config/device/{device}/vdom/{vdom}/vpn/ssl/settings
+        """
+        return await self.update(
+            f"/pm/config/device/{device}/vdom/{vdom}/vpn/ssl/settings",
+            data=data,
+        )
+
+    async def get_device_sslvpn_web_portal(
+        self,
+        device: str,
+        vdom: str,
+        name: str,
+    ) -> Any:
+        """Get a device-DB SSL-VPN web portal by name.
+
+        FNDN: GET /pm/config/device/{device}/vdom/{vdom}/vpn/ssl/web/portal/{name}
+        """
+        return await self.get(
+            f"/pm/config/device/{device}/vdom/{vdom}/vpn/ssl/web/portal/{name}",
+        )
+
+    async def update_device_sslvpn_web_portal(
+        self,
+        device: str,
+        vdom: str,
+        name: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Update a device-DB SSL-VPN web portal.
+
+        FNDN: UPDATE /pm/config/device/{device}/vdom/{vdom}/vpn/ssl/web/portal/{name}
+        """
+        return await self.update(
+            f"/pm/config/device/{device}/vdom/{vdom}/vpn/ssl/web/portal/{name}",
+            data=data,
+        )
+
