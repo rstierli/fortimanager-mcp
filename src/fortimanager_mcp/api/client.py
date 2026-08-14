@@ -747,6 +747,65 @@ class FortiManagerClient:
         result = await self.get(f"/dvmdb/adom/{adom}/group")
         return result if isinstance(result, list) else [result] if result else []
 
+    async def create_device_group(
+        self,
+        adom: str,
+        name: str,
+        os_type: str = "unknown",
+        description: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a device group.
+
+        Only ``name``, ``os_type`` and ``desc`` are writable on the dvmdb
+        group object -- ``type``, ``cluster_type`` and ``id`` are read-only.
+
+        FNDN: ADD /dvmdb/adom/{adom}/group
+        """
+        data: dict[str, Any] = {"name": name, "os_type": os_type}
+        if description is not None:
+            data["desc"] = description
+        return await self.add(f"/dvmdb/adom/{adom}/group", data=data)
+
+    async def delete_device_group(self, adom: str, name: str) -> dict[str, Any]:
+        """Delete a device group.
+
+        FNDN: DELETE /dvmdb/adom/{adom}/group/{group}
+        """
+        return await self.delete(f"/dvmdb/adom/{adom}/group/{name}")
+
+    async def add_group_members(
+        self,
+        adom: str,
+        group: str,
+        members: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Add member(s) to a device group without disturbing existing members.
+
+        A member is either a device (``{"name": <device>, "vdom": <vdom>}``)
+        or a nested group (``{"name": <group>}``, no vdom).
+
+        FNDN: ADD /dvmdb/adom/{adom}/group/{group}/object member
+        """
+        return await self.add(
+            f"/dvmdb/adom/{adom}/group/{group}/object member",
+            data=members,
+        )
+
+    async def remove_group_members(
+        self,
+        adom: str,
+        group: str,
+        members: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Remove member(s) from a device group.
+
+        FNDN: DELETE /dvmdb/adom/{adom}/group/{group}/object member
+        """
+        return await self.delete(
+            f"/dvmdb/adom/{adom}/group/{group}/object member",
+            data=members,
+        )
+
     # =========================================================================
     # DVM Commands (Device Virtual Manager)
     # =========================================================================
