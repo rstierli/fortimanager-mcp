@@ -1528,6 +1528,273 @@ class FortiManagerClient:
         return await self.delete(f"/pm/config/adom/{adom}/obj/firewall/service/group/{name}")
 
     # =========================================================================
+    # Security Profiles - IPS Sensor
+    # =========================================================================
+
+    async def list_ips_sensors(
+        self,
+        adom: str,
+        fields: list[str] | None = None,
+        filter: list | None = None,
+    ) -> list[dict[str, Any]]:
+        """List IPS sensors.
+
+        FNDN: GET /pm/config/adom/{adom}/obj/ips/sensor
+        """
+        params: dict[str, Any] = {}
+        if fields:
+            params["fields"] = fields
+        if filter:
+            params["filter"] = filter
+
+        result = await self.get(f"/pm/config/adom/{adom}/obj/ips/sensor", **params)
+        return result if isinstance(result, list) else [result] if result else []
+
+    async def get_ips_sensor(self, adom: str, name: str) -> dict[str, Any]:
+        """Get a specific IPS sensor.
+
+        FNDN: GET /pm/config/adom/{adom}/obj/ips/sensor/{sensor}
+        """
+        return await self.get(f"/pm/config/adom/{adom}/obj/ips/sensor/{name}")
+
+    async def create_ips_sensor(self, adom: str, sensor: dict[str, Any]) -> dict[str, Any]:
+        """Create an IPS sensor.
+
+        FNDN: ADD /pm/config/adom/{adom}/obj/ips/sensor
+        """
+        return await self.add(f"/pm/config/adom/{adom}/obj/ips/sensor", data=sensor)
+
+    async def update_ips_sensor(
+        self,
+        adom: str,
+        name: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Update an IPS sensor.
+
+        FNDN: UPDATE /pm/config/adom/{adom}/obj/ips/sensor/{sensor}
+        """
+        return await self.update(f"/pm/config/adom/{adom}/obj/ips/sensor/{name}", **data)
+
+    async def delete_ips_sensor(self, adom: str, name: str) -> dict[str, Any]:
+        """Delete an IPS sensor.
+
+        FNDN: DELETE /pm/config/adom/{adom}/obj/ips/sensor/{sensor}
+        """
+        return await self.delete(f"/pm/config/adom/{adom}/obj/ips/sensor/{name}")
+
+    async def list_ips_sensor_entries(self, adom: str, sensor: str) -> list[dict[str, Any]]:
+        """List the signature-override entries of an IPS sensor.
+
+        FNDN: GET /pm/config/adom/{adom}/obj/ips/sensor/{sensor}/entries
+        """
+        result = await self.get(f"/pm/config/adom/{adom}/obj/ips/sensor/{sensor}/entries")
+        return result if isinstance(result, list) else [result] if result else []
+
+    async def add_ips_sensor_entry(
+        self,
+        adom: str,
+        sensor: str,
+        entry: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Add a signature-override entry to an IPS sensor.
+
+        This is the entries sub-resource's own ADD endpoint, not a
+        read-modify-write of the parent sensor -- FMG exposes
+        ``entries`` as an addressable nested collection with its own
+        add/get/set/update/delete/move verbs (confirmed in the FNDN
+        swagger), so appending here does not require reading the sensor
+        first the way a plain array field would.
+
+        FNDN: ADD /pm/config/adom/{adom}/obj/ips/sensor/{sensor}/entries
+        """
+        return await self.add(f"/pm/config/adom/{adom}/obj/ips/sensor/{sensor}/entries", data=entry)
+
+    async def delete_ips_sensor_entry(
+        self,
+        adom: str,
+        sensor: str,
+        entry_id: int,
+    ) -> dict[str, Any]:
+        """Remove a signature-override entry from an IPS sensor.
+
+        FNDN: DELETE /pm/config/adom/{adom}/obj/ips/sensor/{sensor}/entries/{entries}
+        """
+        return await self.delete(
+            f"/pm/config/adom/{adom}/obj/ips/sensor/{sensor}/entries/{entry_id}"
+        )
+
+    # =========================================================================
+    # Security Profiles - SSL/SSH Inspection Profile
+    # =========================================================================
+
+    async def list_ssl_ssh_profiles(
+        self,
+        adom: str,
+        fields: list[str] | None = None,
+        filter: list | None = None,
+    ) -> list[dict[str, Any]]:
+        """List SSL/SSH inspection profiles.
+
+        FNDN: GET /pm/config/adom/{adom}/obj/firewall/ssl-ssh-profile
+        """
+        params: dict[str, Any] = {}
+        if fields:
+            params["fields"] = fields
+        if filter:
+            params["filter"] = filter
+
+        result = await self.get(f"/pm/config/adom/{adom}/obj/firewall/ssl-ssh-profile", **params)
+        return result if isinstance(result, list) else [result] if result else []
+
+    async def get_ssl_ssh_profile(self, adom: str, name: str) -> dict[str, Any]:
+        """Get a specific SSL/SSH inspection profile.
+
+        FNDN: GET /pm/config/adom/{adom}/obj/firewall/ssl-ssh-profile/{ssl-ssh-profile}
+        """
+        return await self.get(f"/pm/config/adom/{adom}/obj/firewall/ssl-ssh-profile/{name}")
+
+    async def create_ssl_ssh_profile(self, adom: str, profile: dict[str, Any]) -> dict[str, Any]:
+        """Create an SSL/SSH inspection profile.
+
+        FNDN: ADD /pm/config/adom/{adom}/obj/firewall/ssl-ssh-profile
+        """
+        return await self.add(f"/pm/config/adom/{adom}/obj/firewall/ssl-ssh-profile", data=profile)
+
+    async def update_ssl_ssh_profile(
+        self,
+        adom: str,
+        name: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Update an SSL/SSH inspection profile.
+
+        FNDN: UPDATE /pm/config/adom/{adom}/obj/firewall/ssl-ssh-profile/{ssl-ssh-profile}
+        """
+        return await self.update(
+            f"/pm/config/adom/{adom}/obj/firewall/ssl-ssh-profile/{name}", **data
+        )
+
+    async def delete_ssl_ssh_profile(self, adom: str, name: str) -> dict[str, Any]:
+        """Delete an SSL/SSH inspection profile.
+
+        FNDN: DELETE /pm/config/adom/{adom}/obj/firewall/ssl-ssh-profile/{ssl-ssh-profile}
+        """
+        return await self.delete(f"/pm/config/adom/{adom}/obj/firewall/ssl-ssh-profile/{name}")
+
+    # =========================================================================
+    # Security Profiles - DLP Profile
+    # =========================================================================
+
+    async def list_dlp_profiles(
+        self,
+        adom: str,
+        fields: list[str] | None = None,
+        filter: list | None = None,
+    ) -> list[dict[str, Any]]:
+        """List DLP profiles.
+
+        FNDN: GET /pm/config/adom/{adom}/obj/dlp/profile
+        """
+        params: dict[str, Any] = {}
+        if fields:
+            params["fields"] = fields
+        if filter:
+            params["filter"] = filter
+
+        result = await self.get(f"/pm/config/adom/{adom}/obj/dlp/profile", **params)
+        return result if isinstance(result, list) else [result] if result else []
+
+    async def get_dlp_profile(self, adom: str, name: str) -> dict[str, Any]:
+        """Get a specific DLP profile.
+
+        FNDN: GET /pm/config/adom/{adom}/obj/dlp/profile/{profile}
+        """
+        return await self.get(f"/pm/config/adom/{adom}/obj/dlp/profile/{name}")
+
+    async def create_dlp_profile(self, adom: str, profile: dict[str, Any]) -> dict[str, Any]:
+        """Create a DLP profile.
+
+        FNDN: ADD /pm/config/adom/{adom}/obj/dlp/profile
+        """
+        return await self.add(f"/pm/config/adom/{adom}/obj/dlp/profile", data=profile)
+
+    async def update_dlp_profile(
+        self,
+        adom: str,
+        name: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Update a DLP profile.
+
+        FNDN: UPDATE /pm/config/adom/{adom}/obj/dlp/profile/{profile}
+        """
+        return await self.update(f"/pm/config/adom/{adom}/obj/dlp/profile/{name}", **data)
+
+    async def delete_dlp_profile(self, adom: str, name: str) -> dict[str, Any]:
+        """Delete a DLP profile.
+
+        FNDN: DELETE /pm/config/adom/{adom}/obj/dlp/profile/{profile}
+        """
+        return await self.delete(f"/pm/config/adom/{adom}/obj/dlp/profile/{name}")
+
+    # =========================================================================
+    # Security Profiles - WAF Profile
+    # =========================================================================
+
+    async def list_waf_profiles(
+        self,
+        adom: str,
+        fields: list[str] | None = None,
+        filter: list | None = None,
+    ) -> list[dict[str, Any]]:
+        """List WAF profiles.
+
+        FNDN: GET /pm/config/adom/{adom}/obj/waf/profile
+        """
+        params: dict[str, Any] = {}
+        if fields:
+            params["fields"] = fields
+        if filter:
+            params["filter"] = filter
+
+        result = await self.get(f"/pm/config/adom/{adom}/obj/waf/profile", **params)
+        return result if isinstance(result, list) else [result] if result else []
+
+    async def get_waf_profile(self, adom: str, name: str) -> dict[str, Any]:
+        """Get a specific WAF profile.
+
+        FNDN: GET /pm/config/adom/{adom}/obj/waf/profile/{profile}
+        """
+        return await self.get(f"/pm/config/adom/{adom}/obj/waf/profile/{name}")
+
+    async def create_waf_profile(self, adom: str, profile: dict[str, Any]) -> dict[str, Any]:
+        """Create a WAF profile.
+
+        FNDN: ADD /pm/config/adom/{adom}/obj/waf/profile
+        """
+        return await self.add(f"/pm/config/adom/{adom}/obj/waf/profile", data=profile)
+
+    async def update_waf_profile(
+        self,
+        adom: str,
+        name: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Update a WAF profile.
+
+        FNDN: UPDATE /pm/config/adom/{adom}/obj/waf/profile/{profile}
+        """
+        return await self.update(f"/pm/config/adom/{adom}/obj/waf/profile/{name}", **data)
+
+    async def delete_waf_profile(self, adom: str, name: str) -> dict[str, Any]:
+        """Delete a WAF profile.
+
+        FNDN: DELETE /pm/config/adom/{adom}/obj/waf/profile/{profile}
+        """
+        return await self.delete(f"/pm/config/adom/{adom}/obj/waf/profile/{name}")
+
+    # =========================================================================
     # Workspace Mode (ADOM Locking)
     # =========================================================================
 
