@@ -155,11 +155,7 @@ async def find_object_usage(
         poll_interval = max(_MIN_POLL_INTERVAL, min(poll_interval, _MAX_POLL_INTERVAL))
         client = _get_client()
 
-        start = await client.execute(
-            "/cache/search/where/used/start",
-            mkey=object_name,
-            obj=obj_ref,
-        )
+        start = await client.where_used_start(mkey=object_name, obj=obj_ref)
         token = start.get("token") if isinstance(start, dict) else None
         if not token:
             return {
@@ -171,10 +167,7 @@ async def find_object_usage(
         deadline = time.monotonic() + timeout
         percent = 0
         while True:
-            summary = await client.execute(
-                "/cache/search/where/used/get/summary",
-                token=token,
-            )
+            summary = await client.where_used_get_summary(token=token)
             percent = summary.get("percent", 0) if isinstance(summary, dict) else 0
             if percent >= 100:
                 break
@@ -189,10 +182,7 @@ async def find_object_usage(
                 }
             await asyncio.sleep(poll_interval)
 
-        detail = await client.execute(
-            "/cache/search/where/used/get/detail",
-            token=token,
-        )
+        detail = await client.where_used_get_detail(token=token)
         where_used = detail.get("where_used", []) if isinstance(detail, dict) else []
         total = (
             detail.get("total_num", len(where_used))

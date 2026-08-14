@@ -64,14 +64,17 @@ class TestFindObjectUsage:
     ) -> None:
         _noop_sleep_patch(monkeypatch)
 
-        def _execute(url: str, **kwargs: Any) -> tuple[int, Any]:
+        def _execute(url: str, *args: Any, **kwargs: Any) -> tuple[int, Any]:
             if url == "/cache/search/where/used/start":
                 assert kwargs["mkey"] == "WebServer"
                 assert kwargs["obj"] == "adom/root/obj/firewall/address"
                 return (0, {"token": "tok123"})
             if url == "/cache/search/where/used/get/summary":
+                # token must be a flat sibling of 'url', not nested under 'data'
+                assert args == ({"token": "tok123"},)
                 return (0, {"percent": 100})
             if url == "/cache/search/where/used/get/detail":
+                assert args == ({"token": "tok123"},)
                 return (
                     0,
                     {
@@ -118,13 +121,15 @@ class TestFindObjectUsage:
     ) -> None:
         _noop_sleep_patch(monkeypatch)
 
-        def _execute(url: str, **kwargs: Any) -> tuple[int, Any]:
+        def _execute(url: str, *args: Any, **kwargs: Any) -> tuple[int, Any]:
             if url == "/cache/search/where/used/start":
                 assert kwargs["obj"] == "global/obj/firewall/address"
                 return (0, {"token": "tok"})
             if url == "/cache/search/where/used/get/summary":
+                assert args == ({"token": "tok"},)
                 return (0, {"percent": 100})
             if url == "/cache/search/where/used/get/detail":
+                assert args == ({"token": "tok"},)
                 return (0, {"percent": 100, "total_num": 0, "where_used": []})
             raise AssertionError(f"unexpected exec url: {url}")
 
@@ -148,7 +153,7 @@ class TestFindObjectUsage:
         _noop_sleep_patch(monkeypatch)
         percents = iter([0, 50, 100])
 
-        def _execute(url: str, **kwargs: Any) -> tuple[int, Any]:
+        def _execute(url: str, *args: Any, **kwargs: Any) -> tuple[int, Any]:
             if url == "/cache/search/where/used/start":
                 return (0, {"token": "tok"})
             if url == "/cache/search/where/used/get/summary":
@@ -179,7 +184,7 @@ class TestFindObjectUsage:
         # runner. Real asyncio.sleep is left in place too, for the same
         # reason -- only a tiny real timeout/poll_interval is used instead,
         # matching the wait_for_task tests in test_task_guard.py.
-        def _execute(url: str, **kwargs: Any) -> tuple[int, Any]:
+        def _execute(url: str, *args: Any, **kwargs: Any) -> tuple[int, Any]:
             if url == "/cache/search/where/used/start":
                 return (0, {"token": "tok"})
             if url == "/cache/search/where/used/get/summary":

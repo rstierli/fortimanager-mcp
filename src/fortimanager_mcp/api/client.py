@@ -1261,6 +1261,44 @@ class FortiManagerClient:
         """
         return await self._flat_request("execute", "cache/diff/end", {"token": token})
 
+    async def where_used_start(self, mkey: str, obj: str) -> dict[str, Any]:
+        """Start a where-used search job for an ADOM object.
+
+        FNDN: EXEC /cache/search/where/used/start (How-To 002, "Operations
+        on objects"). `mkey`/`obj` are start-time parameters, not a
+        token -- unlike the summary/detail polling calls below, this one
+        matches cache_diff_start's shape (plain nested-under-'data' exec),
+        not the sibling-of-'url' shape those need.
+
+        Returns:
+            {"token": <str>} -- pass to where_used_get_summary/get_detail
+        """
+        return await self.execute("/cache/search/where/used/start", mkey=mkey, obj=obj)
+
+    async def where_used_get_summary(self, token: str) -> dict[str, Any]:
+        """Poll a where-used search job's progress; check `percent` for completion.
+
+        FNDN: EXEC /cache/search/where/used/get/summary (How-To 002).
+        `token` must be a sibling of `url` in the request body, not nested
+        under `data` -- same shape requirement as cache_diff_get_summary,
+        same underlying cache-daemon token-polling family -- see
+        FortiManagerClient._flat_request.
+        """
+        return await self._flat_request(
+            "execute", "/cache/search/where/used/get/summary", {"token": token}
+        )
+
+    async def where_used_get_detail(self, token: str) -> dict[str, Any]:
+        """Fetch a completed where-used search job's results.
+
+        FNDN: EXEC /cache/search/where/used/get/detail (How-To 002). Same
+        sibling-of-'url' token shape as where_used_get_summary -- see
+        FortiManagerClient._flat_request.
+        """
+        return await self._flat_request(
+            "execute", "/cache/search/where/used/get/detail", {"token": token}
+        )
+
     # =========================================================================
     # Policy Package Management
     # =========================================================================
