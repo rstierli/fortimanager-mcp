@@ -3184,3 +3184,125 @@ class FortiManagerClient:
             data=data,
         )
 
+    # =========================================================================
+    # Firmware Management (um) -- swagger/um.json covers only the two
+    # /um/image/upgrade* paths; the version/list, list, and upgrade/report
+    # endpoints below have no bundled swagger schema in any FNDN version
+    # under docs/fndn/, so their shape is taken from the How-To Guide's
+    # captured request/response examples (007_device_management.rst,
+    # "Firmware upgrade" section) rather than a machine schema.
+    # =========================================================================
+
+    async def get_firmware_upgrade_path(
+        self,
+        adom: str,
+        device: list[dict[str, str]],
+        release: str,
+    ) -> Any:
+        """Preview the multi-step upgrade path to a target firmware release.
+
+        Passes flags="f_preview" so FortiManager returns the path without
+        starting an upgrade -- confirmed both by swagger/um.json (um.image.upgrade
+        "flags" enum includes "f_preview") and by the How-To Guide's captured
+        example for this exact request.
+
+        FNDN: EXEC /um/image/upgrade (swagger/um.json: um.image.upgrade)
+        """
+        return await self.execute(
+            "/um/image/upgrade",
+            adom=adom,
+            device=device,
+            flags="f_preview",
+            image={"release": release},
+        )
+
+    async def upgrade_device_firmware(
+        self,
+        adom: str,
+        device: list[dict[str, str]],
+        release: str,
+        flags: str | None = None,
+        schedule_time: str | None = None,
+    ) -> Any:
+        """Trigger a device firmware upgrade. Asynchronous: returns a task id
+        (create_task="enable") to poll with get_task/wait_for_task.
+
+        FNDN: EXEC /um/image/upgrade (swagger/um.json: um.image.upgrade). The
+        How-To Guide's captured "how to upgrade a device" example shows
+        "flags" as a JSON array (e.g. ["none"]), which conflicts with
+        swagger/um.json's declared type (a single enum string) -- this
+        method follows the swagger type since it is the machine-checked
+        source, so `flags` here is one flag name, not a list.
+        """
+        data: dict[str, Any] = {
+            "adom": adom,
+            "device": device,
+            "image": {"release": release},
+            "create_task": "enable",
+        }
+        if flags:
+            data["flags"] = flags
+        if schedule_time:
+            data["schedule_time"] = schedule_time
+        return await self.execute("/um/image/upgrade", **data)
+
+    async def list_available_firmware(
+        self,
+        platform: str | None = None,
+        product: str | None = None,
+    ) -> Any:
+        """List firmware versions available from FortiGuard servers plus any
+        versions imported by an administrator (device-reported catalog, not
+        limited to what's already on the FortiManager's local disk).
+
+        FNDN: EXEC /um/image/version/list (How-To Guide 007_device_management.rst
+        "How to get list of available firmware for a specific platform?";
+        no bundled swagger schema -- see section note above)
+        """
+        data: dict[str, Any] = {}
+        if platform:
+            data["platform"] = platform
+        if product:
+            data["product"] = product
+        return await self.execute("/um/image/version/list", **data)
+
+    async def list_firmware_images(
+        self,
+        system: str | None = None,
+    ) -> Any:
+        """List firmware image files present on the FortiManager's local disk
+        (imported by an administrator and/or downloaded from FortiGuard).
+
+        FNDN: EXEC /um/image/list (How-To Guide 007_device_management.rst
+        "How to get list of firmwares available on FortiManager drive?";
+        no bundled swagger schema -- see section note above)
+        """
+        data: dict[str, Any] = {}
+        if system:
+            data["system"] = system
+        return await self.execute("/um/image/list", **data)
+
+    async def get_firmware_upgrade_report(
+        self,
+        adom: str,
+        devices: list[dict[str, str]],
+        profile_name: str,
+    ) -> Any:
+        """Get the firmware upgrade report for a named upgrade profile.
+
+        The How-To Guide lists a separate "how to get the upgrade history"
+        question but marks it TBD with no confirmed distinct URL/shape (it
+        speculates the same "um/image/upgrade/report" URL) -- this method
+        wraps only the one endpoint the guide actually captured traffic for.
+
+        FNDN: GET um/image/upgrade/report (How-To Guide 007_device_management.rst
+        "How to get the Upgrade Report for managed devices?"; no bundled
+        swagger schema -- see section note above)
+        """
+        return await self.get(
+            "um/image/upgrade/report",
+            adom=adom,
+            devices=devices,
+            flags=0,
+            name=profile_name,
+        )
