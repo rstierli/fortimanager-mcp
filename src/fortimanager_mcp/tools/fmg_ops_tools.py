@@ -71,6 +71,7 @@ from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_settings
 from fortimanager_mcp.utils.errors import client_safe_error
+from fortimanager_mcp.utils.task_guard import TaskSlotsExhausted, mark_task_done, spawn_guarded
 from fortimanager_mcp.utils.validation import ValidationError, validate_interface_name
 
 logger = logging.getLogger(__name__)
@@ -219,7 +220,7 @@ async def trigger_fmg_backup(
         if passwd:
             data["passwd"] = passwd
 
-        result = await client.execute("/sys/backup", data=data)
+        result = await spawn_guarded("fmg_backup", lambda: client.execute("/sys/backup", data=data))
         task_id = result.get("taskid") if isinstance(result, dict) else None
 
         return {
@@ -230,6 +231,8 @@ async def trigger_fmg_backup(
                 + (f", task ID: {task_id}" if task_id is not None else "")
             ),
         }
+    except TaskSlotsExhausted as e:
+        return {"status": "error", "message": str(e), "error_code": "task_slots_exhausted"}
     except Exception as e:
         logger.error(f"Failed to trigger FortiManager backup: {e}")
         msg, code = client_safe_error(e)
@@ -628,6 +631,11 @@ async def delete_task(task_id: int) -> dict[str, Any]:
     try:
         client = _get_client()
         await client.delete(f"/task/task/{task_id}")
+        # Release the task_guard slot (if any) this task was holding -- a
+        # deleted task will never reach a terminal state via wait_for_task,
+        # which is the only other place a slot gets released before its
+        # TTL. No-op if this task wasn't spawned through spawn_guarded.
+        mark_task_done(task_id)
         return {
             "status": "success",
             "message": f"Task {task_id} deleted successfully",

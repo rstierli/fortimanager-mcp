@@ -1,11 +1,25 @@
 """Tests for fmg_ops_tools module."""
 
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.tools import fmg_ops_tools
+from fortimanager_mcp.utils import task_guard
+
+
+@pytest.fixture(autouse=True)
+def _clean_task_slots() -> Any:
+    """trigger_fmg_backup now spawns under the shared task-guard budget --
+    each test starts and ends with an empty registry so a slot left held by
+    one test can't spuriously exhaust another (here or in a different file,
+    since the registry is process-global)."""
+    task_guard._reset()
+    yield
+    task_guard._reset()
+
 
 MOCK_LICENSE = {
     "contract": [
@@ -79,6 +93,27 @@ class TestBackup:
         assert sent_data["server"] == "10.210.35.207"
         assert sent_data["filename"] == "tmp/fmg_backup.dat"
         assert sent_data["passwd"] == "fortinet"
+        # Code review found this call spawned an FMG task outside the shared
+        # task_guard budget entirely -- now it must hold a slot like every
+        # other task-spawning tool.
+        assert task_guard.in_flight() == 1
+
+    @pytest.mark.asyncio
+    async def test_backup_blocked_when_task_slots_exhausted(
+        self, mock_client: FortiManagerClient
+    ) -> None:
+        from fortimanager_mcp.utils.task_guard import TASK_CONCURRENCY_LIMIT
+
+        for i in range(TASK_CONCURRENCY_LIMIT):
+            await task_guard.spawn_guarded("other", lambda i=i: _fake_task(i))
+
+        with patch.object(fmg_ops_tools, "get_fmg_client", return_value=mock_client):
+            result = await fmg_ops_tools.trigger_fmg_backup(
+                service="ftp", server="10.210.35.207", filename="tmp/fmg_backup.dat"
+            )
+
+        assert result["status"] == "error"
+        assert result["error_code"] == "task_slots_exhausted"
 
     @pytest.mark.asyncio
     async def test_backup_invalid_service(self, mock_client: FortiManagerClient) -> None:
@@ -441,9 +476,44 @@ class TestDeleteTask:
         assert mock_fmg_instance.delete.call_args.args[0] == "/task/task/11111"
 
     @pytest.mark.asyncio
+    async def test_delete_releases_held_task_slot(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """Code review found delete_task never released a task_guard slot
+        (mark_task_done was never called) -- repeatedly deleting tasks
+        spawned elsewhere would leak slots until TTL, eventually exhausting
+        the budget with nothing actually running."""
+        await task_guard.spawn_guarded("fmg_backup", lambda: _fake_task(11111))
+        assert task_guard.in_flight() == 1
+
+        mock_fmg_instance.delete.return_value = (0, {"status": {"code": 0, "message": "OK"}})
+        with patch.object(fmg_ops_tools, "get_fmg_client", return_value=mock_client):
+            result = await fmg_ops_tools.delete_task(11111)
+
+        assert result["status"] == "success"
+        assert task_guard.in_flight() == 0
+
+    @pytest.mark.asyncio
+    async def test_delete_of_untracked_task_is_a_noop_release(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """mark_task_done for a task id that never held a slot (e.g. spawned
+        by a previous server process) must not error."""
+        mock_fmg_instance.delete.return_value = (0, {"status": {"code": 0, "message": "OK"}})
+        with patch.object(fmg_ops_tools, "get_fmg_client", return_value=mock_client):
+            result = await fmg_ops_tools.delete_task(99999)
+
+        assert result["status"] == "success"
+        assert task_guard.in_flight() == 0
+
+    @pytest.mark.asyncio
     async def test_delete_not_connected(self) -> None:
         """Test delete when client not connected."""
         with patch.object(fmg_ops_tools, "get_fmg_client", return_value=None):
             result = await fmg_ops_tools.delete_task(11111)
 
         assert result["status"] == "error"
+
+
+async def _fake_task(task_id: int) -> dict[str, Any]:
+    return {"task": task_id}
