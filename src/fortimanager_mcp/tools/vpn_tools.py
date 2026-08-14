@@ -155,17 +155,31 @@ def _sanitize_phase1_result(result: Any) -> Any:
     return _strip_secret_fields(result, _PHASE1_SECRET_FIELDS)
 
 
+# FMG 7.6.7 live-verified: an enable/disable field that genuinely persists
+# is still returned as an integer (1/0) on GET, never the "enable"/"disable"
+# string that was sent -- confirmed against this exact object's web-mode
+# field (sent "disable", got back int 0; restored to "enable", got back
+# int 1). A naive `==` compare would misreport every successful
+# enable/disable update as "did not persist".
+_ENABLE_DISABLE_TO_INT = {"enable": 1, "disable": 0}
+
+
 def _sslvpn_field_matches(sent: Any, stored: Any) -> bool:
     """Compare a sent update value against the re-fetched stored value.
 
     FMG sometimes echoes a list of plain strings as a list of
     ``{"name": ...}`` refs -- normalize before comparing so that shape
-    difference alone doesn't look like a persistence failure.
+    difference alone doesn't look like a persistence failure. Also
+    normalizes the enable/disable string/int representation mismatch
+    (see _ENABLE_DISABLE_TO_INT above).
     """
+    if isinstance(sent, str) and sent in _ENABLE_DISABLE_TO_INT:
+        target = _ENABLE_DISABLE_TO_INT[sent]
+        return bool(stored == sent or stored == target)
     if isinstance(sent, list) and isinstance(stored, list):
         stored_names = [s.get("name") if isinstance(s, dict) else s for s in stored]
         return sorted(sent) == sorted(n for n in stored_names if n is not None)
-    return sent == stored
+    return bool(sent == stored)
 
 
 async def _check_sslvpn_web_portal_persisted(

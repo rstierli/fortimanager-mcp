@@ -691,6 +691,32 @@ class TestUpdateDeviceSslvpnWebPortal:
         assert "warning" not in result
 
     @pytest.mark.asyncio
+    async def test_no_warning_when_enable_disable_returned_as_int(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """FMG 7.6.7 live-verified: a genuinely-persisted enable/disable field
+        is returned as an int (1/0) on GET, never the "enable"/"disable"
+        string that was sent -- confirmed against this exact object's
+        web-mode field. Must not be misreported as "did not persist".
+        """
+        mock_fmg_instance.update.return_value = (0, {"name": "full-access"})
+        mock_fmg_instance.get.return_value = (
+            0,
+            {"name": "full-access", "tunnel-mode": 1, "split-tunneling": 0},
+        )
+
+        with patch.object(vpn_tools, "get_fmg_client", return_value=mock_client):
+            result = await vpn_tools.update_device_sslvpn_web_portal(
+                device="FGT-01",
+                name="full-access",
+                tunnel_mode="enable",
+                split_tunneling="disable",
+            )
+
+        assert result.get("success") is True
+        assert "warning" not in result
+
+    @pytest.mark.asyncio
     async def test_warns_when_fields_silently_do_not_persist(
         self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
     ) -> None:
