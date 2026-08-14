@@ -145,7 +145,7 @@ class TestPolicyLookup:
                 package="default",
             )
 
-        assert result["package"] == "default"
+        assert result["package_hint"] == "default"
         assert "package" not in result["query"]
 
     @pytest.mark.asyncio

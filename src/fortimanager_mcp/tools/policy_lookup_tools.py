@@ -122,13 +122,17 @@ async def policy_lookup(
         package: Informational only, NOT sent to the device. The FortiGate
             policy-lookup endpoint has no package selector; it always
             reflects whatever package is currently installed. Pass this if
-            you want it echoed back in the result to cross-check against
-            what you expect to be installed.
+            you want it echoed back (as package_hint) in the result to
+            cross-check against what you expect to be installed.
 
     Returns:
         dict: Lookup result with keys:
             - status: "success" or "error"
-            - adom, device, package (as provided)
+            - adom, device
+            - package_hint: the caller-supplied `package` argument, echoed
+              back unverified -- NOT confirmation that this package is what
+              actually matched (named package_hint, not package, so it
+              can't be misread as verified match data)
             - query: the traffic-tuple fields actually sent to the device
             - matched: bool from the device's ``results.success`` field
               when present, else None (the How-To Guide only documents the
@@ -195,7 +199,7 @@ async def policy_lookup(
             "status": "success",
             "adom": adom,
             "device": device,
-            "package": package,
+            "package_hint": package,
             "query": query,
             "matched": matched,
             "result": results,
