@@ -1431,3 +1431,858 @@ async def get_preview_result(
         logger.error(f"Failed to get preview result: {e}")
         msg, code = client_safe_error(e)
         return {"status": "error", "message": msg, "error_code": code}
+
+
+# =============================================================================
+# Local-In Policy Operations (FortiGate management-plane access control)
+# =============================================================================
+#
+# Based on FNDN FortiManager 8.0.0 PM/config API specifications
+# (swagger: docs/fndn/8.0.0/json_api_reference/swagger/pkg80.json,
+# operations "/pm/config/adom/{adom}/pkg/{pkg}/firewall/local-in-policy" and
+# ".../local-in-policy6", definitions pm.config.firewall.local-in-policy and
+# pm.config.firewall.local-in-policy6).
+#
+# Local-in policies control traffic destined TO the FortiGate itself --
+# GUI/SSH/API/ping/SNMP access to the management plane -- which is a
+# separate object space from the regular firewall/policy table above (that
+# table governs traffic passing THROUGH the device). Like a firewall
+# policy, a local-in policy is package-scoped and only takes effect once
+# its package is installed to a device, so it reuses the exact same
+# preview_install / install_package flow used for firewall policies above
+# -- no separate install path exists or is needed for this object type.
+#
+# These tools call FortiManagerClient's generic get/add/update/delete
+# methods directly (rather than adding new per-object methods to
+# api/client.py), the same approach security_profile_tools.py uses to keep
+# a new object surface self-contained in one file.
+
+_LOCAL_IN_POLICY_URL = "/pm/config/adom/{adom}/pkg/{pkg}/firewall/local-in-policy"
+_LOCAL_IN_POLICY6_URL = "/pm/config/adom/{adom}/pkg/{pkg}/firewall/local-in-policy6"
+
+
+def _build_local_in_policy_fields(
+    action: str | None,
+    status: str | None,
+    intf: list[str] | None,
+    srcaddr: list[str] | None,
+    dstaddr: list[str] | None,
+    service: list[str] | None,
+    schedule: list[str] | None,
+    logtraffic: str | None,
+    comments: str | None,
+    srcaddr_negate: bool | None,
+    dstaddr_negate: bool | None,
+    service_negate: bool | None,
+    virtual_patch: bool | None,
+) -> dict[str, Any]:
+    """Build the field set shared by local-in-policy and local-in-policy6.
+
+    Every field here is common to both `pm.config.firewall.local-in-policy`
+    and `pm.config.firewall.local-in-policy6` (verified against the 8.0.0
+    swagger definitions -- they differ only in `ha-mgmt-intf-only`, which is
+    IPv4-only and handled by each caller separately, and in the
+    `internet-service(6)-src*` fields, which are out of scope here).
+    Used for both create (required fields already validated as non-None by
+    the caller's signature) and update (every field optional, None = leave
+    unchanged) -- shared so the two policy families and both operations
+    don't each repeat the same enable/disable translation.
+    """
+    fields: dict[str, Any] = {}
+    if action is not None:
+        fields["action"] = action
+    if status is not None:
+        fields["status"] = status
+    if intf is not None:
+        fields["intf"] = intf
+    if srcaddr is not None:
+        fields["srcaddr"] = srcaddr
+    if dstaddr is not None:
+        fields["dstaddr"] = dstaddr
+    if service is not None:
+        fields["service"] = service
+    if schedule is not None:
+        fields["schedule"] = schedule
+    if logtraffic is not None:
+        fields["logtraffic"] = logtraffic
+    if comments is not None:
+        fields["comments"] = comments
+    if srcaddr_negate is not None:
+        fields["srcaddr-negate"] = "enable" if srcaddr_negate else "disable"
+    if dstaddr_negate is not None:
+        fields["dstaddr-negate"] = "enable" if dstaddr_negate else "disable"
+    if service_negate is not None:
+        fields["service-negate"] = "enable" if service_negate else "disable"
+    if virtual_patch is not None:
+        fields["virtual-patch"] = "enable" if virtual_patch else "disable"
+    return fields
+
+
+@mcp.tool()
+async def list_local_in_policies(
+    adom: str,
+    package: str,
+    fields: list[str] | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List IPv4 local-in policies in a policy package.
+
+    Local-in policies control access to the FortiGate's own management
+    plane (GUI, SSH, ping, API, SNMP, etc.), not through-traffic.
+
+    Args:
+        adom: ADOM name
+        package: Policy package name
+        fields: Specific fields to return (optional)
+        limit: Maximum number of policies to return (optional)
+        offset: Starting position for pagination (default: 0)
+
+    Returns:
+        dict: Policy list with keys:
+            - status: "success" or "error"
+            - count: Number of policies returned
+            - total: Total number of local-in policies in package
+            - policies: List of local-in policy objects
+            - message: Error message if failed
+
+    Example:
+        >>> result = await list_local_in_policies("root", "default")
+    """
+    try:
+        adom = validate_adom(adom)
+        package = validate_package_name(package)
+        client = _get_client()
+
+        base_url = _LOCAL_IN_POLICY_URL.format(adom=adom, pkg=package)
+
+        total = await client.get(base_url, option=["count"])
+        if not isinstance(total, int):
+            total = 0
+
+        params: dict[str, Any] = {}
+        if fields:
+            params["fields"] = fields
+        if limit:
+            params["range"] = [offset, limit]
+
+        result = await client.get(base_url, **params)
+        policies = result if isinstance(result, list) else [result] if result else []
+
+        return {
+            "status": "success",
+            "count": len(policies),
+            "total": total,
+            "policies": policies,
+        }
+    except Exception as e:
+        logger.error(f"Failed to list local-in policies in {package}: {e}")
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
+
+
+@mcp.tool()
+async def get_local_in_policy(
+    adom: str,
+    package: str,
+    policyid: int,
+) -> dict[str, Any]:
+    """Get detailed information about a specific IPv4 local-in policy.
+
+    Args:
+        adom: ADOM name
+        package: Policy package name
+        policyid: Local-in policy ID number
+
+    Returns:
+        dict: Policy details with keys:
+            - status: "success" or "error"
+            - policy: Full local-in policy configuration
+            - message: Error message if failed
+
+    Example:
+        >>> result = await get_local_in_policy("root", "default", 1)
+    """
+    try:
+        adom = validate_adom(adom)
+        package = validate_package_name(package)
+        client = _get_client()
+        policy = await client.get(
+            f"{_LOCAL_IN_POLICY_URL.format(adom=adom, pkg=package)}/{policyid}"
+        )
+
+        return {
+            "status": "success",
+            "policy": policy,
+        }
+    except Exception as e:
+        logger.error(f"Failed to get local-in policy {policyid}: {e}")
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
+
+
+@mcp.tool()
+async def create_local_in_policy(
+    adom: str,
+    package: str,
+    intf: list[str],
+    srcaddr: list[str],
+    dstaddr: list[str],
+    service: list[str],
+    action: str = "deny",
+    schedule: list[str] | None = None,
+    status: str = "enable",
+    logtraffic: str | None = None,
+    comments: str | None = None,
+    policyid: int | None = None,
+    srcaddr_negate: bool | None = None,
+    dstaddr_negate: bool | None = None,
+    service_negate: bool | None = None,
+    ha_mgmt_intf_only: bool | None = None,
+    virtual_patch: bool | None = None,
+) -> dict[str, Any]:
+    """Create a new IPv4 local-in policy.
+
+    Local-in policies control traffic destined to the FortiGate's own
+    management plane (GUI, SSH, ping, API, SNMP, etc.) -- a distinct object
+    space from the regular firewall/policy table (create_firewall_policy),
+    which governs traffic passing through the device. There is no
+    srcintf/dstintf pair here: `intf` is the single incoming interface,
+    since local-in traffic terminates on the FortiGate itself rather than
+    being forwarded. A local-in policy only takes effect once its package
+    is installed to a device (see preview_install / install_package).
+
+    Args:
+        adom: ADOM name
+        package: Policy package name
+        intf: Incoming interface(s) this policy applies to, e.g. ["port1"]
+        srcaddr: Source addresses this policy matches (e.g. ["Admin-Subnet"])
+        dstaddr: Destination addresses on the FortiGate itself (e.g. ["all"])
+        service: Services this policy matches, e.g. ["HTTPS", "SSH"]
+        action: Policy action - "accept" or "deny" (default: "deny", the
+            FortiOS field default -- unlike create_firewall_policy this
+            defaults closed since it governs management-plane access)
+        schedule: Schedule object name(s) (default: ["always"] if omitted)
+        status: Policy status - "enable" or "disable" (default: "enable")
+        logtraffic: Local-in traffic logging - "enable" or "disable"
+            (optional)
+        comments: Policy comments (optional)
+        policyid: Specific policy ID (optional, auto-assigned if not set)
+        srcaddr_negate: Match all sources EXCEPT srcaddr (optional)
+        dstaddr_negate: Match all destinations EXCEPT dstaddr (optional)
+        service_negate: Match all services EXCEPT service (optional)
+        ha_mgmt_intf_only: Restrict this policy to the HA management
+            interface only (optional). IPv4-only field -- there is no
+            equivalent on create_local_in_policy6.
+        virtual_patch: Enable/disable virtual patching on this policy
+            (optional)
+
+    Returns:
+        dict: Create result with keys:
+            - status: "success" or "error"
+            - policyid: Created policy ID
+            - message: Status or error message
+
+    Example:
+        >>> result = await create_local_in_policy(
+        ...     adom="root",
+        ...     package="default",
+        ...     intf=["port1"],
+        ...     srcaddr=["Admin-Subnet"],
+        ...     dstaddr=["all"],
+        ...     service=["HTTPS", "SSH"],
+        ...     action="accept",
+        ... )
+    """
+    safety_warning = None
+    safety_result = _check_policy_safety(
+        srcaddr,
+        dstaddr,
+        service,
+        action,
+        srcaddr_negate=bool(srcaddr_negate),
+        dstaddr_negate=bool(dstaddr_negate),
+        service_negate=bool(service_negate),
+    )
+    if safety_result:
+        if safety_result.get("status") == "error":
+            return safety_result
+        safety_warning = safety_result.get("_safety_warning")
+
+    try:
+        adom = validate_adom(adom)
+        package = validate_package_name(package)
+        client = _get_client()
+
+        policy: dict[str, Any] = _build_local_in_policy_fields(
+            action=action,
+            status=status,
+            intf=intf,
+            srcaddr=srcaddr,
+            dstaddr=dstaddr,
+            service=service,
+            schedule=schedule if schedule is not None else ["always"],
+            logtraffic=logtraffic,
+            comments=comments,
+            srcaddr_negate=srcaddr_negate,
+            dstaddr_negate=dstaddr_negate,
+            service_negate=service_negate,
+            virtual_patch=virtual_patch,
+        )
+        if policyid is not None:
+            policy["policyid"] = policyid
+        if ha_mgmt_intf_only is not None:
+            policy["ha-mgmt-intf-only"] = "enable" if ha_mgmt_intf_only else "disable"
+
+        result = await client.add(
+            _LOCAL_IN_POLICY_URL.format(adom=adom, pkg=package),
+            data=policy,
+        )
+
+        response = {
+            "status": "success",
+            "policyid": result.get("policyid", policyid),
+            "message": "Local-in policy created successfully",
+        }
+        if safety_warning:
+            response["warning"] = safety_warning
+        return response
+    except Exception as e:
+        logger.error(f"Failed to create local-in policy: {e}")
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
+
+
+@mcp.tool()
+async def update_local_in_policy(
+    adom: str,
+    package: str,
+    policyid: int,
+    action: str | None = None,
+    intf: list[str] | None = None,
+    srcaddr: list[str] | None = None,
+    dstaddr: list[str] | None = None,
+    service: list[str] | None = None,
+    schedule: list[str] | None = None,
+    status: str | None = None,
+    logtraffic: str | None = None,
+    comments: str | None = None,
+    srcaddr_negate: bool | None = None,
+    dstaddr_negate: bool | None = None,
+    service_negate: bool | None = None,
+    ha_mgmt_intf_only: bool | None = None,
+    virtual_patch: bool | None = None,
+) -> dict[str, Any]:
+    """Update an existing IPv4 local-in policy.
+
+    Only the specified fields will be updated; other fields remain
+    unchanged.
+
+    Args:
+        adom: ADOM name
+        package: Policy package name
+        policyid: Local-in policy ID to update
+        action: New action - "accept" or "deny" (optional)
+        intf: New incoming interface(s) (optional)
+        srcaddr: New source addresses (optional)
+        dstaddr: New destination addresses (optional)
+        service: New services (optional)
+        schedule: New schedule (optional)
+        status: New status - "enable" or "disable" (optional)
+        logtraffic: New local-in traffic logging setting (optional)
+        comments: New comments (optional)
+        srcaddr_negate: Match all sources EXCEPT srcaddr (optional)
+        dstaddr_negate: Match all destinations EXCEPT dstaddr (optional)
+        service_negate: Match all services EXCEPT service (optional)
+        ha_mgmt_intf_only: Restrict this policy to the HA management
+            interface only (optional). IPv4-only field.
+        virtual_patch: Enable/disable virtual patching on this policy
+            (optional)
+
+    Returns:
+        dict: Update result with keys:
+            - status: "success" or "error"
+            - policyid: Updated policy ID
+            - message: Status or error message
+
+    Example:
+        >>> # Disable a local-in policy
+        >>> result = await update_local_in_policy(
+        ...     adom="root",
+        ...     package="default",
+        ...     policyid=1,
+        ...     status="disable"
+        ... )
+    """
+    safety_warning = None
+    full_check = srcaddr is not None and dstaddr is not None and action is not None
+    safety_result = _check_policy_safety(
+        srcaddr if full_check else None,
+        dstaddr if full_check else None,
+        service if full_check else None,
+        action if full_check else None,
+        srcaddr_negate=bool(srcaddr_negate),
+        dstaddr_negate=bool(dstaddr_negate),
+        service_negate=bool(service_negate),
+    )
+    if safety_result:
+        if safety_result.get("status") == "error":
+            return safety_result
+        safety_warning = safety_result.get("_safety_warning")
+
+    try:
+        adom = validate_adom(adom)
+        package = validate_package_name(package)
+        client = _get_client()
+
+        data = _build_local_in_policy_fields(
+            action=action,
+            status=status,
+            intf=intf,
+            srcaddr=srcaddr,
+            dstaddr=dstaddr,
+            service=service,
+            schedule=schedule,
+            logtraffic=logtraffic,
+            comments=comments,
+            srcaddr_negate=srcaddr_negate,
+            dstaddr_negate=dstaddr_negate,
+            service_negate=service_negate,
+            virtual_patch=virtual_patch,
+        )
+        if ha_mgmt_intf_only is not None:
+            data["ha-mgmt-intf-only"] = "enable" if ha_mgmt_intf_only else "disable"
+
+        if not data:
+            return {"status": "error", "message": "No update parameters provided"}
+
+        await client.update(
+            f"{_LOCAL_IN_POLICY_URL.format(adom=adom, pkg=package)}/{policyid}",
+            **data,
+        )
+
+        response = {
+            "status": "success",
+            "policyid": policyid,
+            "message": f"Local-in policy {policyid} updated successfully",
+        }
+        if safety_warning:
+            response["warning"] = safety_warning
+        return response
+    except Exception as e:
+        logger.error(f"Failed to update local-in policy {policyid}: {e}")
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
+
+
+@mcp.tool()
+async def delete_local_in_policy(
+    adom: str,
+    package: str,
+    policyid: int,
+) -> dict[str, Any]:
+    """Delete an IPv4 local-in policy.
+
+    WARNING: This operation cannot be undone.
+
+    Args:
+        adom: ADOM name
+        package: Policy package name
+        policyid: Local-in policy ID to delete
+
+    Returns:
+        dict: Delete result with keys:
+            - status: "success" or "error"
+            - message: Status or error message
+    """
+    try:
+        adom = validate_adom(adom)
+        package = validate_package_name(package)
+        client = _get_client()
+        await client.delete(f"{_LOCAL_IN_POLICY_URL.format(adom=adom, pkg=package)}/{policyid}")
+
+        return {
+            "status": "success",
+            "message": f"Local-in policy {policyid} deleted successfully",
+        }
+    except Exception as e:
+        logger.error(f"Failed to delete local-in policy {policyid}: {e}")
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
+
+
+@mcp.tool()
+async def list_local_in_policies6(
+    adom: str,
+    package: str,
+    fields: list[str] | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List IPv6 local-in policies in a policy package.
+
+    Local-in policies control access to the FortiGate's own management
+    plane (GUI, SSH, ping, API, SNMP, etc.) over IPv6, not through-traffic.
+
+    Args:
+        adom: ADOM name
+        package: Policy package name
+        fields: Specific fields to return (optional)
+        limit: Maximum number of policies to return (optional)
+        offset: Starting position for pagination (default: 0)
+
+    Returns:
+        dict: Policy list with keys:
+            - status: "success" or "error"
+            - count: Number of policies returned
+            - total: Total number of local-in policies6 in package
+            - policies: List of local-in policy6 objects
+            - message: Error message if failed
+
+    Example:
+        >>> result = await list_local_in_policies6("root", "default")
+    """
+    try:
+        adom = validate_adom(adom)
+        package = validate_package_name(package)
+        client = _get_client()
+
+        base_url = _LOCAL_IN_POLICY6_URL.format(adom=adom, pkg=package)
+
+        total = await client.get(base_url, option=["count"])
+        if not isinstance(total, int):
+            total = 0
+
+        params: dict[str, Any] = {}
+        if fields:
+            params["fields"] = fields
+        if limit:
+            params["range"] = [offset, limit]
+
+        result = await client.get(base_url, **params)
+        policies = result if isinstance(result, list) else [result] if result else []
+
+        return {
+            "status": "success",
+            "count": len(policies),
+            "total": total,
+            "policies": policies,
+        }
+    except Exception as e:
+        logger.error(f"Failed to list local-in policies6 in {package}: {e}")
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
+
+
+@mcp.tool()
+async def get_local_in_policy6(
+    adom: str,
+    package: str,
+    policyid: int,
+) -> dict[str, Any]:
+    """Get detailed information about a specific IPv6 local-in policy.
+
+    Args:
+        adom: ADOM name
+        package: Policy package name
+        policyid: Local-in policy6 ID number
+
+    Returns:
+        dict: Policy details with keys:
+            - status: "success" or "error"
+            - policy: Full local-in policy6 configuration
+            - message: Error message if failed
+
+    Example:
+        >>> result = await get_local_in_policy6("root", "default", 1)
+    """
+    try:
+        adom = validate_adom(adom)
+        package = validate_package_name(package)
+        client = _get_client()
+        policy = await client.get(
+            f"{_LOCAL_IN_POLICY6_URL.format(adom=adom, pkg=package)}/{policyid}"
+        )
+
+        return {
+            "status": "success",
+            "policy": policy,
+        }
+    except Exception as e:
+        logger.error(f"Failed to get local-in policy6 {policyid}: {e}")
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
+
+
+@mcp.tool()
+async def create_local_in_policy6(
+    adom: str,
+    package: str,
+    intf: list[str],
+    srcaddr: list[str],
+    dstaddr: list[str],
+    service: list[str],
+    action: str = "deny",
+    schedule: list[str] | None = None,
+    status: str = "enable",
+    logtraffic: str | None = None,
+    comments: str | None = None,
+    policyid: int | None = None,
+    srcaddr_negate: bool | None = None,
+    dstaddr_negate: bool | None = None,
+    service_negate: bool | None = None,
+    virtual_patch: bool | None = None,
+) -> dict[str, Any]:
+    """Create a new IPv6 local-in policy.
+
+    IPv6 counterpart of create_local_in_policy -- see that tool's docstring
+    for the local-in-policy concept. `srcaddr`/`dstaddr` reference IPv6
+    address objects here. There is no `ha_mgmt_intf_only` field on this
+    object type (it is IPv4-only on the appliance).
+
+    Args:
+        adom: ADOM name
+        package: Policy package name
+        intf: Incoming interface(s) this policy applies to, e.g. ["port1"]
+        srcaddr: Source IPv6 addresses this policy matches
+        dstaddr: Destination IPv6 addresses on the FortiGate itself
+            (e.g. ["all"])
+        service: Services this policy matches, e.g. ["HTTPS", "SSH"]
+        action: Policy action - "accept" or "deny" (default: "deny", the
+            FortiOS field default)
+        schedule: Schedule object name(s) (default: ["always"] if omitted)
+        status: Policy status - "enable" or "disable" (default: "enable")
+        logtraffic: Local-in traffic logging - "enable" or "disable"
+            (optional)
+        comments: Policy comments (optional)
+        policyid: Specific policy ID (optional, auto-assigned if not set)
+        srcaddr_negate: Match all sources EXCEPT srcaddr (optional)
+        dstaddr_negate: Match all destinations EXCEPT dstaddr (optional)
+        service_negate: Match all services EXCEPT service (optional)
+        virtual_patch: Enable/disable virtual patching on this policy
+            (optional)
+
+    Returns:
+        dict: Create result with keys:
+            - status: "success" or "error"
+            - policyid: Created policy ID
+            - message: Status or error message
+
+    Example:
+        >>> result = await create_local_in_policy6(
+        ...     adom="root",
+        ...     package="default",
+        ...     intf=["port1"],
+        ...     srcaddr=["Admin-Subnet-v6"],
+        ...     dstaddr=["all"],
+        ...     service=["HTTPS", "SSH"],
+        ...     action="accept",
+        ... )
+    """
+    safety_warning = None
+    safety_result = _check_policy_safety(
+        srcaddr,
+        dstaddr,
+        service,
+        action,
+        srcaddr_negate=bool(srcaddr_negate),
+        dstaddr_negate=bool(dstaddr_negate),
+        service_negate=bool(service_negate),
+    )
+    if safety_result:
+        if safety_result.get("status") == "error":
+            return safety_result
+        safety_warning = safety_result.get("_safety_warning")
+
+    try:
+        adom = validate_adom(adom)
+        package = validate_package_name(package)
+        client = _get_client()
+
+        policy: dict[str, Any] = _build_local_in_policy_fields(
+            action=action,
+            status=status,
+            intf=intf,
+            srcaddr=srcaddr,
+            dstaddr=dstaddr,
+            service=service,
+            schedule=schedule if schedule is not None else ["always"],
+            logtraffic=logtraffic,
+            comments=comments,
+            srcaddr_negate=srcaddr_negate,
+            dstaddr_negate=dstaddr_negate,
+            service_negate=service_negate,
+            virtual_patch=virtual_patch,
+        )
+        if policyid is not None:
+            policy["policyid"] = policyid
+
+        result = await client.add(
+            _LOCAL_IN_POLICY6_URL.format(adom=adom, pkg=package),
+            data=policy,
+        )
+
+        response = {
+            "status": "success",
+            "policyid": result.get("policyid", policyid),
+            "message": "Local-in policy6 created successfully",
+        }
+        if safety_warning:
+            response["warning"] = safety_warning
+        return response
+    except Exception as e:
+        logger.error(f"Failed to create local-in policy6: {e}")
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
+
+
+@mcp.tool()
+async def update_local_in_policy6(
+    adom: str,
+    package: str,
+    policyid: int,
+    action: str | None = None,
+    intf: list[str] | None = None,
+    srcaddr: list[str] | None = None,
+    dstaddr: list[str] | None = None,
+    service: list[str] | None = None,
+    schedule: list[str] | None = None,
+    status: str | None = None,
+    logtraffic: str | None = None,
+    comments: str | None = None,
+    srcaddr_negate: bool | None = None,
+    dstaddr_negate: bool | None = None,
+    service_negate: bool | None = None,
+    virtual_patch: bool | None = None,
+) -> dict[str, Any]:
+    """Update an existing IPv6 local-in policy.
+
+    Only the specified fields will be updated; other fields remain
+    unchanged.
+
+    Args:
+        adom: ADOM name
+        package: Policy package name
+        policyid: Local-in policy6 ID to update
+        action: New action - "accept" or "deny" (optional)
+        intf: New incoming interface(s) (optional)
+        srcaddr: New source IPv6 addresses (optional)
+        dstaddr: New destination IPv6 addresses (optional)
+        service: New services (optional)
+        schedule: New schedule (optional)
+        status: New status - "enable" or "disable" (optional)
+        logtraffic: New local-in traffic logging setting (optional)
+        comments: New comments (optional)
+        srcaddr_negate: Match all sources EXCEPT srcaddr (optional)
+        dstaddr_negate: Match all destinations EXCEPT dstaddr (optional)
+        service_negate: Match all services EXCEPT service (optional)
+        virtual_patch: Enable/disable virtual patching on this policy
+            (optional)
+
+    Returns:
+        dict: Update result with keys:
+            - status: "success" or "error"
+            - policyid: Updated policy ID
+            - message: Status or error message
+
+    Example:
+        >>> result = await update_local_in_policy6(
+        ...     adom="root",
+        ...     package="default",
+        ...     policyid=1,
+        ...     status="disable"
+        ... )
+    """
+    safety_warning = None
+    full_check = srcaddr is not None and dstaddr is not None and action is not None
+    safety_result = _check_policy_safety(
+        srcaddr if full_check else None,
+        dstaddr if full_check else None,
+        service if full_check else None,
+        action if full_check else None,
+        srcaddr_negate=bool(srcaddr_negate),
+        dstaddr_negate=bool(dstaddr_negate),
+        service_negate=bool(service_negate),
+    )
+    if safety_result:
+        if safety_result.get("status") == "error":
+            return safety_result
+        safety_warning = safety_result.get("_safety_warning")
+
+    try:
+        adom = validate_adom(adom)
+        package = validate_package_name(package)
+        client = _get_client()
+
+        data = _build_local_in_policy_fields(
+            action=action,
+            status=status,
+            intf=intf,
+            srcaddr=srcaddr,
+            dstaddr=dstaddr,
+            service=service,
+            schedule=schedule,
+            logtraffic=logtraffic,
+            comments=comments,
+            srcaddr_negate=srcaddr_negate,
+            dstaddr_negate=dstaddr_negate,
+            service_negate=service_negate,
+            virtual_patch=virtual_patch,
+        )
+
+        if not data:
+            return {"status": "error", "message": "No update parameters provided"}
+
+        await client.update(
+            f"{_LOCAL_IN_POLICY6_URL.format(adom=adom, pkg=package)}/{policyid}",
+            **data,
+        )
+
+        response = {
+            "status": "success",
+            "policyid": policyid,
+            "message": f"Local-in policy6 {policyid} updated successfully",
+        }
+        if safety_warning:
+            response["warning"] = safety_warning
+        return response
+    except Exception as e:
+        logger.error(f"Failed to update local-in policy6 {policyid}: {e}")
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
+
+
+@mcp.tool()
+async def delete_local_in_policy6(
+    adom: str,
+    package: str,
+    policyid: int,
+) -> dict[str, Any]:
+    """Delete an IPv6 local-in policy.
+
+    WARNING: This operation cannot be undone.
+
+    Args:
+        adom: ADOM name
+        package: Policy package name
+        policyid: Local-in policy6 ID to delete
+
+    Returns:
+        dict: Delete result with keys:
+            - status: "success" or "error"
+            - message: Status or error message
+    """
+    try:
+        adom = validate_adom(adom)
+        package = validate_package_name(package)
+        client = _get_client()
+        await client.delete(f"{_LOCAL_IN_POLICY6_URL.format(adom=adom, pkg=package)}/{policyid}")
+
+        return {
+            "status": "success",
+            "message": f"Local-in policy6 {policyid} deleted successfully",
+        }
+    except Exception as e:
+        logger.error(f"Failed to delete local-in policy6 {policyid}: {e}")
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}

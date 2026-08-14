@@ -1142,3 +1142,354 @@ class TestServiceProtocolParsing:
         )
         assert d["category"] == "IP"
         assert d["protocol_number"] == 47
+
+
+MOCK_LOCAL_IN_POLICIES = [
+    {
+        "policyid": 1,
+        "intf": ["port1"],
+        "srcaddr": ["Admin-Subnet"],
+        "dstaddr": ["all"],
+        "service": ["HTTPS"],
+        "action": "accept",
+        "status": "enable",
+    },
+    {
+        "policyid": 2,
+        "intf": ["any"],
+        "srcaddr": ["all"],
+        "dstaddr": ["all"],
+        "service": ["ALL"],
+        "action": "deny",
+        "status": "enable",
+    },
+]
+
+
+class TestLocalInPolicyTools:
+    """Test IPv4 local-in-policy CRUD tools."""
+
+    @pytest.mark.asyncio
+    async def test_list_local_in_policies_success(
+        self,
+        mock_client: MagicMock,
+        mock_fmg_instance: MagicMock,
+    ) -> None:
+        """Test listing local-in policies."""
+
+        def mock_get(url: str, **kwargs):
+            if "local-in-policy" in url and kwargs.get("option") == ["count"]:
+                return (0, 2)
+            return (0, MOCK_LOCAL_IN_POLICIES)
+
+        mock_fmg_instance.get.side_effect = mock_get
+
+        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
+            result = await policy_tools.list_local_in_policies(
+                adom="root",
+                package="default",
+            )
+
+        assert result["status"] == "success"
+        assert result["count"] == 2
+        assert result["total"] == 2
+        assert result["policies"][0]["policyid"] == 1
+
+    @pytest.mark.asyncio
+    async def test_list_local_in_policies_not_connected(self) -> None:
+        """Test listing local-in policies when client not connected."""
+        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=None):
+            result = await policy_tools.list_local_in_policies(
+                adom="root",
+                package="default",
+            )
+
+        assert result["status"] == "error"
+        assert "message" in result
+
+    @pytest.mark.asyncio
+    async def test_get_local_in_policy_success(
+        self,
+        mock_client: MagicMock,
+        mock_fmg_instance: MagicMock,
+    ) -> None:
+        """Test getting a specific local-in policy."""
+        mock_fmg_instance.get.return_value = (0, MOCK_LOCAL_IN_POLICIES[0])
+
+        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
+            result = await policy_tools.get_local_in_policy(
+                adom="root",
+                package="default",
+                policyid=1,
+            )
+
+        assert result["status"] == "success"
+        assert result["policy"]["policyid"] == 1
+
+    @pytest.mark.asyncio
+    async def test_create_local_in_policy_success(
+        self,
+        mock_client: MagicMock,
+        configure_mock_responses: None,
+        mock_fmg_instance: MagicMock,
+    ) -> None:
+        """Test creating a local-in policy, including the default-deny action."""
+        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
+            result = await policy_tools.create_local_in_policy(
+                adom="root",
+                package="default",
+                intf=["port1"],
+                srcaddr=["Admin-Subnet"],
+                dstaddr=["all"],
+                service=["SSH"],
+            )
+
+        assert result["status"] == "success"
+        assert "message" in result
+
+        # Verify the field-name translation and the default-closed action.
+        _, kwargs = mock_fmg_instance.add.call_args
+        payload = kwargs["data"][0] if isinstance(kwargs["data"], list) else kwargs["data"]
+        assert payload["action"] == "deny"
+        assert payload["intf"] == ["port1"]
+        assert payload["schedule"] == ["always"]
+
+    @pytest.mark.asyncio
+    async def test_create_local_in_policy_negate_and_ha_mgmt(
+        self,
+        mock_client: MagicMock,
+        configure_mock_responses: None,
+        mock_fmg_instance: MagicMock,
+    ) -> None:
+        """Negate flags and the IPv4-only ha_mgmt_intf_only field serialize to enable/disable."""
+        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
+            result = await policy_tools.create_local_in_policy(
+                adom="root",
+                package="default",
+                intf=["port1"],
+                srcaddr=["Admin-Subnet"],
+                dstaddr=["FGT-mgmt-ip"],
+                service=["SSH"],
+                action="accept",
+                srcaddr_negate=True,
+                ha_mgmt_intf_only=True,
+                virtual_patch=False,
+            )
+
+        assert result["status"] == "success"
+
+        _, kwargs = mock_fmg_instance.add.call_args
+        payload = kwargs["data"][0] if isinstance(kwargs["data"], list) else kwargs["data"]
+        assert payload["srcaddr-negate"] == "enable"
+        assert payload["ha-mgmt-intf-only"] == "enable"
+        assert payload["virtual-patch"] == "disable"
+
+    @pytest.mark.asyncio
+    async def test_create_local_in_policy_blocked_when_overly_permissive(
+        self,
+        mock_client: MagicMock,
+        configure_mock_responses: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """srcaddr=all + dstaddr=all + action=accept is refused under strict policy safety,
+        same as create_firewall_policy -- this is management-plane access, so it should
+        be at least as guarded."""
+        monkeypatch.setenv("FMG_POLICY_SAFETY", "strict")
+        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
+            result = await policy_tools.create_local_in_policy(
+                adom="root",
+                package="default",
+                intf=["any"],
+                srcaddr=["all"],
+                dstaddr=["all"],
+                service=["ALL"],
+                action="accept",
+            )
+
+        assert result["status"] == "error"
+        assert "message" in result
+
+    @pytest.mark.asyncio
+    async def test_update_local_in_policy_success(
+        self,
+        mock_client: MagicMock,
+        configure_mock_responses: None,
+    ) -> None:
+        """Test updating a local-in policy."""
+        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
+            result = await policy_tools.update_local_in_policy(
+                adom="root",
+                package="default",
+                policyid=1,
+                status="disable",
+            )
+
+        assert result["status"] == "success"
+        assert result["policyid"] == 1
+
+    @pytest.mark.asyncio
+    async def test_update_local_in_policy_no_params(
+        self,
+        mock_client: MagicMock,
+        configure_mock_responses: None,
+    ) -> None:
+        """Test updating with no fields returns an error."""
+        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
+            result = await policy_tools.update_local_in_policy(
+                adom="root",
+                package="default",
+                policyid=1,
+            )
+
+        assert result["status"] == "error"
+        assert "No update parameters" in result["message"]
+
+    @pytest.mark.asyncio
+    async def test_delete_local_in_policy_success(
+        self,
+        mock_client: MagicMock,
+        configure_mock_responses: None,
+    ) -> None:
+        """Test deleting a local-in policy."""
+        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
+            result = await policy_tools.delete_local_in_policy(
+                adom="root",
+                package="default",
+                policyid=1,
+            )
+
+        assert result["status"] == "success"
+        assert "message" in result
+
+
+class TestLocalInPolicy6Tools:
+    """Test IPv6 local-in-policy6 CRUD tools."""
+
+    @pytest.mark.asyncio
+    async def test_list_local_in_policies6_success(
+        self,
+        mock_client: MagicMock,
+        mock_fmg_instance: MagicMock,
+    ) -> None:
+        """Test listing local-in-policy6 entries."""
+
+        def mock_get(url: str, **kwargs):
+            if "local-in-policy6" in url and kwargs.get("option") == ["count"]:
+                return (0, 1)
+            return (0, [MOCK_LOCAL_IN_POLICIES[0]])
+
+        mock_fmg_instance.get.side_effect = mock_get
+
+        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
+            result = await policy_tools.list_local_in_policies6(
+                adom="root",
+                package="default",
+            )
+
+        assert result["status"] == "success"
+        assert result["count"] == 1
+        assert result["total"] == 1
+
+    @pytest.mark.asyncio
+    async def test_get_local_in_policy6_success(
+        self,
+        mock_client: MagicMock,
+        mock_fmg_instance: MagicMock,
+    ) -> None:
+        """Test getting a specific local-in-policy6 entry."""
+        mock_fmg_instance.get.return_value = (0, MOCK_LOCAL_IN_POLICIES[0])
+
+        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
+            result = await policy_tools.get_local_in_policy6(
+                adom="root",
+                package="default",
+                policyid=1,
+            )
+
+        assert result["status"] == "success"
+        assert result["policy"]["policyid"] == 1
+
+    @pytest.mark.asyncio
+    async def test_create_local_in_policy6_success(
+        self,
+        mock_client: MagicMock,
+        configure_mock_responses: None,
+        mock_fmg_instance: MagicMock,
+    ) -> None:
+        """Test creating a local-in-policy6 entry, including the default-deny action."""
+        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
+            result = await policy_tools.create_local_in_policy6(
+                adom="root",
+                package="default",
+                intf=["port1"],
+                srcaddr=["Admin-Subnet-v6"],
+                dstaddr=["all"],
+                service=["SSH"],
+            )
+
+        assert result["status"] == "success"
+
+        _, kwargs = mock_fmg_instance.add.call_args
+        payload = kwargs["data"][0] if isinstance(kwargs["data"], list) else kwargs["data"]
+        assert payload["action"] == "deny"
+        assert "ha-mgmt-intf-only" not in payload
+
+    def test_create_local_in_policy6_has_no_ha_mgmt_intf_only_param(self) -> None:
+        """local-in-policy6 has no ha-mgmt-intf-only field on the appliance (IPv4-only) --
+        confirm the tool signature doesn't expose one."""
+        import inspect
+
+        sig = inspect.signature(policy_tools.create_local_in_policy6)
+        assert "ha_mgmt_intf_only" not in sig.parameters
+
+    @pytest.mark.asyncio
+    async def test_update_local_in_policy6_success(
+        self,
+        mock_client: MagicMock,
+        configure_mock_responses: None,
+    ) -> None:
+        """Test updating a local-in-policy6 entry."""
+        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
+            result = await policy_tools.update_local_in_policy6(
+                adom="root",
+                package="default",
+                policyid=1,
+                status="disable",
+            )
+
+        assert result["status"] == "success"
+        assert result["policyid"] == 1
+
+    @pytest.mark.asyncio
+    async def test_update_local_in_policy6_no_params(
+        self,
+        mock_client: MagicMock,
+        configure_mock_responses: None,
+    ) -> None:
+        """Test updating with no fields returns an error."""
+        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
+            result = await policy_tools.update_local_in_policy6(
+                adom="root",
+                package="default",
+                policyid=1,
+            )
+
+        assert result["status"] == "error"
+        assert "No update parameters" in result["message"]
+
+    @pytest.mark.asyncio
+    async def test_delete_local_in_policy6_success(
+        self,
+        mock_client: MagicMock,
+        configure_mock_responses: None,
+    ) -> None:
+        """Test deleting a local-in-policy6 entry."""
+        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
+            result = await policy_tools.delete_local_in_policy6(
+                adom="root",
+                package="default",
+                policyid=1,
+            )
+
+        assert result["status"] == "success"
+        assert "message" in result
