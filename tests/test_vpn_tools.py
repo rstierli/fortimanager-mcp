@@ -668,3 +668,70 @@ class TestUpdateDeviceSslvpnWebPortal:
 
         assert "error" in result
         mock_fmg_instance.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_warning_when_fields_persisted(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        mock_fmg_instance.update.return_value = (0, {"name": "full-access"})
+        mock_fmg_instance.get.return_value = (
+            0,
+            {"name": "full-access", "tunnel-mode": "enable", "dns-server1": "198.51.100.53"},
+        )
+
+        with patch.object(vpn_tools, "get_fmg_client", return_value=mock_client):
+            result = await vpn_tools.update_device_sslvpn_web_portal(
+                device="FGT-01",
+                name="full-access",
+                tunnel_mode="enable",
+                dns_server1="198.51.100.53",
+            )
+
+        assert result.get("success") is True
+        assert "warning" not in result
+
+    @pytest.mark.asyncio
+    async def test_warns_when_fields_silently_do_not_persist(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """FMG 7.6.7 live-verified quirk: update returns success but some
+        fields don't actually change -- confirmed by re-reading the object.
+        """
+        mock_fmg_instance.update.return_value = (0, {"name": "full-access"})
+        # Re-fetch shows tunnel-mode reverted to disable and dns-server1 unset,
+        # even though the update call itself reported success.
+        mock_fmg_instance.get.return_value = (
+            0,
+            {"name": "full-access", "tunnel-mode": "disable", "dns-server1": ""},
+        )
+
+        with patch.object(vpn_tools, "get_fmg_client", return_value=mock_client):
+            result = await vpn_tools.update_device_sslvpn_web_portal(
+                device="FGT-01",
+                name="full-access",
+                tunnel_mode="enable",
+                dns_server1="198.51.100.53",
+            )
+
+        assert result.get("success") is True
+        assert "warning" in result
+        assert "tunnel-mode" in result["warning"]
+        assert "dns-server1" in result["warning"]
+
+    @pytest.mark.asyncio
+    async def test_persistence_check_failure_does_not_break_update_response(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """A failed re-fetch (e.g. transient error) must not mask the
+        original update's success -- it should just skip the warning.
+        """
+        mock_fmg_instance.update.return_value = (0, {"name": "full-access"})
+        mock_fmg_instance.get.side_effect = RuntimeError("transient read error")
+
+        with patch.object(vpn_tools, "get_fmg_client", return_value=mock_client):
+            result = await vpn_tools.update_device_sslvpn_web_portal(
+                device="FGT-01", name="full-access", tunnel_mode="enable"
+            )
+
+        assert result.get("success") is True
+        assert "warning" not in result

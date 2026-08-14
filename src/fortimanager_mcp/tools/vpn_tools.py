@@ -155,6 +155,44 @@ def _sanitize_phase1_result(result: Any) -> Any:
     return _strip_secret_fields(result, _PHASE1_SECRET_FIELDS)
 
 
+def _sslvpn_field_matches(sent: Any, stored: Any) -> bool:
+    """Compare a sent update value against the re-fetched stored value.
+
+    FMG sometimes echoes a list of plain strings as a list of
+    ``{"name": ...}`` refs -- normalize before comparing so that shape
+    difference alone doesn't look like a persistence failure.
+    """
+    if isinstance(sent, list) and isinstance(stored, list):
+        stored_names = [s.get("name") if isinstance(s, dict) else s for s in stored]
+        return sorted(sent) == sorted(n for n in stored_names if n is not None)
+    return sent == stored
+
+
+async def _check_sslvpn_web_portal_persisted(
+    client: Any, device: str, vdom: str, name: str, sent_data: dict[str, Any]
+) -> list[str]:
+    """Re-read an SSL-VPN web portal after an update and return field names
+    from ``sent_data`` whose stored value doesn't match what was sent.
+
+    Best-effort: if the re-read itself fails, don't mask the original
+    update's success with an unrelated read error -- just report nothing
+    rather than raise.
+    """
+    try:
+        stored = await client.get_device_sslvpn_web_portal(device=device, vdom=vdom, name=name)
+        if isinstance(stored, list):
+            stored = stored[0] if stored else {}
+        if not isinstance(stored, dict):
+            return []
+        return [
+            field
+            for field, sent_value in sent_data.items()
+            if not _sslvpn_field_matches(sent_value, stored.get(field))
+        ]
+    except Exception:
+        return []
+
+
 # =============================================================================
 # IPsec phase1-interface (remote gateway) (device DB, vdom scope)
 # =============================================================================
@@ -1076,12 +1114,26 @@ async def update_device_sslvpn_web_portal(
         result = await client.update_device_sslvpn_web_portal(
             device=device, vdom=vdom, name=name, data=data
         )
-        return {
+        response: dict[str, Any] = {
             "success": True,
             "message": f"SSL-VPN web portal '{name}' updated in device DB of '{device}'. "
             "Push with install_device_settings.",
             "result": result,
         }
+
+        # FMG 7.6.7 live-verified quirk: an update to this object can return
+        # code 0 (success) while some fields (seen: tunnel-mode,
+        # split-tunneling, dns-server1/2) silently don't persist. Re-read
+        # and diff against what we sent so a caller isn't misled by a
+        # success response that didn't actually change anything.
+        not_persisted = await _check_sslvpn_web_portal_persisted(client, device, vdom, name, data)
+        if not_persisted:
+            response["warning"] = (
+                f"{len(not_persisted)} field(s) did not persist after update: "
+                f"{', '.join(not_persisted)} -- known FortiOS/FMG quirk on some "
+                "fields for this object, verify manually or re-apply."
+            )
+        return response
     except Exception as e:
         logger.error(f"SSL-VPN web portal update failed on {device}: {e}")
         msg, code = client_safe_error(e)
