@@ -12,6 +12,7 @@ from fortimanager_mcp.utils.validation import (
     VALID_POLICY_ACTIONS,
     ValidationError,
     get_allowed_output_dirs,
+    redact_config_text_secrets,
     sanitize_for_logging,
     sanitize_json_for_logging,
     validate_address_type,
@@ -134,6 +135,48 @@ class TestSanitizeJsonForLogging:
         data = {"key": "value"}
         result = sanitize_json_for_logging(data, indent=2)
         assert "\n" in result
+
+
+class TestRedactConfigTextSecrets:
+    """Tests for redact_config_text_secrets (CLI config-text redaction)."""
+
+    def test_redacts_known_secret_directives(self):
+        text = "config vpn ipsec phase1-interface\n    set psksecret ENC AbC123==\nend\n"
+        result = redact_config_text_secrets(text)
+        assert "AbC123==" not in result
+        assert "set psksecret ***REDACTED***" in result
+
+    def test_redacts_multiple_directives_independently(self):
+        text = (
+            "    set password ENC PwdValue==\n"
+            "    set community public-string\n"
+            "    set private-key '-----BEGIN KEY-----'\n"
+        )
+        result = redact_config_text_secrets(text)
+        assert "PwdValue" not in result
+        assert "public-string" not in result
+        assert "BEGIN KEY" not in result
+        assert result.count(MASK_VALUE) == 3
+
+    def test_does_not_touch_non_secret_lines(self):
+        text = "config system global\n    set hostname myfw01\nend\n"
+        assert redact_config_text_secrets(text) == text
+
+    def test_does_not_false_match_similar_directive_names(self):
+        """passwd-time is a real FortiOS field name (a timeout in minutes,
+        not a secret) -- must not be caught by a "passwd" substring match."""
+        text = "    set passwd-time 5\n"
+        assert redact_config_text_secrets(text) == text
+
+    def test_preserves_directive_name_and_structure(self):
+        text = "    edit hq-gw\n        set psksecret ENC X==\n    next\n"
+        result = redact_config_text_secrets(text)
+        assert "edit hq-gw" in result
+        assert "next" in result
+        assert "set psksecret ***REDACTED***" in result
+
+    def test_empty_string(self):
+        assert redact_config_text_secrets("") == ""
 
 
 # =============================================================================

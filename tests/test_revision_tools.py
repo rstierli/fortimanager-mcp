@@ -96,6 +96,38 @@ class TestGetDeviceRevision:
         assert result["status"] == "error"
         assert result["error_code"] == "validation_error"
 
+    @pytest.mark.asyncio
+    async def test_redacts_secret_directives_in_content(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """Code review found this returned raw config text (real device
+        secrets: psksecret, admin password hashes, etc.) with no
+        redaction, unlike the structured-field masking used elsewhere."""
+        raw = (
+            "config vpn ipsec phase1-interface\n"
+            "    edit hq-gw\n"
+            "        set psksecret ENC AbCdEf1234567890==\n"
+            "    next\n"
+            "end\n"
+            "config system admin\n"
+            "    edit admin\n"
+            "        set password ENC ZyXwVu9876543210==\n"
+            "    next\n"
+            "end\n"
+        )
+        mock_fmg_instance.execute.return_value = (0, {"content": raw, "revision": 8})
+
+        with patch.object(revision_tools, "get_fmg_client", return_value=mock_client):
+            result = await revision_tools.get_device_revision("hub2", revision=8)
+
+        assert "ENC AbCdEf1234567890==" not in result["content"]
+        assert "ENC ZyXwVu9876543210==" not in result["content"]
+        assert "set psksecret ***REDACTED***" in result["content"]
+        assert "set password ***REDACTED***" in result["content"]
+        # non-secret structure is preserved
+        assert "edit hq-gw" in result["content"]
+        assert "config system admin" in result["content"]
+
 
 class TestDiffDeviceRevision:
     @pytest.mark.asyncio
@@ -134,6 +166,45 @@ class TestDiffDeviceRevision:
         assert result["status"] == "success"
         assert result["changed"] is False
         assert result["diff"] == ""
+
+    @pytest.mark.asyncio
+    async def test_redacts_secret_directives_before_diffing(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        def mock_execute(url: str, **kwargs):
+            if url == "/deployment/checkout/revision":
+                return (
+                    0,
+                    {
+                        "content": "config system admin\n"
+                        "    set password ENC OldSecretValue==\n"
+                        "    set hostname old\n"
+                        "end\n"
+                    },
+                )
+            if url == "/deployment/export/config":
+                return (
+                    0,
+                    {
+                        "content": "config system admin\n"
+                        "    set password ENC NewSecretValue==\n"
+                        "    set hostname new\n"
+                        "end\n"
+                    },
+                )
+            raise AssertionError(f"unexpected url {url}")
+
+        mock_fmg_instance.execute.side_effect = mock_execute
+
+        with patch.object(revision_tools, "get_fmg_client", return_value=mock_client):
+            result = await revision_tools.diff_device_revision("hub2", revision=7)
+
+        assert result["status"] == "success"
+        assert "OldSecretValue" not in result["diff"]
+        assert "NewSecretValue" not in result["diff"]
+        # the genuinely-changed, non-secret line still surfaces
+        assert "-    set hostname old" in result["diff"]
+        assert "+    set hostname new" in result["diff"]
 
 
 class TestRevertDeviceRevision:

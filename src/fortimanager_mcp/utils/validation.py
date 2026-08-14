@@ -101,6 +101,52 @@ def sanitize_json_for_logging(data: Any, indent: int | None = None) -> str:
     return json.dumps(sanitized, indent=indent, default=str)
 
 
+# FortiOS CLI directives whose value is a secret (config export text is a
+# flat "set <directive> <value>" line format -- SENSITIVE_FIELDS/
+# sanitize_for_logging above only handle structured dict fields, which can't
+# see inside this kind of multi-line text blob). Exact-name match only
+# (anchored by the trailing whitespace in the pattern below), not substring,
+# so e.g. "passwd-time" is never mistaken for "passwd".
+CONFIG_TEXT_SECRET_DIRECTIVES = {
+    "password",
+    "passwd",
+    "psksecret",
+    "psksecret-remote",
+    "private-key",
+    "ppk-secret",
+    "auth-pwd",
+    "auth-pwd-alt",
+    "community",
+    "passphrase",
+    "secret",
+    "secondary-secret",
+    "radius-secret",
+    "tacacs+-secret",
+    "certificate-password",
+    "preshared-key",
+}
+
+_CONFIG_TEXT_SECRET_PATTERN = re.compile(
+    r"^(?P<prefix>\s*set\s+(?:"
+    + "|".join(re.escape(d) for d in CONFIG_TEXT_SECRET_DIRECTIVES)
+    + r")\s+).*$",
+    re.MULTILINE,
+)
+
+
+def redact_config_text_secrets(text: str) -> str:
+    """Mask secret-bearing directive values in raw FortiOS CLI config text.
+
+    Device DB revision content (get_device_revision, diff_device_revision)
+    is a multi-line CLI config export, not a structured dict -- the
+    dict-key-driven sanitize_for_logging above cannot see inside it.
+    Replaces the value portion of each matching "set <directive> ..." line
+    with MASK_VALUE, keeping the directive name visible so it's still clear
+    what was masked and where.
+    """
+    return _CONFIG_TEXT_SECRET_PATTERN.sub(lambda m: m.group("prefix") + MASK_VALUE, text)
+
+
 # =============================================================================
 # Validation Patterns
 # =============================================================================

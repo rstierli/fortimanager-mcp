@@ -57,6 +57,7 @@ from fortimanager_mcp.utils.errors import client_safe_error
 from fortimanager_mcp.utils.validation import (
     ValidationError,
     check_policy_safety,
+    redact_config_text_secrets,
     validate_adom,
     validate_device_name,
     validate_package_name,
@@ -248,7 +249,11 @@ async def get_device_revision(device: str, revision: int = -1) -> dict[str, Any]
             (default) for the latest revision
 
     Returns:
-        dict: status, device, revision, content (raw device DB config text)
+        dict: status, device, revision, content (device DB config text with
+        known secret-bearing directives redacted -- see
+        redact_config_text_secrets. Structured dict-field masking elsewhere
+        in this codebase can't see inside this multi-line CLI text, so this
+        applies a separate directive-name-based redaction.)
 
     Example:
         >>> result = await get_device_revision("hub2", revision=8)
@@ -259,11 +264,12 @@ async def get_device_revision(device: str, revision: int = -1) -> dict[str, Any]
         revision = _validate_revision(revision, allow_latest=True)
         client = _get_client()
         data = await client.get_device_revision_content(device=device, revision=revision)
+        raw_content = data.get("content") if isinstance(data, dict) else None
         return {
             "status": "success",
             "device": device,
             "revision": data.get("revision", revision) if isinstance(data, dict) else revision,
-            "content": data.get("content") if isinstance(data, dict) else None,
+            "content": redact_config_text_secrets(raw_content) if raw_content else raw_content,
         }
     except Exception as e:
         logger.error(f"Failed to check out revision {revision} for device {device}: {e}")
@@ -292,7 +298,10 @@ async def diff_device_revision(device: str, revision: int) -> dict[str, Any]:
 
     Returns:
         dict: status, device, revision, changed (bool), diff (unified diff
-        text, empty string if unchanged)
+        text, empty string if unchanged; both sides are redacted of known
+        secret-bearing directives before diffing -- see
+        redact_config_text_secrets -- so a line whose only change is its
+        secret value will not show as changed)
 
     Example:
         >>> result = await diff_device_revision("hub2", revision=7)
@@ -307,6 +316,15 @@ async def diff_device_revision(device: str, revision: int) -> dict[str, Any]:
         current = await client.get_device_current_config(device=device)
         past_content = past.get("content") or "" if isinstance(past, dict) else ""
         current_content = current.get("content") or "" if isinstance(current, dict) else ""
+        # Redact before diffing, not after: the diff must never surface a raw
+        # secret value even transiently. Since both sides are redacted with
+        # the same directive-name-preserving placeholder, a line whose only
+        # change is its secret VALUE will no longer show as changed -- an
+        # accepted tradeoff (never leak the value) over a false negative on
+        # secret-only changes (the directive name itself still diffs if it
+        # was added/removed/reordered).
+        past_content = redact_config_text_secrets(past_content)
+        current_content = redact_config_text_secrets(current_content)
         diff_lines = list(
             difflib.unified_diff(
                 past_content.splitlines(keepends=True),
