@@ -275,7 +275,12 @@ async def create_device_ipsec_phase1_interface(
         psksecret: Pre-shared key for PSK authentication, 6-128 characters
         ike_version: IKE protocol version, "1" or "2"
         mode: IKEv1 ID protection mode: "main" or "aggressive" (ignored on IKEv2)
-        peertype: Peer ID acceptance: "any", "one", "dialup", "peer" or "peergrp"
+        peertype: Peer ID acceptance: "any", "one", "dialup", "peer" or "peergrp".
+            Defaults to "any" when type is "static" and no value is given --
+            live-verified against FMG 7.6.7: a static PSK gateway created
+            without peertype is rejected with "peer invalid value", so this
+            tool supplies the working default rather than surfacing that
+            error to the caller
         proposal: Phase1 encryption/authentication proposal list (e.g.
             ["aes256-sha256"]). Values are passed through to FortiManager
             largely unvalidated -- see module docstring
@@ -318,6 +323,8 @@ async def create_device_ipsec_phase1_interface(
             data["ike-version"] = _validate_choice(ike_version, "ike_version", PHASE1_IKE_VERSIONS)
         if mode is not None:
             data["mode"] = _validate_choice(mode, "mode", PHASE1_MODES)
+        if peertype is None and type == "static":
+            peertype = "any"
         if peertype is not None:
             data["peertype"] = _validate_choice(peertype, "peertype", PHASE1_PEER_TYPES)
         if proposal:

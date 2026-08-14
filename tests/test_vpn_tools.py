@@ -192,6 +192,64 @@ class TestCreateDeviceIpsecPhase1Interface:
         assert "error" in result
         mock_fmg_instance.add.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_static_type_defaults_peertype_to_any(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """FMG 7.6.7 live-verified: a static PSK gateway with no peertype is
+        rejected with "peer invalid value" -- default to "any" so callers
+        don't hit that error without knowing to pass peertype explicitly.
+        """
+        mock_fmg_instance.add.return_value = (0, {"name": "hq-gw"})
+
+        with patch.object(vpn_tools, "get_fmg_client", return_value=mock_client):
+            result = await vpn_tools.create_device_ipsec_phase1_interface(
+                device="FGT-01",
+                name="hq-gw",
+                interface="wan1",
+                remote_gw="198.51.100.1",
+                psksecret="correct-horse-battery",
+            )
+
+        assert result.get("success") is True
+        _, kwargs = mock_fmg_instance.add.call_args
+        assert kwargs["data"]["peertype"] == "any"
+
+    @pytest.mark.asyncio
+    async def test_explicit_peertype_overrides_static_default(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        mock_fmg_instance.add.return_value = (0, {"name": "hq-gw"})
+
+        with patch.object(vpn_tools, "get_fmg_client", return_value=mock_client):
+            result = await vpn_tools.create_device_ipsec_phase1_interface(
+                device="FGT-01",
+                name="hq-gw",
+                interface="wan1",
+                remote_gw="198.51.100.1",
+                psksecret="correct-horse-battery",
+                peertype="dialup",
+            )
+
+        assert result.get("success") is True
+        _, kwargs = mock_fmg_instance.add.call_args
+        assert kwargs["data"]["peertype"] == "dialup"
+
+    @pytest.mark.asyncio
+    async def test_dynamic_type_does_not_default_peertype(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        mock_fmg_instance.add.return_value = (0, {"name": "dialup-gw"})
+
+        with patch.object(vpn_tools, "get_fmg_client", return_value=mock_client):
+            result = await vpn_tools.create_device_ipsec_phase1_interface(
+                device="FGT-01", name="dialup-gw", interface="wan1", type="dynamic"
+            )
+
+        assert result.get("success") is True
+        _, kwargs = mock_fmg_instance.add.call_args
+        assert "peertype" not in kwargs["data"]
+
 
 class TestUpdateDeviceIpsecPhase1Interface:
     @pytest.mark.asyncio
