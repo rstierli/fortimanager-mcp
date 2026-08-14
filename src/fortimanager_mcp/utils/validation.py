@@ -7,10 +7,15 @@ Security utilities for:
 """
 
 import json
+import logging
 import os
 import re
 from pathlib import Path
 from typing import Any
+
+from fortimanager_mcp.utils.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 # =============================================================================
 # Log Sanitization
@@ -1096,3 +1101,70 @@ def check_policy_permissiveness(
         "Policy is overly permissive: srcaddr='all', dstaddr='all', "
         "action='accept'. This allows traffic from any source to any destination." + negate_note
     )
+
+
+def check_policy_safety(
+    srcaddr: list[str] | None,
+    dstaddr: list[str] | None,
+    service: list[str] | None,
+    action: str | None,
+    srcaddr_negate: bool = False,
+    dstaddr_negate: bool = False,
+    service_negate: bool = False,
+) -> dict[str, Any] | None:
+    """Check policy permissiveness based on the FMG_POLICY_SAFETY setting.
+
+    Returns error dict (strict), warning dict (warn), or None (OK/disabled).
+    Shared by every tool that writes a firewall-policy-shaped payload
+    (create/update/revert) -- there must be exactly one copy of this gate,
+    not one per tool, or a future change to the gate risks only updating
+    some of the write paths.
+
+    Enabling negation never blocks on its own (it is a legitimate feature),
+    but it always attaches a warning in strict/warn mode: negation inverts a
+    field's meaning, so it should be noisy rather than silent.
+    """
+    settings = get_settings()
+    if settings.FMG_POLICY_SAFETY == "disabled":
+        return None
+
+    warning = check_policy_permissiveness(
+        srcaddr,
+        dstaddr,
+        service,
+        action,
+        srcaddr_negate=srcaddr_negate,
+        dstaddr_negate=dstaddr_negate,
+        service_negate=service_negate,
+    )
+    if warning:
+        if settings.FMG_POLICY_SAFETY == "strict":
+            logger.warning(f"Policy blocked — {warning}")
+            return {
+                "status": "error",
+                "message": f"Policy blocked: {warning} "
+                "Set FMG_POLICY_SAFETY=warn or FMG_POLICY_SAFETY=disabled to override.",
+            }
+
+        # warn mode — return marker for caller to attach warning to success response
+        logger.warning(f"Policy warning — {warning}")
+        return {"_safety_warning": warning}
+
+    negated = [
+        field
+        for field, flag in (
+            ("srcaddr", srcaddr_negate),
+            ("dstaddr", dstaddr_negate),
+            ("service", service_negate),
+        )
+        if flag
+    ]
+    if negated:
+        note = (
+            f"Negation enabled on {', '.join(negated)}: the policy matches the "
+            "complement of the listed value(s), not the value(s) themselves."
+        )
+        logger.warning(f"Policy warning — {note}")
+        return {"_safety_warning": note}
+
+    return None

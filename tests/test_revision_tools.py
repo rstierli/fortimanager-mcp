@@ -9,6 +9,7 @@ import pytest
 
 from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.tools import revision_tools
+from fortimanager_mcp.utils.config import get_settings
 
 # =============================================================================
 # Device DB revisions
@@ -445,6 +446,64 @@ class TestRevertFirewallPolicy:
 
         assert result["status"] == "error"
         assert result["error_code"] == "validation_error"
+
+    @pytest.mark.asyncio
+    async def test_blocked_when_overly_permissive(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A revert writes an arbitrary caller-supplied policy payload, same as
+        create/update -- srcaddr=all + dstaddr=all + action=accept must be
+        refused under strict policy safety exactly like create_firewall_policy,
+        not silently write through an unguarded path."""
+        monkeypatch.setenv("FMG_POLICY_SAFETY", "strict")
+        get_settings.cache_clear()
+        snapshot = {
+            "policyid": 14,
+            "srcaddr": ["all"],
+            "dstaddr": ["all"],
+            "service": ["ALL"],
+            "action": "accept",
+        }
+
+        try:
+            with patch.object(revision_tools, "get_fmg_client", return_value=mock_client):
+                result = await revision_tools.revert_firewall_policy("demo", "ppkg_001", snapshot)
+        finally:
+            get_settings.cache_clear()
+
+        assert result["status"] == "error"
+        assert "message" in result
+        mock_fmg_instance.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_allowed_when_policy_safety_disabled(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("FMG_POLICY_SAFETY", "disabled")
+        get_settings.cache_clear()
+        mock_fmg_instance.update.return_value = (0, {"status": {"code": 0, "message": "OK"}})
+        snapshot = {
+            "policyid": 14,
+            "srcaddr": ["all"],
+            "dstaddr": ["all"],
+            "service": ["ALL"],
+            "action": "accept",
+        }
+
+        try:
+            with patch.object(revision_tools, "get_fmg_client", return_value=mock_client):
+                result = await revision_tools.revert_firewall_policy("demo", "ppkg_001", snapshot)
+        finally:
+            get_settings.cache_clear()
+
+        assert result["status"] == "success"
+        mock_fmg_instance.update.assert_called_once()
 
 
 # =============================================================================

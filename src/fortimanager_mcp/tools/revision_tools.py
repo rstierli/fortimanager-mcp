@@ -56,6 +56,7 @@ from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.errors import client_safe_error
 from fortimanager_mcp.utils.validation import (
     ValidationError,
+    check_policy_safety,
     validate_adom,
     validate_device_name,
     validate_package_name,
@@ -694,11 +695,30 @@ async def revert_firewall_policy(
         package = validate_package_name(package)
         snapshot = _prepare_policy_snapshot(config)
         policyid = validate_policy_id(snapshot["policyid"])
+
+        # A revert writes an arbitrary caller-supplied policy payload, same
+        # as create/update -- it must go through the same permissiveness
+        # gate or it's an unguarded general-purpose policy-write path.
+        safety_warning = None
+        safety_result = check_policy_safety(
+            snapshot.get("srcaddr"),
+            snapshot.get("dstaddr"),
+            snapshot.get("service"),
+            snapshot.get("action"),
+            srcaddr_negate=snapshot.get("srcaddr-negate") == "enable",
+            dstaddr_negate=snapshot.get("dstaddr-negate") == "enable",
+            service_negate=snapshot.get("service-negate") == "enable",
+        )
+        if safety_result:
+            if safety_result.get("status") == "error":
+                return safety_result
+            safety_warning = safety_result.get("_safety_warning")
+
         client = _get_client()
         await client.revert_firewall_policy_snapshot(
             adom, package, snapshot, revision_note=revision_note
         )
-        return {
+        result = {
             "status": "success",
             "adom": adom,
             "package": package,
@@ -706,6 +726,9 @@ async def revert_firewall_policy(
             "message": f"Policy {policyid} in package '{package}' reverted to the supplied "
             "snapshot. Push to devices with preview_install + install_package.",
         }
+        if safety_warning:
+            result["safety_warning"] = safety_warning
+        return result
     except Exception as e:
         logger.error(f"Failed to revert firewall policy in {adom}/{package}: {e}")
         msg, code = client_safe_error(e)

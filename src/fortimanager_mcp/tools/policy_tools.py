@@ -11,13 +11,12 @@ from typing import Any
 
 from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.server import get_fmg_client, mcp
-from fortimanager_mcp.utils.config import get_settings
 from fortimanager_mcp.utils.errors import ResourceNotFoundError, client_safe_error
 from fortimanager_mcp.utils.install_gate import package_revision, record_preview
 from fortimanager_mcp.utils.responses import error_response
 from fortimanager_mcp.utils.task_guard import TaskSlotsExhausted, spawn_guarded
 from fortimanager_mcp.utils.validation import (
-    check_policy_permissiveness,
+    check_policy_safety,
     validate_adom,
     validate_move_position,
     validate_package_name,
@@ -34,69 +33,6 @@ def _get_client() -> FortiManagerClient:
     if not client:
         raise RuntimeError("FortiManager client not initialized")
     return client
-
-
-def _check_policy_safety(
-    srcaddr: list[str] | None,
-    dstaddr: list[str] | None,
-    service: list[str] | None,
-    action: str | None,
-    srcaddr_negate: bool = False,
-    dstaddr_negate: bool = False,
-    service_negate: bool = False,
-) -> dict[str, Any] | None:
-    """Check policy permissiveness based on safety config.
-
-    Returns error dict (strict), warning dict (warn), or None (OK/disabled).
-
-    Enabling negation never blocks on its own (it is a legitimate feature),
-    but it always attaches a warning in strict/warn mode: negation inverts a
-    field's meaning, so it should be noisy rather than silent.
-    """
-    settings = get_settings()
-    if settings.FMG_POLICY_SAFETY == "disabled":
-        return None
-
-    warning = check_policy_permissiveness(
-        srcaddr,
-        dstaddr,
-        service,
-        action,
-        srcaddr_negate=srcaddr_negate,
-        dstaddr_negate=dstaddr_negate,
-        service_negate=service_negate,
-    )
-    if warning:
-        if settings.FMG_POLICY_SAFETY == "strict":
-            logger.warning(f"Policy blocked — {warning}")
-            return {
-                "status": "error",
-                "message": f"Policy blocked: {warning} "
-                "Set FMG_POLICY_SAFETY=warn or FMG_POLICY_SAFETY=disabled to override.",
-            }
-
-        # warn mode — return marker for caller to attach warning to success response
-        logger.warning(f"Policy warning — {warning}")
-        return {"_safety_warning": warning}
-
-    negated = [
-        field
-        for field, flag in (
-            ("srcaddr", srcaddr_negate),
-            ("dstaddr", dstaddr_negate),
-            ("service", service_negate),
-        )
-        if flag
-    ]
-    if negated:
-        note = (
-            f"Negation enabled on {', '.join(negated)}: the policy matches the "
-            "complement of the listed value(s), not the value(s) themselves."
-        )
-        logger.warning(f"Policy warning — {note}")
-        return {"_safety_warning": note}
-
-    return None
 
 
 def _build_security_profile_fields(
@@ -567,7 +503,7 @@ async def create_firewall_policy(
     """
     # Safety check for overly permissive policies
     safety_warning = None
-    safety_result = _check_policy_safety(
+    safety_result = check_policy_safety(
         srcaddr,
         dstaddr,
         service,
@@ -770,7 +706,7 @@ async def update_firewall_policy(
     # never silent, even on a negate-only partial update.
     safety_warning = None
     full_check = srcaddr is not None and dstaddr is not None and action is not None
-    safety_result = _check_policy_safety(
+    safety_result = check_policy_safety(
         srcaddr if full_check else None,
         dstaddr if full_check else None,
         service if full_check else None,
@@ -1695,7 +1631,7 @@ async def create_local_in_policy(
         ... )
     """
     safety_warning = None
-    safety_result = _check_policy_safety(
+    safety_result = check_policy_safety(
         srcaddr,
         dstaddr,
         service,
@@ -1816,7 +1752,7 @@ async def update_local_in_policy(
     """
     safety_warning = None
     full_check = srcaddr is not None and dstaddr is not None and action is not None
-    safety_result = _check_policy_safety(
+    safety_result = check_policy_safety(
         srcaddr if full_check else None,
         dstaddr if full_check else None,
         service if full_check else None,
@@ -2080,7 +2016,7 @@ async def create_local_in_policy6(
         ... )
     """
     safety_warning = None
-    safety_result = _check_policy_safety(
+    safety_result = check_policy_safety(
         srcaddr,
         dstaddr,
         service,
@@ -2195,7 +2131,7 @@ async def update_local_in_policy6(
     """
     safety_warning = None
     full_check = srcaddr is not None and dstaddr is not None and action is not None
-    safety_result = _check_policy_safety(
+    safety_result = check_policy_safety(
         srcaddr if full_check else None,
         dstaddr if full_check else None,
         service if full_check else None,
