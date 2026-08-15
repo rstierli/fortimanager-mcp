@@ -1259,6 +1259,29 @@ class TestDeleteDeviceWtp:
         )
 
 
+class TestThePruneWarningCannotBeForgotten:
+    """create_device_wtp documents that FortiManager prunes a wtp-profile no
+    wtp entry references, which is why registering the AP is required at all.
+    The two tools that can put a profile back into that state have to say so
+    too. A docstring is the whole tool description an MCP caller ever sees,
+    so leaving the warning off one of them is how a caller reproduces the
+    bug wtp registration was added to prevent (#57).
+    """
+
+    def test_the_wtp_registration_tools_keep_the_prune_warning(self) -> None:
+        # create_device_wtp is in the loop because the other two point at it
+        # rather than restating the mechanism. Drop its paragraph and both
+        # cross-references dangle while their own warnings still read fine.
+        for tool_name in ("create_device_wtp", "update_device_wtp", "delete_device_wtp"):
+            doc = getattr(device_config_tools, tool_name).__doc__ or ""
+            assert "prune" in doc.lower(), (
+                f"device_config_tools.{tool_name} changes which wtp-profile a wtp "
+                "entry references, but says nothing about FortiManager pruning a "
+                "profile no entry references on install. create_device_wtp carries "
+                "the explanation; the other two warn and point back at it"
+            )
+
+
 class TestDynamicModeResolution:
     """The new module must be reachable through the dynamic-mode allowlist."""
 
