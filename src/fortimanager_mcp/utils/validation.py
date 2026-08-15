@@ -107,6 +107,28 @@ def sanitize_json_for_logging(data: Any, indent: int | None = None) -> str:
 # see inside this kind of multi-line text blob). Exact-name match only
 # (anchored by the trailing whitespace in the pattern below), not substring,
 # so e.g. "passwd-time" is never mistaken for "passwd".
+#
+# Cross-checked 2026-08-15 against every OTHER secret-field list already in
+# this codebase (_VAP_SECRET_FIELDS, _WTP_SECRET_FIELDS, _PHASE1_SECRET_FIELDS)
+# rather than derived independently -- a PR review (upstream #65 review
+# comment) found sae-password/login-passwd/authpasswd missing here despite
+# being declared secret in those sibling lists, plus priv-pwd (SNMP,
+# sibling to auth-pwd/auth-pwd-alt) and two more confirmed against the
+# FNDN 7.6.6/8.0.0 CLI references. tacacs+-secret was removed: the
+# documented tacacs+ secret directives are key/secondary-key/tertiary-key
+# (type "password" in the FNDN schema, confirmed against
+# devobj80-161-objects.htm), not a "secret" field, so the old entry never
+# matched anything real.
+#
+# "key" is context-dependent -- type "password" for TACACS+/NTP-auth/WEP,
+# but type "string" (non-secret) for a few unrelated tables (HTTP-header
+# key, multipart form-data key, FortiView filter key). This matcher has no
+# notion of which "config" block a line belongs to, so it cannot
+# distinguish them and redacts all of them. Deliberate: over-redacting an
+# occasional non-secret "key" line is a minor readability cost; under-
+# redacting a real TACACS+/NTP/WEP key is the failure this function exists
+# to prevent, so it favors over-redaction when a directive name is
+# ambiguous like this.
 CONFIG_TEXT_SECRET_DIRECTIVES = {
     "password",
     "passwd",
@@ -116,21 +138,30 @@ CONFIG_TEXT_SECRET_DIRECTIVES = {
     "ppk-secret",
     "auth-pwd",
     "auth-pwd-alt",
+    "priv-pwd",
     "community",
     "passphrase",
     "secret",
     "secondary-secret",
+    "tertiary-secret",
     "radius-secret",
-    "tacacs+-secret",
+    "key",
+    "secondary-key",
+    "tertiary-key",
+    "authkey",
+    "enckey",
     "certificate-password",
     "preshared-key",
+    "sae-password",
+    "login-passwd",
+    "authpasswd",
+    "group-authentication-secret",
 }
 
-_CONFIG_TEXT_SECRET_PATTERN = re.compile(
+_CONFIG_TEXT_SECRET_LINE = re.compile(
     r"^(?P<prefix>\s*set\s+(?:"
     + "|".join(re.escape(d) for d in CONFIG_TEXT_SECRET_DIRECTIVES)
-    + r")\s+).*$",
-    re.MULTILINE,
+    + r")\s+)(?P<rest>.*)$"
 )
 
 
@@ -143,8 +174,40 @@ def redact_config_text_secrets(text: str) -> str:
     Replaces the value portion of each matching "set <directive> ..." line
     with MASK_VALUE, keeping the directive name visible so it's still clear
     what was masked and where.
+
+    Line-scoped, not a single MULTILINE regex: a quoted value (e.g.
+    ``set private-key "-----BEGIN ... KEY-----``) can legitimately span
+    many lines before its closing quote -- a per-line pattern only ever
+    caught the first one, leaking the PEM body and END line raw (a PR
+    review, upstream #65, live-reproduced this against a real multi-line
+    private-key export). When a matched line opens a quote that does not
+    close on the same line, every line up to and including the one that
+    closes it is dropped rather than partially kept -- those lines carry
+    only secret content, nothing a reader needs.
     """
-    return _CONFIG_TEXT_SECRET_PATTERN.sub(lambda m: m.group("prefix") + MASK_VALUE, text)
+    lines = text.split("\n")
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        match = _CONFIG_TEXT_SECRET_LINE.match(line)
+        if not match:
+            out.append(line)
+            i += 1
+            continue
+
+        out.append(match.group("prefix") + MASK_VALUE)
+        rest = match.group("rest")
+        i += 1
+        if rest.startswith('"') and '"' not in rest[1:]:
+            # Unterminated quote: consume continuation lines until the one
+            # that closes it (or end of text, if the export was truncated --
+            # safer to over-redact than to guess a close that isn't there).
+            while i < len(lines) and '"' not in lines[i]:
+                i += 1
+            if i < len(lines):
+                i += 1  # also drop the closing line itself
+    return "\n".join(out)
 
 
 # =============================================================================

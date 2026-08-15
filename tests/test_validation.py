@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from fortimanager_mcp.utils.validation import (
+    CONFIG_TEXT_SECRET_DIRECTIVES,
     MASK_VALUE,
     VALID_ADDRESS_TYPES,
     VALID_LOG_TRAFFIC_MODES,
@@ -177,6 +178,85 @@ class TestRedactConfigTextSecrets:
 
     def test_empty_string(self):
         assert redact_config_text_secrets("") == ""
+
+    def test_redacts_multiline_quoted_value(self):
+        """PR #65 review (Christian): a per-line regex only caught the
+        first line of a multi-line quoted value like a PEM private key --
+        the body and END line leaked raw. Live-reproduced against a real
+        multi-line private-key export before fixing."""
+        text = (
+            "config vpn certificate local\n"
+            '    edit "mycert"\n'
+            '        set private-key "-----BEGIN ENCRYPTED PRIVATE KEY-----\n'
+            "MIIFHDBOBgkqhkiG9w0BBQ0wQTApBgkqhkiG9w0BBQwwHAQI\n"
+            '-----END ENCRYPTED PRIVATE KEY-----"\n'
+            '        set comment "prod cert"\n'
+            "    next\n"
+            "end\n"
+        )
+        result = redact_config_text_secrets(text)
+        assert "MIIFHDBOBgkqhkiG9w0BBQ0w" not in result
+        assert "END ENCRYPTED PRIVATE KEY" not in result
+        assert "BEGIN ENCRYPTED PRIVATE KEY" not in result
+        assert "set private-key ***REDACTED***" in result
+        # unrelated lines survive untouched
+        assert 'edit "mycert"' in result
+        assert 'set comment "prod cert"' in result
+        assert "next" in result
+        assert "end" in result
+
+    def test_unterminated_quote_redacts_to_end_of_text(self):
+        """A truncated export (no closing quote) must fail closed -- redact
+        everything after the opening line rather than guess where a close
+        that isn't there would have been."""
+        text = 'set private-key "-----BEGIN KEY-----\nMIIsomebody\nmore body\n'
+        result = redact_config_text_secrets(text)
+        assert "MIIsomebody" not in result
+        assert "more body" not in result
+        assert "set private-key ***REDACTED***" in result
+
+    def test_single_line_quoted_value_unaffected(self):
+        """A quoted value that opens and closes on the same line is not
+        mistaken for a multi-line one -- only the matched line is touched."""
+        text = 'set comment "hello world"\nset psksecret "ENC AbC=="\nset hostname fw01\n'
+        result = redact_config_text_secrets(text)
+        assert 'set comment "hello world"' in result
+        assert "ENC AbC==" not in result
+        assert "set hostname fw01" in result
+
+    @pytest.mark.parametrize(
+        "directive",
+        [
+            "sae-password",
+            "login-passwd",
+            "authpasswd",
+            "priv-pwd",
+            "tertiary-secret",
+            "group-authentication-secret",
+            "authkey",
+            "enckey",
+        ],
+    )
+    def test_redacts_previously_missing_directives(self, directive):
+        """PR #65 review (Christian): these were declared secret by sibling
+        field lists elsewhere in the same PR (_VAP_SECRET_FIELDS,
+        _WTP_SECRET_FIELDS, _PHASE1_SECRET_FIELDS) but missing from this
+        list, so they leaked raw despite the codebase already knowing they
+        were sensitive."""
+        text = f"    set {directive} ENC XYZ123==\n"
+        result = redact_config_text_secrets(text)
+        assert "XYZ123" not in result
+        assert f"set {directive} ***REDACTED***" in result
+
+    def test_tacacs_secret_directive_removed(self):
+        """The old tacacs+-secret entry never matched anything real -- the
+        documented TACACS+ secret fields are key/secondary-key/tertiary-key
+        (confirmed against the FNDN schema, type "password")."""
+        assert "tacacs+-secret" not in CONFIG_TEXT_SECRET_DIRECTIVES
+        for directive in ("key", "secondary-key", "tertiary-key"):
+            text = f"    set {directive} ENC realsecret==\n"
+            result = redact_config_text_secrets(text)
+            assert "realsecret" not in result
 
 
 # =============================================================================
