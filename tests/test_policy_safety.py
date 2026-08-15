@@ -68,6 +68,47 @@ class TestCheckPolicyPermissiveness:
         assert result is not None
         assert "fully open" in result
 
+    def test_padded_action_does_not_bypass(self):
+        """PR #65 review (Christian): 'accept ' (trailing space) failed the
+        exact `!= "accept"` comparison and bypassed detection entirely."""
+        result = check_policy_permissiveness(["all"], ["all"], ["ALL"], "accept ")
+        assert result is not None
+        assert "fully open" in result
+
+    def test_padded_and_capitalized_action_does_not_bypass(self):
+        result = check_policy_permissiveness(["all"], ["all"], ["ALL"], "  Accept  ")
+        assert result is not None
+
+    def test_scalar_string_srcaddr_does_not_bypass(self):
+        """PR #65 review: a bare string ("all" instead of ["all"]) was
+        iterated character by character ('a','l','l', none of which equals
+        "all"), silently returning False -- a scalar bypassed the check
+        entirely."""
+        result = check_policy_permissiveness("all", ["all"], ["ALL"], "accept")
+        assert result is not None
+        assert "fully open" in result
+
+    def test_scalar_string_dstaddr_does_not_bypass(self):
+        result = check_policy_permissiveness(["all"], "all", ["ALL"], "accept")
+        assert result is not None
+
+    def test_scalar_string_service_does_not_bypass(self):
+        result = check_policy_permissiveness(["all"], ["all"], "ALL", "accept")
+        assert result is not None
+        assert "fully open" in result
+
+    def test_all_scalar_strings_together_does_not_bypass(self):
+        """The exact combination the PR review measured live."""
+        result = check_policy_permissiveness("all", "all", "ALL", "accept")
+        assert result is not None
+        assert "fully open" in result
+
+    def test_scalar_non_all_string_still_passes(self):
+        """A scalar string that genuinely isn't "all" must not be
+        misread as broad just because it's not a list."""
+        result = check_policy_permissiveness("LAN-Subnet", "Server-Net", ["HTTP"], "accept")
+        assert result is None
+
 
 class TestCheckPolicyPermissivenessNegate:
     """Negation inverts a field's match set, changing what counts as broad."""

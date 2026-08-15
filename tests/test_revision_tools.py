@@ -576,6 +576,137 @@ class TestRevertFirewallPolicy:
         assert result["status"] == "success"
         mock_fmg_instance.update.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_real_snapshot_shape_does_not_crash_the_gate(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """PR #65 review (Christian): a real change-log snapshot encodes
+        action and the *-negate flags as FMG's internal integers, not the
+        strings a caller sends when writing a new policy -- this crashed
+        with 'int' object has no attribute 'lower'. Live-verified shape:
+        pulled from myfw01's actual list_policy_revisions output (a real,
+        non-permissive policy), plus a live-created/read-back test policy
+        confirmed the 0=deny/1=accept and 0/1-negate encoding."""
+        mock_fmg_instance.update.return_value = (0, {"status": {"code": 0, "message": "OK"}})
+        real_snapshot = {
+            "policyid": 59,
+            "name": "Lab-2-SDWAN_BBI",
+            "action": 1,
+            "srcaddr": ["net_mystier_lablan"],
+            "dstaddr": ["all"],
+            "srcaddr-negate": 0,
+            "dstaddr-negate": 0,
+            "service": ["ALL_ICMP", "HTTP", "HTTPS"],
+            "service-negate": 0,
+            "status": 1,
+        }
+
+        with patch.object(revision_tools, "get_fmg_client", return_value=mock_client):
+            result = await revision_tools.revert_firewall_policy("demo", "ppkg_001", real_snapshot)
+
+        assert result["status"] == "success"
+        mock_fmg_instance.update.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_real_shape_dangerous_snapshot_is_still_blocked(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """Same int-encoded shape as above, but genuinely overly permissive
+        -- must still be blocked, not merely non-crashing."""
+        dangerous_snapshot = {
+            "policyid": 99,
+            "action": 1,
+            "srcaddr": ["all"],
+            "dstaddr": ["all"],
+            "srcaddr-negate": 0,
+            "dstaddr-negate": 0,
+            "service": ["ALL"],
+            "service-negate": 0,
+        }
+
+        with patch.object(revision_tools, "get_fmg_client", return_value=mock_client):
+            result = await revision_tools.revert_firewall_policy(
+                "demo", "ppkg_001", dangerous_snapshot
+            )
+
+        assert result["status"] == "error"
+        mock_fmg_instance.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_scalar_string_addresses_do_not_bypass_the_gate(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """PR #65 review: a bare string ("all" instead of ["all"]) was
+        iterated character by character and silently treated as not-all,
+        bypassing the gate entirely."""
+        snapshot = {
+            "policyid": 1,
+            "action": "accept",
+            "srcaddr": "all",
+            "dstaddr": "all",
+            "service": "ALL",
+        }
+
+        with patch.object(revision_tools, "get_fmg_client", return_value=mock_client):
+            result = await revision_tools.revert_firewall_policy("demo", "ppkg_001", snapshot)
+
+        assert result["status"] == "error"
+        mock_fmg_instance.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_padded_action_does_not_bypass_the_gate(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """PR #65 review: "accept " (trailing space) failed the exact
+        `!= "accept"` string comparison and bypassed the gate."""
+        snapshot = {
+            "policyid": 1,
+            "action": "accept ",
+            "srcaddr": ["all"],
+            "dstaddr": ["all"],
+            "service": ["ALL"],
+        }
+
+        with patch.object(revision_tools, "get_fmg_client", return_value=mock_client):
+            result = await revision_tools.revert_firewall_policy("demo", "ppkg_001", snapshot)
+
+        assert result["status"] == "error"
+        mock_fmg_instance.update.assert_not_called()
+
+
+class TestSnapshotSafetyNormalizers:
+    """Direct tests for the snapshot-shape normalizers, not just their
+    effect through revert_firewall_policy."""
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            (1, "accept"),
+            (0, "deny"),
+            (2, "deny"),
+            ("accept", "accept"),
+            ("deny", "deny"),
+            (None, None),
+        ],
+    )
+    def test_action_normalization(self, raw, expected) -> None:
+        assert revision_tools._snapshot_action_for_safety_check(raw) == expected
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            (1, True),
+            (0, False),
+            (True, True),
+            (False, False),
+            ("enable", True),
+            ("disable", False),
+            (None, False),
+        ],
+    )
+    def test_negate_normalization(self, raw, expected) -> None:
+        assert revision_tools._snapshot_negate_for_safety_check(raw) == expected
+
 
 # =============================================================================
 # Shared validators

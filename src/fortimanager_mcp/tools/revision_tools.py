@@ -132,6 +132,50 @@ def _prepare_policy_snapshot(config: str | dict[str, Any]) -> dict[str, Any]:
     return snapshot
 
 
+def _snapshot_action_for_safety_check(action: Any) -> str | None:
+    """Normalize a policy snapshot's raw ``action`` field for the gate.
+
+    A real change-log snapshot encodes action as FMG's internal integer,
+    not the string a caller sends when creating/updating a policy --
+    live-verified against fmg-prod-01 (a real accept policy on myfw01
+    returned action=1; a test policy created with action="deny" and read
+    back returned action=0). Fed straight into check_policy_safety, which
+    calls ``.lower()`` on it, this crashed with 'int' object has no
+    attribute 'lower' (PR #65 review, Christian) -- the gate had never
+    been exercised against a real snapshot's actual shape.
+
+    Only whether action is "accept" matters to the permissiveness check,
+    so any int other than 1 normalizes to "deny" as a safe placeholder --
+    which specific non-accept action it really was (ipsec, ssl-vpn, ...)
+    doesn't change the gate's answer.
+    """
+    if isinstance(action, str):
+        return action
+    if isinstance(action, int):
+        return "accept" if action == 1 else "deny"
+    return None
+
+
+def _snapshot_negate_for_safety_check(value: Any) -> bool:
+    """Normalize a policy snapshot's raw ``*-negate`` field for the gate.
+
+    Same live-verified encoding gap as action above: a real snapshot's
+    negate fields are FMG's internal 0/1 integers (confirmed via
+    srcaddr-negate on a test policy created with srcaddr_negate=True),
+    not the "enable"/"disable" string a caller sends when writing a new
+    policy. An int was previously compared with `== "enable"`, which is
+    always False -- negation on a reverted policy was invisible to the
+    gate regardless of its real value.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value == 1
+    if isinstance(value, str):
+        return value == "enable"
+    return False
+
+
 async def _run_cache_diff(
     client: FortiManagerClient,
     *,
@@ -722,10 +766,10 @@ async def revert_firewall_policy(
             snapshot.get("srcaddr"),
             snapshot.get("dstaddr"),
             snapshot.get("service"),
-            snapshot.get("action"),
-            srcaddr_negate=snapshot.get("srcaddr-negate") == "enable",
-            dstaddr_negate=snapshot.get("dstaddr-negate") == "enable",
-            service_negate=snapshot.get("service-negate") == "enable",
+            _snapshot_action_for_safety_check(snapshot.get("action")),
+            srcaddr_negate=_snapshot_negate_for_safety_check(snapshot.get("srcaddr-negate")),
+            dstaddr_negate=_snapshot_negate_for_safety_check(snapshot.get("dstaddr-negate")),
+            service_negate=_snapshot_negate_for_safety_check(snapshot.get("service-negate")),
         )
         if safety_result:
             if safety_result.get("status") == "error":

@@ -1116,9 +1116,9 @@ def validate_script_content(content: str) -> list[str]:
 
 
 def check_policy_permissiveness(
-    srcaddr: list[str] | None,
-    dstaddr: list[str] | None,
-    service: list[str] | None,
+    srcaddr: list[str] | str | None,
+    dstaddr: list[str] | str | None,
+    service: list[str] | str | None,
     action: str | None,
     srcaddr_negate: bool = False,
     dstaddr_negate: bool = False,
@@ -1146,17 +1146,35 @@ def check_policy_permissiveness(
     Returns:
         Warning message string if overly permissive, None if acceptable
     """
-    if action is None or action.lower() != "accept":
+    # .strip() before comparing: PR #65 review (Christian) found a padded
+    # action ("accept " with a trailing space) bypassed this check entirely
+    # -- reachable from any caller that doesn't validate action against the
+    # enum first (revert_firewall_policy's snapshot input, in particular).
+    if action is None or action.strip().lower() != "accept":
         return None
 
-    def _is_all(addrs: list[str] | None) -> bool:
+    def _is_all(addrs: list[str] | str | None) -> bool:
+        # Same review: a caller passing a bare string ("all" instead of
+        # ["all"]) was iterated character-by-character ('a','l','l', none
+        # of which equals "all"), silently returning False -- a scalar
+        # bypassed the check completely. A list is still the contract this
+        # function documents; a bare string is tolerated defensively
+        # (treated as its own single-element list) rather than trusted
+        # blindly, since a safety check must not be foolable by a caller
+        # passing the "wrong" shape.
         if not addrs:
             return False
+        if isinstance(addrs, str):
+            addrs = [addrs]
         return any(a.lower() == "all" for a in addrs)
 
     src_all = _is_all(srcaddr)
     dst_all = _is_all(dstaddr)
-    svc_all = service is not None and any(s.upper() == "ALL" for s in service)
+    svc_all = service is not None and (
+        any(s.upper() == "ALL" for s in service)
+        if not isinstance(service, str)
+        else service.upper() == "ALL"
+    )
 
     # Negating "all" produces an empty match set — the policy matches no
     # traffic. Almost always a mistake, and FortiOS may reject it at install.
@@ -1213,9 +1231,9 @@ def check_policy_permissiveness(
 
 
 def check_policy_safety(
-    srcaddr: list[str] | None,
-    dstaddr: list[str] | None,
-    service: list[str] | None,
+    srcaddr: list[str] | str | None,
+    dstaddr: list[str] | str | None,
+    service: list[str] | str | None,
     action: str | None,
     srcaddr_negate: bool = False,
     dstaddr_negate: bool = False,
