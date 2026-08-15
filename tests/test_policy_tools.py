@@ -1310,6 +1310,77 @@ class TestLocalInPolicyTools:
         assert "message" in result
 
     @pytest.mark.asyncio
+    async def test_update_local_in_policy_blocked_when_overly_permissive(
+        self,
+        mock_client: MagicMock,
+        configure_mock_responses: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """PR #65 review (Christian, mutation testing): only the
+        create_local_in_policy (v4) gate was pinned by a test -- a mutation
+        that deleted the check_policy_safety call in update_local_in_policy,
+        create_local_in_policy6, or update_local_in_policy6 left the suite
+        fully green. Same gate, same guarantee, needs the same test."""
+        monkeypatch.setenv("FMG_POLICY_SAFETY", "strict")
+        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
+            result = await policy_tools.update_local_in_policy(
+                adom="root",
+                package="default",
+                policyid=1,
+                srcaddr=["all"],
+                dstaddr=["all"],
+                service=["ALL"],
+                action="accept",
+            )
+
+        assert result["status"] == "error"
+        assert "message" in result
+
+    @pytest.mark.asyncio
+    async def test_create_local_in_policy6_blocked_when_overly_permissive(
+        self,
+        mock_client: MagicMock,
+        configure_mock_responses: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("FMG_POLICY_SAFETY", "strict")
+        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
+            result = await policy_tools.create_local_in_policy6(
+                adom="root",
+                package="default",
+                intf=["any"],
+                srcaddr=["all"],
+                dstaddr=["all"],
+                service=["ALL"],
+                action="accept",
+            )
+
+        assert result["status"] == "error"
+        assert "message" in result
+
+    @pytest.mark.asyncio
+    async def test_update_local_in_policy6_blocked_when_overly_permissive(
+        self,
+        mock_client: MagicMock,
+        configure_mock_responses: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("FMG_POLICY_SAFETY", "strict")
+        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
+            result = await policy_tools.update_local_in_policy6(
+                adom="root",
+                package="default",
+                policyid=1,
+                srcaddr=["all"],
+                dstaddr=["all"],
+                service=["ALL"],
+                action="accept",
+            )
+
+        assert result["status"] == "error"
+        assert "message" in result
+
+    @pytest.mark.asyncio
     async def test_update_local_in_policy_success(
         self,
         mock_client: MagicMock,
