@@ -53,6 +53,7 @@ from typing import Any
 
 from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.server import get_fmg_client, mcp
+from fortimanager_mcp.utils.config import get_settings
 from fortimanager_mcp.utils.errors import client_safe_error
 from fortimanager_mcp.utils.validation import (
     ValidationError,
@@ -556,6 +557,7 @@ async def revert_adom_revision(
     name: str | None = None,
     desc: str | None = None,
     locked: bool = False,
+    confirm: bool = False,
 ) -> dict[str, Any]:
     """Revert the live ADOM DB to a past revision.
 
@@ -567,6 +569,13 @@ async def revert_adom_revision(
     restored policy/object changes to devices separately with preview_install
     + install_package/install_device_settings as needed.
 
+    Safety: governed by FMG_REVERT_SAFETY (default "strict"), same pattern
+    as trigger_fmg_restore -- refused unless confirm=True is also passed.
+    A clone-revert has no dry-run or content-screening equivalent (unlike
+    the firewall-policy revert, which is gated by content instead): it
+    replaces the entire live ADOM DB in one call, so the gate is a plain
+    explicit confirmation. Set FMG_REVERT_SAFETY=disabled to remove it.
+
     Args:
         adom: ADOM name
         revision: Revision number to revert to (the `version` field from
@@ -577,11 +586,24 @@ async def revert_adom_revision(
             "Revert of ADOM Revision #{revision}")
         locked: Protect the newly-created revision from deletion (default
             False)
+        confirm: Must be True to proceed under FMG_REVERT_SAFETY=strict
+            (default). Ignored when FMG_REVERT_SAFETY=disabled.
 
     Returns:
         dict: status, adom, reverted_from, new_revision, message
     """
     try:
+        settings = get_settings()
+        if settings.FMG_REVERT_SAFETY == "strict" and not confirm:
+            logger.warning(f"ADOM revert blocked for {adom} — confirm=True not passed")
+            return {
+                "status": "error",
+                "message": "ADOM revert refused: this replaces the entire live ADOM DB in "
+                "one call. Pass confirm=True to proceed, or set "
+                "FMG_REVERT_SAFETY=disabled to remove this gate.",
+                "error_code": "confirmation_required",
+            }
+
         adom = validate_adom(adom)
         revision = _validate_revision(revision)
         client = _get_client()

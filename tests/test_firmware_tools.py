@@ -222,7 +222,7 @@ class TestUpgradeDeviceFirmware:
 
         with patch.object(firmware_tools, "get_fmg_client", return_value=mock_client_configured):
             result = await firmware_tools.upgrade_device_firmware(
-                device="FGT-01", target_version="6.4.1-1637"
+                device="FGT-01", target_version="6.4.1-1637", confirm=True
             )
 
         assert result["status"] == "success"
@@ -237,6 +237,7 @@ class TestUpgradeDeviceFirmware:
                 device="FGT-01",
                 target_version="6.4.1-1637",
                 flags="f_skip_fortiguard_img",
+                confirm=True,
             )
 
         assert result["status"] == "success"
@@ -247,7 +248,7 @@ class TestUpgradeDeviceFirmware:
 
         with patch.object(firmware_tools, "get_fmg_client", return_value=mock_client_configured):
             result = await firmware_tools.upgrade_device_firmware(
-                device="FGT-01", target_version="6.4.1-1637", flags="f_preview"
+                device="FGT-01", target_version="6.4.1-1637", flags="f_preview", confirm=True
             )
 
         # f_preview is reserved for get_firmware_upgrade_path and rejected here.
@@ -263,7 +264,7 @@ class TestUpgradeDeviceFirmware:
 
         with patch.object(firmware_tools, "get_fmg_client", return_value=mock_client_configured):
             result = await firmware_tools.upgrade_device_firmware(
-                device="FGT-01", target_version=""
+                device="FGT-01", target_version="", confirm=True
             )
 
         assert result["status"] == "error"
@@ -282,11 +283,56 @@ class TestUpgradeDeviceFirmware:
 
         with patch.object(firmware_tools, "get_fmg_client", return_value=mock_client_configured):
             result = await firmware_tools.upgrade_device_firmware(
-                device="FGT-01", target_version="6.4.1-1637"
+                device="FGT-01", target_version="6.4.1-1637", confirm=True
             )
 
         assert result["status"] == "error"
         assert result["error"] == "task_slots_exhausted"
+
+    @pytest.mark.asyncio
+    async def test_blocked_without_confirm(
+        self, mock_client_configured: FortiManagerClient
+    ) -> None:
+        """PR #65 review (Christian): upgrade_device_firmware reboots a
+        real managed device with no gate of any kind -- unlike
+        trigger_fmg_restore, which this batch already gated. spawn_guarded
+        bounds concurrency, it does not gate whether the call is allowed."""
+        from fortimanager_mcp.tools import firmware_tools
+        from fortimanager_mcp.utils.task_guard import in_flight
+
+        with patch.object(firmware_tools, "get_fmg_client", return_value=mock_client_configured):
+            result = await firmware_tools.upgrade_device_firmware(
+                device="FGT-01", target_version="6.4.1-1637"
+            )
+
+        assert result["status"] == "error"
+        assert result["error_code"] == "confirmation_required"
+        # No task slot held for a call refused before it ever reached spawn_guarded.
+        assert in_flight() == 0
+
+    @pytest.mark.asyncio
+    async def test_allowed_when_firmware_safety_disabled(
+        self,
+        mock_client_configured: FortiManagerClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from fortimanager_mcp.tools import firmware_tools
+        from fortimanager_mcp.utils.config import get_settings
+
+        monkeypatch.setenv("FMG_FIRMWARE_SAFETY", "disabled")
+        get_settings.cache_clear()
+
+        try:
+            with patch.object(
+                firmware_tools, "get_fmg_client", return_value=mock_client_configured
+            ):
+                result = await firmware_tools.upgrade_device_firmware(
+                    device="FGT-01", target_version="6.4.1-1637"
+                )
+        finally:
+            get_settings.cache_clear()
+
+        assert result["status"] == "success"
 
 
 async def _fake_task(task_id: int) -> dict[str, Any]:

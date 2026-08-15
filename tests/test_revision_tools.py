@@ -356,7 +356,7 @@ class TestRevertAdomRevision:
         mock_fmg_instance.clone.return_value = (0, {"version": 4})
 
         with patch.object(revision_tools, "get_fmg_client", return_value=mock_client):
-            result = await revision_tools.revert_adom_revision("dc_emea", revision=1)
+            result = await revision_tools.revert_adom_revision("dc_emea", revision=1, confirm=True)
 
         assert result["status"] == "success"
         assert result["reverted_from"] == 1
@@ -376,7 +376,12 @@ class TestRevertAdomRevision:
 
         with patch.object(revision_tools, "get_fmg_client", return_value=mock_client):
             result = await revision_tools.revert_adom_revision(
-                "dc_emea", revision=1, name="my-restore", desc="custom desc", locked=True
+                "dc_emea",
+                revision=1,
+                name="my-restore",
+                desc="custom desc",
+                locked=True,
+                confirm=True,
             )
 
         assert result["status"] == "success"
@@ -384,6 +389,40 @@ class TestRevertAdomRevision:
         assert kwargs["data"]["name"] == "my-restore"
         assert kwargs["data"]["desc"] == "custom desc"
         assert kwargs["data"]["locked"] == 1
+
+    @pytest.mark.asyncio
+    async def test_blocked_without_confirm(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """PR #65 review (Christian): revert_adom_revision restores the
+        entire live ADOM DB with no safety gate at all -- unlike
+        trigger_fmg_restore, which this batch already gated."""
+        with patch.object(revision_tools, "get_fmg_client", return_value=mock_client):
+            result = await revision_tools.revert_adom_revision("dc_emea", revision=1)
+
+        assert result["status"] == "error"
+        assert result["error_code"] == "confirmation_required"
+        mock_fmg_instance.clone.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_allowed_when_revert_safety_disabled(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("FMG_REVERT_SAFETY", "disabled")
+        get_settings.cache_clear()
+        mock_fmg_instance.clone.return_value = (0, {"version": 4})
+
+        try:
+            with patch.object(revision_tools, "get_fmg_client", return_value=mock_client):
+                result = await revision_tools.revert_adom_revision("dc_emea", revision=1)
+        finally:
+            get_settings.cache_clear()
+
+        assert result["status"] == "success"
+        mock_fmg_instance.clone.assert_called_once()
 
 
 # =============================================================================

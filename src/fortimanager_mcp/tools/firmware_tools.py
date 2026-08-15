@@ -44,7 +44,7 @@ from typing import Any
 
 from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.server import get_fmg_client, mcp
-from fortimanager_mcp.utils.config import get_default_adom
+from fortimanager_mcp.utils.config import get_default_adom, get_settings
 from fortimanager_mcp.utils.errors import client_safe_error
 from fortimanager_mcp.utils.responses import error_response
 from fortimanager_mcp.utils.task_guard import TaskSlotsExhausted, spawn_guarded
@@ -302,6 +302,7 @@ async def upgrade_device_firmware(
     vdom: str | None = None,
     flags: str | None = None,
     schedule_time: str | None = None,
+    confirm: bool = False,
 ) -> dict[str, Any]:
     """Trigger a firmware upgrade on a managed device.
 
@@ -316,6 +317,14 @@ async def upgrade_device_firmware(
     target, and this tool upgrades straight to target_version without
     walking that path itself.
 
+    Safety: governed by FMG_FIRMWARE_SAFETY (default "strict"), same
+    pattern as trigger_fmg_restore -- refused unless confirm=True is also
+    passed. A firmware upgrade reboots a real managed device onto new
+    code; there is no dry-run and no content to screen, so the gate is a
+    plain explicit confirmation. This is unrelated to spawn_guarded below,
+    which only bounds concurrency, not whether the call is allowed to
+    happen at all. Set FMG_FIRMWARE_SAFETY=disabled to remove the gate.
+
     Args:
         device: Managed device name
         target_version: Target firmware version, e.g. "7.2.9-b1688"
@@ -328,6 +337,8 @@ async def upgrade_device_firmware(
             (let the device download firmware from FortiGuard itself)
         schedule_time: Schedule the upgrade for a future time instead of
             running it immediately (optional; FMG-native time format)
+        confirm: Must be True to proceed under FMG_FIRMWARE_SAFETY=strict
+            (default). Ignored when FMG_FIRMWARE_SAFETY=disabled.
 
     Returns:
         dict: Trigger result with keys:
@@ -337,12 +348,25 @@ async def upgrade_device_firmware(
 
     Example:
         >>> path = await get_firmware_upgrade_path("FGT-HQ", "7.2.9-b1688")
-        >>> result = await upgrade_device_firmware("FGT-HQ", "7.2.9-b1688")
+        >>> result = await upgrade_device_firmware(
+        ...     "FGT-HQ", "7.2.9-b1688", confirm=True
+        ... )
         >>> if result["status"] == "success":
         ...     await wait_for_task(result["task_id"], timeout=1800)
     """
     adom = adom or get_default_adom()
     try:
+        settings = get_settings()
+        if settings.FMG_FIRMWARE_SAFETY == "strict" and not confirm:
+            logger.warning(f"Firmware upgrade blocked for {device} — confirm=True not passed")
+            return {
+                "status": "error",
+                "message": "Firmware upgrade refused: this reboots the real managed device "
+                "onto new firmware. Pass confirm=True to proceed, or set "
+                "FMG_FIRMWARE_SAFETY=disabled to remove this gate.",
+                "error_code": "confirmation_required",
+            }
+
         adom = validate_adom(adom)
         device = validate_device_name(device)
         target_version = _validate_firmware_version(target_version)

@@ -212,6 +212,22 @@ class Settings(BaseSettings):
         "configuration and interrupts the service). 'disabled' allows it unconditionally.",
     )
 
+    # Revert Safety
+    FMG_REVERT_SAFETY: Literal["strict", "disabled"] = Field(
+        default="strict",
+        description="ADOM-DB-revert safety mode. 'strict' refuses revert_adom_revision "
+        "unless the caller also passes confirm=True (a clone restores the entire live "
+        "ADOM DB in one call). 'disabled' allows it unconditionally.",
+    )
+
+    # Firmware Upgrade Safety
+    FMG_FIRMWARE_SAFETY: Literal["strict", "disabled"] = Field(
+        default="strict",
+        description="Firmware-upgrade safety mode. 'strict' refuses upgrade_device_firmware "
+        "unless the caller also passes confirm=True (upgrading reboots the real managed "
+        "device). 'disabled' allows it unconditionally.",
+    )
+
     # Policy Safety
     FMG_POLICY_SAFETY: Literal["strict", "warn", "disabled"] = Field(
         default="strict",
