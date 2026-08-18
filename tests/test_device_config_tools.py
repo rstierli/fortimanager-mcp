@@ -812,6 +812,41 @@ class TestUpdateDeviceWtpProfileRadio:
         }
 
     @pytest.mark.asyncio
+    async def test_the_write_payload_carries_only_the_target_radio(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """Pinning one radio must not write the whole profile back.
+
+        test_pins_a_single_channel_on_radio_1 proves the target radio keeps
+        the fields it already had, but says nothing about what else rides
+        along in the payload. A read-modify-write that sent
+        `{**stored, key: updated_radio}` would carry the correct target
+        radio and still rewrite the sibling radios and the profile's own
+        top-level fields on every channel pin. Measured: that mutation
+        leaves the rest of this file green and fails only here.
+        """
+        mock_fmg_instance.get.return_value = (
+            0,
+            {
+                "name": "AP-profile",
+                "comment": "site A",
+                "radio-1": {"vap-all": "manual", "band": "802.11ax-2G"},
+                "radio-2": {"vap-all": "manual", "band": "802.11ax-5G", "power-level": 70},
+                "radio-3": {"vap-all": "manual", "band": "802.11ax-6G"},
+            },
+        )
+        mock_fmg_instance.update.return_value = (0, {"name": "AP-profile"})
+
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.update_device_wtp_profile_radio(
+                device="FGT-01", profile="AP-profile", radio=2, channel=[36]
+            )
+
+        assert result.get("success") is True
+        data = mock_fmg_instance.update.call_args.kwargs["data"]
+        assert set(data) == {"radio-2"}
+
+    @pytest.mark.asyncio
     async def test_strips_readonly_keys_from_the_carried_through_radio(
         self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
     ) -> None:
