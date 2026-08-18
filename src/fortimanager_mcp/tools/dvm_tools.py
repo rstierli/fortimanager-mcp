@@ -431,7 +431,11 @@ async def add_model_device(
 
         return {
             "status": "success",
-            "device": result.get("device", device_config),
+            # Stripped for the same reason the read paths are: the echo
+            # carries whatever the record holds, not only what was
+            # submitted, and a model-device record can come back with
+            # blanked or default-populated psk and private_key fields.
+            "device": strip_device_credentials(result.get("device", device_config)),
             "message": f"Model device {name} added successfully",
         }
     except Exception as e:
