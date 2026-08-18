@@ -876,3 +876,52 @@ class TestValidateInterfaceName:
         """Test invalid interface names raise error."""
         with pytest.raises(ValidationError):
             validate_interface_name(name)
+
+
+class TestFortiApSerialPrefixes:
+    """FortiAP-U and FortiAP-S serials do not start with ``FP``.
+
+    The prefix set accepted ``FP``, which covers the mainline FortiAP
+    models, and rejected the ``PU`` and ``PS`` prefixes the FortiAP-U and
+    FortiAP-S series use (upstream #56). Nothing in the current fleet
+    carries one, so this never fired; the failure mode when it does is a
+    valid AP registration refused for a reason the message does not
+    explain, since it says the serial must start with a device type
+    prefix and the serial does.
+    """
+
+    @pytest.mark.parametrize(
+        "serial",
+        [
+            "PU321C3X17000001",  # FortiAP-U
+            "PS221E3X17000001",  # FortiAP-S
+            "pu321c3x17000001",  # accepted in either case, like the rest
+        ],
+    )
+    def test_the_u_and_s_series_are_accepted(self, serial):
+        assert validate_device_serial(serial) == serial.upper()
+
+    def test_the_mainline_fortiap_prefix_still_works(self):
+        """FP was already accepted and must stay that way."""
+        assert validate_device_serial("FP221E3X17000001") == "FP221E3X17000001"
+
+    @pytest.mark.parametrize(
+        "serial",
+        [
+            "PX321C3X17000001",  # P-initial, not a real product prefix
+            "PT321C3X17000001",  # ditto
+            "PU12345",  # right prefix, body too short
+            "PU",  # prefix alone
+        ],
+    )
+    def test_the_prefix_set_did_not_become_a_wildcard(self, serial):
+        """Adding two prefixes must not accept every P-initial string.
+
+        The first draft of this test used ``PUU21C3X1700`` as a negative,
+        which was wrong: that is ``PU`` followed by ten valid characters,
+        so it is a well-formed serial and the test failed against correct
+        code. Kept as a note because the mistake is easy to repeat, the
+        prefix and the body run together with nothing separating them.
+        """
+        with pytest.raises(ValidationError):
+            validate_device_serial(serial)

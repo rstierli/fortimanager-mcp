@@ -106,8 +106,17 @@ ADOM_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 # Device name pattern: alphanumeric, underscore, hyphen, dot, 1-64 chars
 DEVICE_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_.-]{1,64}$")
 
-# Device serial number pattern: starts with device type prefix, alphanumeric
-DEVICE_SERIAL_PATTERN = re.compile(r"^(FG|FM|FW|FA|FS|FD|FP|FC|FV)[A-Z0-9]{10,20}$")
+# Device serial number pattern: starts with device type prefix, alphanumeric.
+#
+# The prefix set is an allowlist, so a product line missing from it is
+# refused rather than passed through, and the message does not explain
+# why: it says the serial needs a device-type prefix, which it has.
+#
+# ``PU`` and ``PS`` are the FortiAP-U and FortiAP-S series, which do not
+# use the ``FP`` of the mainline FortiAP models. Adding a product line
+# here is the fix whenever one turns up; the alternative, relaxing the
+# prefix to two arbitrary letters, would drop the check to a length test.
+DEVICE_SERIAL_PATTERN = re.compile(r"^(FG|FM|FW|FA|FS|FD|FP|FC|FV|PU|PS)[A-Z0-9]{10,20}$")
 
 # Object name pattern: alphanumeric, underscore, hyphen, dot, space, parens,
 # colon; 1-79 chars. FortiManager object names allow parentheses (e.g. cloned
