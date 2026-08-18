@@ -1470,6 +1470,11 @@ async def update_device_wtp(
 ) -> dict[str, Any]:
     """Update fields on a device-DB managed FortiAP. Only provided fields change.
 
+    Repointing wtp_profile drops a reference from the old profile.
+    FortiManager prunes a wtp-profile that no wtp entry references on
+    install (see create_device_wtp), so moving the last AP off a profile
+    loses that profile on the next install_device_settings.
+
     Args:
         device: Managed device name
         wtp_id: FortiAP serial number (the wtp-id / table mkey)
@@ -1531,6 +1536,11 @@ async def delete_device_wtp(
     vdom: str = "root",
 ) -> dict[str, Any]:
     """Delete a managed FortiAP registration from a device's device DB.
+
+    This drops the AP's reference to its wtp-profile. FortiManager prunes a
+    wtp-profile that no wtp entry references on install (see
+    create_device_wtp), so deleting the last AP on a profile loses that
+    profile on the next install_device_settings.
 
     Args:
         device: Managed device name
