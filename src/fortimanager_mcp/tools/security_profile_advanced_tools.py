@@ -645,10 +645,24 @@ def _build_ssl_ssh_profile_data(
 
     Shared by create and update so both stay in sync on which fields are
     exposed. `ssl_inspection`/`https_inspection` map onto the profile's
-    nested "ssl"/"https" sub-objects rather than top-level keys -- FMG
-    replaces those sub-objects wholesale on write, but this module only
-    ever sends the single "inspect-all"/"status" key inside them, so
-    there is nothing else on the sub-object at risk of being clobbered.
+    nested "ssl"/"https" sub-objects rather than top-level keys.
+
+    PR #65 review (Christian, 08-18) raised this as the same read-modify-
+    write risk class as the wtp-profile radio bug (#64): if FMG replaces a
+    nested sub-object wholesale on write, sending only "inspect-all"/
+    "status" here would reset every other field on "ssl"/"https" (there
+    are 13+ others -- min-allowed-ssl-version, unsupported-ssl-cipher,
+    etc.) to their defaults. Live-tested against the FGT-MCP-TEST-01/
+    mcp-dev-test sandbox (2026-08-19) to check: a sibling field
+    (unsupported-ssl-cipher) was set to a non-default value, then this
+    tool's update path was called touching only inspect-all, then
+    re-read -- the sibling field was unchanged. Unlike the wtp-profile
+    radio object, FortiManager merges into "ssl"/"https" on
+    firewall.ssl-ssh-profile rather than replacing it, so a single-key
+    write here is safe in practice. (The old wording here claimed the
+    same "replaces wholesale" premise as the radio case but concluded
+    it was safe anyway, which was backwards reasoning that happened to
+    reach the right answer for the wrong reason -- corrected.)
     """
     data: dict[str, Any] = {}
     if comment is not None:

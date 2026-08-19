@@ -392,13 +392,19 @@ async def diff_device_revision(device: str, revision: int) -> dict[str, Any]:
 
 
 @mcp.tool()
-async def revert_device_revision(device: str, revision: int) -> dict[str, Any]:
+async def revert_device_revision(
+    device: str, revision: int, confirm: bool = False
+) -> dict[str, Any]:
     """Revert a device's device DB to a past revision.
 
     This rewrites FortiManager's stored device DB copy for `device` only --
     the live FortiGate is not touched. Push the reverted device DB to the
     device the same way any other device DB change is pushed: preview_install
     then install_device_settings.
+
+    Safety: governed by FMG_REVERT_SAFETY (default "strict"), same pattern
+    as revert_adom_revision -- refused unless confirm=True is also passed.
+    Set FMG_REVERT_SAFETY=disabled to remove it.
 
     Note:
         Requires the device to have at least one device DB revision on
@@ -412,11 +418,24 @@ async def revert_device_revision(device: str, revision: int) -> dict[str, Any]:
     Args:
         device: Managed device name
         revision: Revision number to revert to (see list_device_revisions)
+        confirm: Must be True to proceed under FMG_REVERT_SAFETY=strict
+            (default). Ignored when FMG_REVERT_SAFETY=disabled.
 
     Returns:
         dict: status, device, revision, message
     """
     try:
+        settings = get_settings()
+        if settings.FMG_REVERT_SAFETY == "strict" and not confirm:
+            logger.warning(f"Device revert blocked for {device} — confirm=True not passed")
+            return {
+                "status": "error",
+                "message": "Device revert refused: this rewrites the stored device DB "
+                "copy for this device. Pass confirm=True to proceed, or set "
+                "FMG_REVERT_SAFETY=disabled to remove this gate.",
+                "error_code": "confirmation_required",
+            }
+
         device = validate_device_name(device)
         revision = _validate_revision(revision)
         client = _get_client()

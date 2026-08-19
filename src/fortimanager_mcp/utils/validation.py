@@ -156,6 +156,21 @@ CONFIG_TEXT_SECRET_DIRECTIVES = {
     "login-passwd",
     "authpasswd",
     "group-authentication-secret",
+    # PR #65 review (Christian, 08-18): 8 more format=password directives
+    # confirmed against the bundled 8.0.0 swagger, reachable via device DB
+    # config-text export (sdn-connector, api-user, user fsso, user radius,
+    # router key-chain/ospf) but missing from this set.
+    "secret-key",
+    "client-secret",
+    "api-key",
+    "password2",
+    "password3",
+    "password4",
+    "password5",
+    "rsso-secret",
+    "key-string",
+    "logon-password",
+    "sso-password",
 }
 
 _CONFIG_TEXT_SECRET_LINE = re.compile(
@@ -1161,19 +1176,22 @@ def check_policy_permissiveness(
         # function documents; a bare string is tolerated defensively
         # (treated as its own single-element list) rather than trusted
         # blindly, since a safety check must not be foolable by a caller
-        # passing the "wrong" shape.
+        # passing the "wrong" shape. Follow-up (08-18): a padded value
+        # ("all " with a trailing space) survived the unpadded check the
+        # same way the padded "accept " did above -- .strip() before
+        # comparing here too.
         if not addrs:
             return False
         if isinstance(addrs, str):
             addrs = [addrs]
-        return any(a.lower() == "all" for a in addrs)
+        return any(a.strip().lower() == "all" for a in addrs)
 
     src_all = _is_all(srcaddr)
     dst_all = _is_all(dstaddr)
     svc_all = service is not None and (
-        any(s.upper() == "ALL" for s in service)
+        any(s.strip().upper() == "ALL" for s in service)
         if not isinstance(service, str)
-        else service.upper() == "ALL"
+        else service.strip().upper() == "ALL"
     )
 
     # Negating "all" produces an empty match set — the policy matches no

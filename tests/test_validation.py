@@ -179,6 +179,38 @@ class TestRedactConfigTextSecrets:
     def test_empty_string(self):
         assert redact_config_text_secrets("") == ""
 
+    def test_redacts_pr65_08_18_review_directives(self):
+        """PR #65 review (Christian, 08-18): 8 more format=password
+        directives confirmed against the bundled 8.0.0 swagger --
+        sdn-connector, api-user, user fsso, user radius, router
+        key-chain/ospf -- were reachable via config-text export but
+        missing from CONFIG_TEXT_SECRET_DIRECTIVES."""
+        text = (
+            "    set secret-key ENC AAA==\n"
+            "    set client-secret ENC BBB==\n"
+            "    set api-key ENC CCC==\n"
+            "    set password2 ENC DDD==\n"
+            "    set password3 ENC EEE==\n"
+            "    set password4 ENC FFF==\n"
+            "    set password5 ENC GGG==\n"
+            "    set rsso-secret ENC HHH==\n"
+            "    set key-string ENC III==\n"
+        )
+        result = redact_config_text_secrets(text)
+        for raw in (
+            "AAA==",
+            "BBB==",
+            "CCC==",
+            "DDD==",
+            "EEE==",
+            "FFF==",
+            "GGG==",
+            "HHH==",
+            "III==",
+        ):
+            assert raw not in result
+        assert result.count(MASK_VALUE) == 9
+
     def test_redacts_multiline_quoted_value(self):
         """PR #65 review (Christian): a per-line regex only caught the
         first line of a multi-line quoted value like a PEM private key --

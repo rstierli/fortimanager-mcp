@@ -109,6 +109,19 @@ class TestCheckPolicyPermissiveness:
         result = check_policy_permissiveness("LAN-Subnet", "Server-Net", ["HTTP"], "accept")
         assert result is None
 
+    def test_padded_address_does_not_bypass(self):
+        """PR #65 review (Christian, 08-18): the action-string fix didn't
+        cover address/service values -- 'all ' (trailing space) still
+        failed the exact `== "all"` comparison and bypassed detection."""
+        result = check_policy_permissiveness(["all "], ["all"], ["ALL"], "accept")
+        assert result is not None
+        assert "fully open" in result
+
+    def test_padded_service_does_not_bypass(self):
+        result = check_policy_permissiveness(["all"], ["all"], ["ALL "], "accept")
+        assert result is not None
+        assert "fully open" in result
+
 
 class TestCheckPolicyPermissivenessNegate:
     """Negation inverts a field's match set, changing what counts as broad."""

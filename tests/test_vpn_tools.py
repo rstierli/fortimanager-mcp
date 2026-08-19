@@ -616,6 +616,49 @@ class TestGetDeviceSslvpnWebPortal:
 
         assert result.get("error_code") == "not_found"
 
+    @pytest.mark.asyncio
+    async def test_strips_bookmark_credentials(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """PR #65 review (Christian, 08-18): unlike the phase1-interface
+        reads, this path echoed the stored portal straight through with no
+        sanitization -- an RDP/VNC bookmark's logon-password/sso-password
+        ENC blobs went into model context verbatim. Confirmed against the
+        bundled 8.0.0 swagger (pm.config.vpn.ssl.web.portal.bookmark-group.
+        bookmarks): both fields are format=password."""
+        mock_fmg_instance.get.return_value = (
+            0,
+            {
+                "name": "full-access",
+                "bookmark-group": [
+                    {
+                        "name": "default",
+                        "bookmarks": [
+                            {
+                                "name": "rdp-1",
+                                "apptype": "rdp",
+                                "host": "10.0.0.5",
+                                "logon-password": "ENC SecretLogon==",
+                                "sso-password": "ENC SecretSso==",
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+
+        with patch.object(vpn_tools, "get_fmg_client", return_value=mock_client):
+            result = await vpn_tools.get_device_sslvpn_web_portal(
+                device="FGT-01", name="full-access"
+            )
+
+        bookmark = result["portal"]["bookmark-group"][0]["bookmarks"][0]
+        assert "logon-password" not in bookmark
+        assert "sso-password" not in bookmark
+        # non-secret fields survive untouched
+        assert bookmark["host"] == "10.0.0.5"
+        assert bookmark["apptype"] == "rdp"
+
 
 class TestUpdateDeviceSslvpnWebPortal:
     @pytest.mark.asyncio

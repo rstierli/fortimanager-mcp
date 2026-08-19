@@ -155,6 +155,20 @@ def _sanitize_phase1_result(result: Any) -> Any:
     return _strip_secret_fields(result, _PHASE1_SECRET_FIELDS)
 
 
+#: Fields FMG stores as ``format=password`` on a
+#: ``vpn ssl web portal bookmark-group bookmarks`` entry (confirmed against
+#: the bundled 8.0.0 swagger, ``pm.config.vpn.ssl.web.portal.bookmark-group.
+#: bookmarks``). A bookmark's RDP/VNC credentials live here regardless of
+#: whether the portal's ``bookmark-group`` or ``user-bookmark`` field is used
+#: -- both share the same bookmark schema, so one field set covers both.
+_PORTAL_SECRET_FIELDS = frozenset({"logon-password", "sso-password"})
+
+
+def _sanitize_portal_result(result: Any) -> Any:
+    """Strip every bookmark credential field from a ``vpn ssl web portal`` echo."""
+    return _strip_secret_fields(result, _PORTAL_SECRET_FIELDS)
+
+
 # FMG 7.6.7 live-verified: an enable/disable field that genuinely persists
 # is still returned as an integer (1/0) on GET, never the "enable"/"disable"
 # string that was sent -- confirmed against this exact object's web-mode
@@ -1037,7 +1051,9 @@ async def get_device_sslvpn_web_portal(
         vdom: VDOM it lives in (default "root")
 
     Returns:
-        dict with device, vdom and the stored portal object, or a not_found error
+        dict with device, vdom and the stored portal object (bookmark
+        credentials stripped -- see _PORTAL_SECRET_FIELDS), or a not_found
+        error
     """
     client = get_fmg_client()
     if not client:
@@ -1055,7 +1071,7 @@ async def get_device_sslvpn_web_portal(
                 "error": f"SSL-VPN web portal '{name}' not found or returned no configuration",
                 "error_code": "not_found",
             }
-        return {"device": device, "vdom": vdom, "portal": stored}
+        return {"device": device, "vdom": vdom, "portal": _sanitize_portal_result(stored)}
     except Exception as e:
         logger.error(f"SSL-VPN web portal read failed on {device}: {e}")
         msg, code = client_safe_error(e)

@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from fortimanager_mcp.tools import policy_tools
+from fortimanager_mcp.utils.config import get_settings
 from fortimanager_mcp.utils.errors import PermissionError, ResourceNotFoundError
 from tests.conftest import MOCK_POLICIES
 
@@ -1295,16 +1296,22 @@ class TestLocalInPolicyTools:
         same as create_firewall_policy -- this is management-plane access, so it should
         be at least as guarded."""
         monkeypatch.setenv("FMG_POLICY_SAFETY", "strict")
-        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
-            result = await policy_tools.create_local_in_policy(
-                adom="root",
-                package="default",
-                intf=["any"],
-                srcaddr=["all"],
-                dstaddr=["all"],
-                service=["ALL"],
-                action="accept",
-            )
+        get_settings.cache_clear()
+        try:
+            with patch(
+                "fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client
+            ):
+                result = await policy_tools.create_local_in_policy(
+                    adom="root",
+                    package="default",
+                    intf=["any"],
+                    srcaddr=["all"],
+                    dstaddr=["all"],
+                    service=["ALL"],
+                    action="accept",
+                )
+        finally:
+            get_settings.cache_clear()
 
         assert result["status"] == "error"
         assert "message" in result
@@ -1322,16 +1329,22 @@ class TestLocalInPolicyTools:
         create_local_in_policy6, or update_local_in_policy6 left the suite
         fully green. Same gate, same guarantee, needs the same test."""
         monkeypatch.setenv("FMG_POLICY_SAFETY", "strict")
-        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
-            result = await policy_tools.update_local_in_policy(
-                adom="root",
-                package="default",
-                policyid=1,
-                srcaddr=["all"],
-                dstaddr=["all"],
-                service=["ALL"],
-                action="accept",
-            )
+        get_settings.cache_clear()
+        try:
+            with patch(
+                "fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client
+            ):
+                result = await policy_tools.update_local_in_policy(
+                    adom="root",
+                    package="default",
+                    policyid=1,
+                    srcaddr=["all"],
+                    dstaddr=["all"],
+                    service=["ALL"],
+                    action="accept",
+                )
+        finally:
+            get_settings.cache_clear()
 
         assert result["status"] == "error"
         assert "message" in result
@@ -1344,16 +1357,22 @@ class TestLocalInPolicyTools:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("FMG_POLICY_SAFETY", "strict")
-        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
-            result = await policy_tools.create_local_in_policy6(
-                adom="root",
-                package="default",
-                intf=["any"],
-                srcaddr=["all"],
-                dstaddr=["all"],
-                service=["ALL"],
-                action="accept",
-            )
+        get_settings.cache_clear()
+        try:
+            with patch(
+                "fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client
+            ):
+                result = await policy_tools.create_local_in_policy6(
+                    adom="root",
+                    package="default",
+                    intf=["any"],
+                    srcaddr=["all"],
+                    dstaddr=["all"],
+                    service=["ALL"],
+                    action="accept",
+                )
+        finally:
+            get_settings.cache_clear()
 
         assert result["status"] == "error"
         assert "message" in result
@@ -1366,16 +1385,22 @@ class TestLocalInPolicyTools:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("FMG_POLICY_SAFETY", "strict")
-        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
-            result = await policy_tools.update_local_in_policy6(
-                adom="root",
-                package="default",
-                policyid=1,
-                srcaddr=["all"],
-                dstaddr=["all"],
-                service=["ALL"],
-                action="accept",
-            )
+        get_settings.cache_clear()
+        try:
+            with patch(
+                "fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client
+            ):
+                result = await policy_tools.update_local_in_policy6(
+                    adom="root",
+                    package="default",
+                    policyid=1,
+                    srcaddr=["all"],
+                    dstaddr=["all"],
+                    service=["ALL"],
+                    action="accept",
+                )
+        finally:
+            get_settings.cache_clear()
 
         assert result["status"] == "error"
         assert "message" in result

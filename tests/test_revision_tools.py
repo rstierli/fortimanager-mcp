@@ -218,13 +218,50 @@ class TestRevertDeviceRevision:
         )
 
         with patch.object(revision_tools, "get_fmg_client", return_value=mock_client):
-            result = await revision_tools.revert_device_revision("foobar", revision=2)
+            result = await revision_tools.revert_device_revision("foobar", revision=2, confirm=True)
 
         assert result["status"] == "success"
         assert "install_device_settings" in result["message"]
         args, kwargs = mock_fmg_instance.execute.call_args
         assert args[0] == "/deployment/revert"
         assert kwargs == {"device": "foobar", "revision": 2}
+
+    @pytest.mark.asyncio
+    async def test_blocked_without_confirm(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """PR #65 review (Christian, 08-18): revert_device_revision rewrites
+        the stored device DB with no safety gate at all -- same class as
+        revert_adom_revision, which this batch already gated."""
+        with patch.object(revision_tools, "get_fmg_client", return_value=mock_client):
+            result = await revision_tools.revert_device_revision("foobar", revision=2)
+
+        assert result["status"] == "error"
+        assert result["error_code"] == "confirmation_required"
+        mock_fmg_instance.execute.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_allowed_when_revert_safety_disabled(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("FMG_REVERT_SAFETY", "disabled")
+        get_settings.cache_clear()
+        mock_fmg_instance.execute.return_value = (
+            0,
+            {"status": {"code": 0, "message": "OK"}, "url": "/deployment/revert"},
+        )
+
+        try:
+            with patch.object(revision_tools, "get_fmg_client", return_value=mock_client):
+                result = await revision_tools.revert_device_revision("foobar", revision=2)
+        finally:
+            get_settings.cache_clear()
+
+        assert result["status"] == "success"
+        mock_fmg_instance.execute.assert_called_once()
 
 
 # =============================================================================
