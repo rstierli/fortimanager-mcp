@@ -514,10 +514,6 @@ class TestDeleteTask:
 
         assert result["status"] == "error"
 
-
-async def _fake_task(task_id: int) -> dict[str, Any]:
-    return {"task": task_id}
-
     @pytest.mark.asyncio
     @pytest.mark.parametrize("bad", ["../../sys/status", "1 OR 1=1", 1.5, True, None, -3])
     async def test_a_bad_task_id_never_reaches_the_url(
@@ -536,3 +532,7 @@ async def _fake_task(task_id: int) -> dict[str, Any]:
         assert result["status"] == "error"
         assert result["error_code"] == "validation_error"
         mock_fmg_instance.delete.assert_not_called()
+
+
+async def _fake_task(task_id: int) -> dict[str, Any]:
+    return {"task": task_id}
