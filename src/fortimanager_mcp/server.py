@@ -2,8 +2,19 @@
 
 Uses FastMCP pattern for tool registration.
 Supports two modes:
-- full: All 125 tools loaded (default)
+- full: All 230 tools loaded (default)
 - dynamic: Only discovery tools loaded (~90% context reduction)
+
+Note (2026-08-14): the find_fortimanager_tool/list_fortimanager_categories
+discovery catalogs below are NOT yet updated for the 9 tool modules added in
+the high-priority expansion batch (security_profile_tools,
+security_profile_advanced_tools, vpn_tools, device_group_tools,
+revision_tools, firmware_tools, object_usage_tools, fmg_ops_tools,
+policy_lookup_tools) or the local-in-policy additions to policy_tools -
+those tools ARE registered and callable (see _TOOL_MODULES and the FULL-mode
+import list), just not yet discoverable via search/category-browse in
+dynamic mode. Deliberate scope cut, not an oversight - tracked as a
+follow-up.
 """
 
 import hmac
@@ -439,6 +450,19 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
                     "search_firewall_policies",
                     "preview_install",
                     "get_preview_result",
+                    # local-in-policy (2026-08-14 batch, adjacent to #58's fix in PR #61 -
+                    # deliberately left get_policy_services/update_service_group untouched
+                    # here so that PR merges cleanly)
+                    "list_local_in_policies",
+                    "get_local_in_policy",
+                    "create_local_in_policy",
+                    "update_local_in_policy",
+                    "delete_local_in_policy",
+                    "list_local_in_policies6",
+                    "get_local_in_policy6",
+                    "create_local_in_policy6",
+                    "update_local_in_policy6",
+                    "delete_local_in_policy6",
                 },
                 "object_tools": {
                     "list_addresses",
@@ -509,6 +533,118 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
                     "get_device_sdwan_monitor",
                     "resolve_datasource",
                 },
+                # --- 2026-08-14 high-priority tool expansion batch ---
+                "security_profile_tools": {
+                    "list_antivirus_profiles",
+                    "get_antivirus_profile",
+                    "create_antivirus_profile",
+                    "update_antivirus_profile",
+                    "delete_antivirus_profile",
+                    "list_webfilter_profiles",
+                    "get_webfilter_profile",
+                    "create_webfilter_profile",
+                    "update_webfilter_profile",
+                    "delete_webfilter_profile",
+                    "list_dnsfilter_profiles",
+                    "get_dnsfilter_profile",
+                    "create_dnsfilter_profile",
+                    "update_dnsfilter_profile",
+                    "delete_dnsfilter_profile",
+                    "list_application_lists",
+                    "get_application_list",
+                    "create_application_list",
+                    "update_application_list",
+                    "delete_application_list",
+                },
+                "security_profile_advanced_tools": {
+                    "list_ips_sensors",
+                    "get_ips_sensor",
+                    "create_ips_sensor",
+                    "update_ips_sensor",
+                    "delete_ips_sensor",
+                    "list_ips_sensor_signature_overrides",
+                    "add_ips_sensor_signature_override",
+                    "remove_ips_sensor_signature_override",
+                    "list_ssl_ssh_profiles",
+                    "get_ssl_ssh_profile",
+                    "create_ssl_ssh_profile",
+                    "update_ssl_ssh_profile",
+                    "delete_ssl_ssh_profile",
+                    "list_dlp_profiles",
+                    "get_dlp_profile",
+                    "create_dlp_profile",
+                    "update_dlp_profile",
+                    "delete_dlp_profile",
+                    "list_waf_profiles",
+                    "get_waf_profile",
+                    "create_waf_profile",
+                    "update_waf_profile",
+                    "delete_waf_profile",
+                },
+                "vpn_tools": {
+                    "list_device_ipsec_phase1_interfaces",
+                    "get_device_ipsec_phase1_interface",
+                    "create_device_ipsec_phase1_interface",
+                    "update_device_ipsec_phase1_interface",
+                    "delete_device_ipsec_phase1_interface",
+                    "list_device_ipsec_phase2_interfaces",
+                    "get_device_ipsec_phase2_interface",
+                    "create_device_ipsec_phase2_interface",
+                    "update_device_ipsec_phase2_interface",
+                    "delete_device_ipsec_phase2_interface",
+                    "get_device_sslvpn_settings",
+                    "update_device_sslvpn_settings",
+                    "get_device_sslvpn_web_portal",
+                    "update_device_sslvpn_web_portal",
+                },
+                "device_group_tools": {
+                    "create_device_group",
+                    "delete_device_group",
+                    "add_device_to_group",
+                    "remove_device_from_group",
+                    "add_devices_to_group_bulk",
+                    "remove_devices_from_group_bulk",
+                    "add_group_to_group",
+                    "remove_group_from_group",
+                },
+                "revision_tools": {
+                    "list_device_revisions",
+                    "get_device_revision",
+                    "diff_device_revision",
+                    "revert_device_revision",
+                    "list_adom_revisions",
+                    "get_adom_revision",
+                    "diff_adom_revision",
+                    "revert_adom_revision",
+                    "list_policy_revisions",
+                    "diff_policy_package",
+                    "revert_firewall_policy",
+                },
+                "firmware_tools": {
+                    "get_firmware_upgrade_path",
+                    "list_available_firmware",
+                    "list_firmware_images",
+                    "upgrade_device_firmware",
+                    "get_firmware_upgrade_report",
+                },
+                "object_usage_tools": {
+                    "find_object_usage",
+                    "find_duplicate_objects",
+                },
+                "fmg_ops_tools": {
+                    "trigger_fmg_backup",
+                    "trigger_fmg_restore",
+                    "list_packet_captures",
+                    "add_packet_capture",
+                    "start_packet_capture",
+                    "stop_packet_capture",
+                    "get_packet_capture_status",
+                    "get_fmg_license",
+                    "delete_task",
+                },
+                "policy_lookup_tools": {
+                    "policy_lookup",
+                },
             }
 
             # Find the tool function via allowlist. In dynamic mode the tool
@@ -549,18 +685,27 @@ if settings.FMG_TOOL_MODE == "dynamic":
 
 else:
     # Full mode: Load all tools (default behavior)
-    logger.info("Loading in FULL mode - all 125 tools")
+    logger.info("Loading in FULL mode - all 230 tools")
 
     # Import all tool modules (registers them with the server)
     from fortimanager_mcp.tools import (  # noqa: E402, F401
         device_config_tools,
+        device_group_tools,
         dvm_tools,
+        firmware_tools,
+        fmg_ops_tools,
         object_tools,
+        object_usage_tools,
+        policy_lookup_tools,
         policy_tools,
+        revision_tools,
         script_tools,
         sdwan_tools,
+        security_profile_advanced_tools,
+        security_profile_tools,
         system_tools,
         template_tools,
+        vpn_tools,
     )
 
 

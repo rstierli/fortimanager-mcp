@@ -7,10 +7,15 @@ Security utilities for:
 """
 
 import json
+import logging
 import os
 import re
 from pathlib import Path
 from typing import Any
+
+from fortimanager_mcp.utils.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 # =============================================================================
 # Log Sanitization
@@ -94,6 +99,130 @@ def sanitize_json_for_logging(data: Any, indent: int | None = None) -> str:
     """
     sanitized = sanitize_for_logging(data)
     return json.dumps(sanitized, indent=indent, default=str)
+
+
+# FortiOS CLI directives whose value is a secret (config export text is a
+# flat "set <directive> <value>" line format -- SENSITIVE_FIELDS/
+# sanitize_for_logging above only handle structured dict fields, which can't
+# see inside this kind of multi-line text blob). Exact-name match only
+# (anchored by the trailing whitespace in the pattern below), not substring,
+# so e.g. "passwd-time" is never mistaken for "passwd".
+#
+# Cross-checked 2026-08-15 against every OTHER secret-field list already in
+# this codebase (_VAP_SECRET_FIELDS, _WTP_SECRET_FIELDS, _PHASE1_SECRET_FIELDS)
+# rather than derived independently -- a PR review (upstream #65 review
+# comment) found sae-password/login-passwd/authpasswd missing here despite
+# being declared secret in those sibling lists, plus priv-pwd (SNMP,
+# sibling to auth-pwd/auth-pwd-alt) and two more confirmed against the
+# FNDN 7.6.6/8.0.0 CLI references. tacacs+-secret was removed: the
+# documented tacacs+ secret directives are key/secondary-key/tertiary-key
+# (type "password" in the FNDN schema, confirmed against
+# devobj80-161-objects.htm), not a "secret" field, so the old entry never
+# matched anything real.
+#
+# "key" is context-dependent -- type "password" for TACACS+/NTP-auth/WEP,
+# but type "string" (non-secret) for a few unrelated tables (HTTP-header
+# key, multipart form-data key, FortiView filter key). This matcher has no
+# notion of which "config" block a line belongs to, so it cannot
+# distinguish them and redacts all of them. Deliberate: over-redacting an
+# occasional non-secret "key" line is a minor readability cost; under-
+# redacting a real TACACS+/NTP/WEP key is the failure this function exists
+# to prevent, so it favors over-redaction when a directive name is
+# ambiguous like this.
+CONFIG_TEXT_SECRET_DIRECTIVES = {
+    "password",
+    "passwd",
+    "psksecret",
+    "psksecret-remote",
+    "private-key",
+    "ppk-secret",
+    "auth-pwd",
+    "auth-pwd-alt",
+    "priv-pwd",
+    "community",
+    "passphrase",
+    "secret",
+    "secondary-secret",
+    "tertiary-secret",
+    "radius-secret",
+    "key",
+    "secondary-key",
+    "tertiary-key",
+    "authkey",
+    "enckey",
+    "certificate-password",
+    "preshared-key",
+    "sae-password",
+    "login-passwd",
+    "authpasswd",
+    "group-authentication-secret",
+    # PR #65 review (Christian, 08-18): 8 more format=password directives
+    # confirmed against the bundled 8.0.0 swagger, reachable via device DB
+    # config-text export (sdn-connector, api-user, user fsso, user radius,
+    # router key-chain/ospf) but missing from this set.
+    "secret-key",
+    "client-secret",
+    "api-key",
+    "password2",
+    "password3",
+    "password4",
+    "password5",
+    "rsso-secret",
+    "key-string",
+    "logon-password",
+    "sso-password",
+}
+
+_CONFIG_TEXT_SECRET_LINE = re.compile(
+    r"^(?P<prefix>\s*set\s+(?:"
+    + "|".join(re.escape(d) for d in CONFIG_TEXT_SECRET_DIRECTIVES)
+    + r")\s+)(?P<rest>.*)$"
+)
+
+
+def redact_config_text_secrets(text: str) -> str:
+    """Mask secret-bearing directive values in raw FortiOS CLI config text.
+
+    Device DB revision content (get_device_revision, diff_device_revision)
+    is a multi-line CLI config export, not a structured dict -- the
+    dict-key-driven sanitize_for_logging above cannot see inside it.
+    Replaces the value portion of each matching "set <directive> ..." line
+    with MASK_VALUE, keeping the directive name visible so it's still clear
+    what was masked and where.
+
+    Line-scoped, not a single MULTILINE regex: a quoted value (e.g.
+    ``set private-key "-----BEGIN ... KEY-----``) can legitimately span
+    many lines before its closing quote -- a per-line pattern only ever
+    caught the first one, leaking the PEM body and END line raw (a PR
+    review, upstream #65, live-reproduced this against a real multi-line
+    private-key export). When a matched line opens a quote that does not
+    close on the same line, every line up to and including the one that
+    closes it is dropped rather than partially kept -- those lines carry
+    only secret content, nothing a reader needs.
+    """
+    lines = text.split("\n")
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        match = _CONFIG_TEXT_SECRET_LINE.match(line)
+        if not match:
+            out.append(line)
+            i += 1
+            continue
+
+        out.append(match.group("prefix") + MASK_VALUE)
+        rest = match.group("rest")
+        i += 1
+        if rest.startswith('"') and '"' not in rest[1:]:
+            # Unterminated quote: consume continuation lines until the one
+            # that closes it (or end of text, if the export was truncated --
+            # safer to over-redact than to guess a close that isn't there).
+            while i < len(lines) and '"' not in lines[i]:
+                i += 1
+            if i < len(lines):
+                i += 1  # also drop the closing line itself
+    return "\n".join(out)
 
 
 # =============================================================================
@@ -1011,9 +1140,9 @@ def validate_script_content(content: str) -> list[str]:
 
 
 def check_policy_permissiveness(
-    srcaddr: list[str] | None,
-    dstaddr: list[str] | None,
-    service: list[str] | None,
+    srcaddr: list[str] | str | None,
+    dstaddr: list[str] | str | None,
+    service: list[str] | str | None,
     action: str | None,
     srcaddr_negate: bool = False,
     dstaddr_negate: bool = False,
@@ -1041,17 +1170,38 @@ def check_policy_permissiveness(
     Returns:
         Warning message string if overly permissive, None if acceptable
     """
-    if action is None or action.lower() != "accept":
+    # .strip() before comparing: PR #65 review (Christian) found a padded
+    # action ("accept " with a trailing space) bypassed this check entirely
+    # -- reachable from any caller that doesn't validate action against the
+    # enum first (revert_firewall_policy's snapshot input, in particular).
+    if action is None or action.strip().lower() != "accept":
         return None
 
-    def _is_all(addrs: list[str] | None) -> bool:
+    def _is_all(addrs: list[str] | str | None) -> bool:
+        # Same review: a caller passing a bare string ("all" instead of
+        # ["all"]) was iterated character-by-character ('a','l','l', none
+        # of which equals "all"), silently returning False -- a scalar
+        # bypassed the check completely. A list is still the contract this
+        # function documents; a bare string is tolerated defensively
+        # (treated as its own single-element list) rather than trusted
+        # blindly, since a safety check must not be foolable by a caller
+        # passing the "wrong" shape. Follow-up (08-18): a padded value
+        # ("all " with a trailing space) survived the unpadded check the
+        # same way the padded "accept " did above -- .strip() before
+        # comparing here too.
         if not addrs:
             return False
-        return any(a.lower() == "all" for a in addrs)
+        if isinstance(addrs, str):
+            addrs = [addrs]
+        return any(a.strip().lower() == "all" for a in addrs)
 
     src_all = _is_all(srcaddr)
     dst_all = _is_all(dstaddr)
-    svc_all = service is not None and any(s.upper() == "ALL" for s in service)
+    svc_all = service is not None and (
+        any(s.strip().upper() == "ALL" for s in service)
+        if not isinstance(service, str)
+        else service.strip().upper() == "ALL"
+    )
 
     # Negating "all" produces an empty match set — the policy matches no
     # traffic. Almost always a mistake, and FortiOS may reject it at install.
@@ -1105,3 +1255,70 @@ def check_policy_permissiveness(
         "Policy is overly permissive: srcaddr='all', dstaddr='all', "
         "action='accept'. This allows traffic from any source to any destination." + negate_note
     )
+
+
+def check_policy_safety(
+    srcaddr: list[str] | str | None,
+    dstaddr: list[str] | str | None,
+    service: list[str] | str | None,
+    action: str | None,
+    srcaddr_negate: bool = False,
+    dstaddr_negate: bool = False,
+    service_negate: bool = False,
+) -> dict[str, Any] | None:
+    """Check policy permissiveness based on the FMG_POLICY_SAFETY setting.
+
+    Returns error dict (strict), warning dict (warn), or None (OK/disabled).
+    Shared by every tool that writes a firewall-policy-shaped payload
+    (create/update/revert) -- there must be exactly one copy of this gate,
+    not one per tool, or a future change to the gate risks only updating
+    some of the write paths.
+
+    Enabling negation never blocks on its own (it is a legitimate feature),
+    but it always attaches a warning in strict/warn mode: negation inverts a
+    field's meaning, so it should be noisy rather than silent.
+    """
+    settings = get_settings()
+    if settings.FMG_POLICY_SAFETY == "disabled":
+        return None
+
+    warning = check_policy_permissiveness(
+        srcaddr,
+        dstaddr,
+        service,
+        action,
+        srcaddr_negate=srcaddr_negate,
+        dstaddr_negate=dstaddr_negate,
+        service_negate=service_negate,
+    )
+    if warning:
+        if settings.FMG_POLICY_SAFETY == "strict":
+            logger.warning(f"Policy blocked — {warning}")
+            return {
+                "status": "error",
+                "message": f"Policy blocked: {warning} "
+                "Set FMG_POLICY_SAFETY=warn or FMG_POLICY_SAFETY=disabled to override.",
+            }
+
+        # warn mode — return marker for caller to attach warning to success response
+        logger.warning(f"Policy warning — {warning}")
+        return {"_safety_warning": warning}
+
+    negated = [
+        field
+        for field, flag in (
+            ("srcaddr", srcaddr_negate),
+            ("dstaddr", dstaddr_negate),
+            ("service", service_negate),
+        )
+        if flag
+    ]
+    if negated:
+        note = (
+            f"Negation enabled on {', '.join(negated)}: the policy matches the "
+            "complement of the listed value(s), not the value(s) themselves."
+        )
+        logger.warning(f"Policy warning — {note}")
+        return {"_safety_warning": note}
+
+    return None

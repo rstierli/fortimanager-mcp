@@ -656,6 +656,32 @@ class FortiManagerClient:
 
         return await self._execute_resilient(_factory)
 
+    async def clone(self, url: str, **kwargs: Any) -> Any:
+        """Execute CLONE request with bounded reconnect + transient-retry resilience."""
+        return await self._generic_request("clone", url, **kwargs)
+
+    async def _flat_request(self, verb: str, url: str, payload: dict[str, Any]) -> Any:
+        """Run `verb` with `payload` merged at the params top level, not under 'data'.
+
+        pyfmg's ``common_datagram_params`` only flat-merges kwargs for the
+        'get'/'clone' method types; every other verb (exec, update, ...) always
+        wraps kwargs one level deeper, under a ``data`` key. Passing `payload`
+        positionally -- the same trick ``move()`` above uses -- bypasses that
+        wrapping, so a key the FMG How-To guide shows as a *sibling* of 'data'
+        (``token`` on a ``/cache/diff/*`` exec call, ``revision note`` on a
+        firewall-policy revert) lands where the guide's own examples put it,
+        instead of nested one level too deep where FortiManager would not find
+        it.
+        """
+
+        async def _factory() -> Any:
+            fmg = self._ensure_connected()
+            method = getattr(fmg, verb)
+            code, response = await self._run_fmg_call(method, url, payload)
+            return self._handle_response(code, response, f"{verb.upper()} {url}")
+
+        return await self._execute_resilient(_factory)
+
     # =========================================================================
     # System Status (from sys.json)
     # =========================================================================
@@ -704,6 +730,54 @@ class FortiManagerClient:
         """
         return await self.get(f"/dvmdb/adom/{name}", loadsub=loadsub)
 
+    # =========================================================================
+    # ADOM Revisions (issue: revision-tools)
+    # =========================================================================
+
+    async def list_adom_revisions(
+        self,
+        adom: str,
+        fields: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """List the ADOM DB revision history for an ADOM.
+
+        FNDN: GET /dvmdb/adom/{adom}/revision (dvmdb.json)
+        """
+        params: dict[str, Any] = {}
+        if fields:
+            params["fields"] = fields
+
+        result = await self.get(f"/dvmdb/adom/{adom}/revision", **params)
+        return result if isinstance(result, list) else [result] if result else []
+
+    async def get_adom_revision(self, adom: str, revision: int) -> dict[str, Any]:
+        """Get a single ADOM DB revision's metadata.
+
+        FNDN: GET /dvmdb/adom/{adom}/revision/{revision} (dvmdb.json)
+        """
+        return await self.get(f"/dvmdb/adom/{adom}/revision/{revision}")
+
+    async def clone_adom_revision(
+        self,
+        adom: str,
+        revision: int,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Clone an ADOM DB revision -- the documented "revert" mechanism.
+
+        FortiManager has no dedicated revert-ADOM-revision call; the How-To
+        guide's "How to revert an ADOM Revision?" section instead clones the
+        target past revision, which both restores the live ADOM DB to that
+        historical state and records the clone as a brand-new revision (see
+        docs/guides/.../013_adom_management.rst).
+
+        FNDN: CLONE /dvmdb/adom/{adom}/revision/{revision} (dvmdb.json)
+
+        Returns:
+            {"version": <new revision number>}
+        """
+        return await self.clone(f"/dvmdb/adom/{adom}/revision/{revision}", data=data)
+
     async def list_devices(
         self,
         adom: str = "root",
@@ -746,6 +820,65 @@ class FortiManagerClient:
         """
         result = await self.get(f"/dvmdb/adom/{adom}/group")
         return result if isinstance(result, list) else [result] if result else []
+
+    async def create_device_group(
+        self,
+        adom: str,
+        name: str,
+        os_type: str = "unknown",
+        description: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a device group.
+
+        Only ``name``, ``os_type`` and ``desc`` are writable on the dvmdb
+        group object -- ``type``, ``cluster_type`` and ``id`` are read-only.
+
+        FNDN: ADD /dvmdb/adom/{adom}/group
+        """
+        data: dict[str, Any] = {"name": name, "os_type": os_type}
+        if description is not None:
+            data["desc"] = description
+        return await self.add(f"/dvmdb/adom/{adom}/group", data=data)
+
+    async def delete_device_group(self, adom: str, name: str) -> dict[str, Any]:
+        """Delete a device group.
+
+        FNDN: DELETE /dvmdb/adom/{adom}/group/{group}
+        """
+        return await self.delete(f"/dvmdb/adom/{adom}/group/{name}")
+
+    async def add_group_members(
+        self,
+        adom: str,
+        group: str,
+        members: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Add member(s) to a device group without disturbing existing members.
+
+        A member is either a device (``{"name": <device>, "vdom": <vdom>}``)
+        or a nested group (``{"name": <group>}``, no vdom).
+
+        FNDN: ADD /dvmdb/adom/{adom}/group/{group}/object member
+        """
+        return await self.add(
+            f"/dvmdb/adom/{adom}/group/{group}/object member",
+            data=members,
+        )
+
+    async def remove_group_members(
+        self,
+        adom: str,
+        group: str,
+        members: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Remove member(s) from a device group.
+
+        FNDN: DELETE /dvmdb/adom/{adom}/group/{group}/object member
+        """
+        return await self.delete(
+            f"/dvmdb/adom/{adom}/group/{group}/object member",
+            data=members,
+        )
 
     # =========================================================================
     # DVM Commands (Device Virtual Manager)
@@ -903,6 +1036,88 @@ class FortiManagerClient:
         return result if isinstance(result, list) else [result] if result else []
 
     # =========================================================================
+    # Device DB Revisions (issue: revision-tools)
+    #
+    # Live-published, non-deprecated "Deployment Manager" daemon commands --
+    # docs/fndn/{7.6.7,8.0.0}/json_api_reference/swagger/dmserver.json (public
+    # swagger, not just html-internal) and the matching FNDN HTML reference
+    # both list get/device/revision, checkout/revision, export/config, and
+    # revert with the exact request/response shape used below, with no
+    # deprecation marker. (An earlier version of this comment claimed these
+    # don't appear in the swagger set at all -- that search only grepped
+    # cdb-device*/pkg*/dvmdb.json and missed dmserver.json, which doesn't have
+    # an obviously-named file. The separate /dmworker/* daemon -- a different,
+    # internal-only command family with similar-looking names like
+    # config/checkout and get/dev/revision -- IS uniformly marked "depreciated
+    # or not published" in html-internal/dmworker-objects.htm; don't confuse
+    # the two.) Also confirmed against the How-To guide's "Device revisions"
+    # section (docs/guides/.../007_device_management/007_device_management.rst).
+    #
+    # Live-verified 2026-08-14 against fmg-prod-01 (7.6.7-build3737): all four
+    # calls succeed against a device with real device-DB revision history
+    # (trafsim-fw-prod01, base_ver 151). get/device/revision and
+    # checkout/revision return "Internal server error: runtime error 0:
+    # invalid value" against a device that has never been installed to /
+    # retrieved from and so has zero revisions on record (e.g. a freshly
+    # added model device) -- that is an FMG-side edge case for an empty
+    # revision table, not evidence the command itself is broken or removed.
+    #
+    # These operate on the device DB copy FortiManager keeps for each managed
+    # device, never the live FortiGate: install_device_settings is still the
+    # only path that pushes a device DB change to the appliance.
+    # =========================================================================
+
+    async def get_device_revisions(self, device: str) -> dict[str, Any]:
+        """List the device DB revision history for one managed device.
+
+        FNDN: EXEC /deployment/get/device/revision (How-To 007, "How to get
+        the list of device revisions for a particular device?")
+
+        Returns:
+            {"base_ver": <int>, "revinfo": [{"revision": <int>, ...}, ...]}
+        """
+        return await self.execute("/deployment/get/device/revision", device=device)
+
+    async def get_device_revision_content(self, device: str, revision: int) -> dict[str, Any]:
+        """Check out one device DB revision's stored configuration text.
+
+        FNDN: EXEC /deployment/checkout/revision (How-To 007, "How to get a
+        specific device revision for a particular device?")
+
+        Args:
+            device: Managed device name
+            revision: Revision number, or -1 for the latest revision
+
+        Returns:
+            {"content": <str>, "revision": <int>}
+        """
+        return await self.execute("/deployment/checkout/revision", device=device, revision=revision)
+
+    async def get_device_current_config(self, device: str) -> dict[str, Any]:
+        """Export the device's CURRENT device DB configuration (not a past revision).
+
+        FNDN: EXEC /deployment/export/config (How-To 007, "How to get the
+        current device database configuration for a particular device?")
+
+        Returns:
+            {"content": <str>}
+        """
+        return await self.execute("/deployment/export/config", device=device)
+
+    async def revert_device_revision(self, device: str, revision: int) -> dict[str, Any]:
+        """Revert a device's device DB to a past revision.
+
+        This only rewrites FortiManager's own device DB copy for `device` --
+        it does not touch the live FortiGate. Push the reverted device DB with
+        install_device_settings the same way any other device DB edit is
+        pushed.
+
+        FNDN: EXEC /deployment/revert (How-To 007, "How to revert to a
+        specific device revision?")
+        """
+        return await self.execute("/deployment/revert", device=device, revision=revision)
+
+    # =========================================================================
     # Security Console - Installation Operations
     # =========================================================================
 
@@ -990,6 +1205,98 @@ class FortiManagerClient:
             "/securityconsole/preview/result",
             adom=adom,
             scope=scope,
+        )
+
+    # =========================================================================
+    # Cache Diff -- ADOM/package revision comparison (issue: revision-tools)
+    #
+    # Not in the FNDN swagger set -- no cache*.json exists there. Confirmed
+    # against the How-To guide's "How to diff an ADOM revision with current
+    # configuration?" section (docs/guides/.../013_adom_management.rst), the
+    # only documented way to diff a past revision against the live ADOM/
+    # package. Read-only: nothing here writes to the ADOM, device, or package.
+    # =========================================================================
+
+    async def cache_diff_start(self, dst: str, src: str) -> dict[str, Any]:
+        """Start an ADOM-DB diff job between two revision paths.
+
+        FNDN: EXEC /cache/diff/start (How-To 013, "How to diff an ADOM
+        revision with current configuration?")
+
+        Args:
+            dst: Comparison target, e.g. "adom/{adom}" for the live ADOM
+            src: Comparison source, e.g. "adom/{adom}/revision/{revision}"
+
+        Returns:
+            {"token": <str>} -- pass to cache_diff_get_summary/cache_diff_end
+        """
+        return await self.execute("/cache/diff/start", dst=dst, src=src)
+
+    async def cache_diff_get_summary(self, token: str, pkg: str | None = None) -> dict[str, Any]:
+        """Poll a diff job's summary; check `percent` for completion.
+
+        FNDN: EXEC /cache/diff/get/summary[/pkg/{pkg}] (How-To 013). `token`
+        must be a sibling of `url` in the request body, not nested under
+        `data` -- see FortiManagerClient._flat_request.
+
+        Args:
+            token: Token returned by cache_diff_start
+            pkg: Scope the summary to one policy package instead of the
+                whole ADOM (matches /cache/diff/get/summary/pkg/{pkg})
+
+        Returns:
+            {"percent": <int 0-100>, "obj": {...}, "pkg": {...}} -- the diff is
+            not ready until "percent" reaches 100
+        """
+        url = "/cache/diff/get/summary"
+        if pkg:
+            url = f"{url}/pkg/{pkg}"
+        return await self._flat_request("execute", url, {"token": token})
+
+    async def cache_diff_end(self, token: str) -> dict[str, Any]:
+        """Close a diff job and free its server-side cache entry.
+
+        FNDN: EXEC cache/diff/end (How-To 013: "Always good to end the diff
+        task")
+        """
+        return await self._flat_request("execute", "cache/diff/end", {"token": token})
+
+    async def where_used_start(self, mkey: str, obj: str) -> dict[str, Any]:
+        """Start a where-used search job for an ADOM object.
+
+        FNDN: EXEC /cache/search/where/used/start (How-To 002, "Operations
+        on objects"). `mkey`/`obj` are start-time parameters, not a
+        token -- unlike the summary/detail polling calls below, this one
+        matches cache_diff_start's shape (plain nested-under-'data' exec),
+        not the sibling-of-'url' shape those need.
+
+        Returns:
+            {"token": <str>} -- pass to where_used_get_summary/get_detail
+        """
+        return await self.execute("/cache/search/where/used/start", mkey=mkey, obj=obj)
+
+    async def where_used_get_summary(self, token: str) -> dict[str, Any]:
+        """Poll a where-used search job's progress; check `percent` for completion.
+
+        FNDN: EXEC /cache/search/where/used/get/summary (How-To 002).
+        `token` must be a sibling of `url` in the request body, not nested
+        under `data` -- same shape requirement as cache_diff_get_summary,
+        same underlying cache-daemon token-polling family -- see
+        FortiManagerClient._flat_request.
+        """
+        return await self._flat_request(
+            "execute", "/cache/search/where/used/get/summary", {"token": token}
+        )
+
+    async def where_used_get_detail(self, token: str) -> dict[str, Any]:
+        """Fetch a completed where-used search job's results.
+
+        FNDN: EXEC /cache/search/where/used/get/detail (How-To 002). Same
+        sibling-of-'url' token shape as where_used_get_summary -- see
+        FortiManagerClient._flat_request.
+        """
+        return await self._flat_request(
+            "execute", "/cache/search/where/used/get/detail", {"token": token}
         )
 
     # =========================================================================
@@ -1230,6 +1537,69 @@ class FortiManagerClient:
             option,
             str(target),
         )
+
+    # =========================================================================
+    # Firewall Policy Revisions (issue: revision-tools)
+    #
+    # Not in the FNDN swagger set -- no path in pkg*.json covers `_objrev`.
+    # Confirmed against the How-To guide's "Policy Package Revision" /
+    # "Firewall Policy Revision" sections (docs/guides/.../
+    # 008_policy_package_management.rst). There is no dedicated revert
+    # endpoint for a firewall policy; the guide's documented mechanism is to
+    # capture a past change's `config` snapshot from this change log and
+    # `update` the live policy with it.
+    # =========================================================================
+
+    async def list_policy_revisions(
+        self,
+        adom: str,
+        pkg: str,
+        policyid: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """List the change log for a package's firewall policies, or one policy.
+
+        FNDN: GET /pm/config/adom/{adom}/_objrev/pkg/{pkg}/firewall/policy[/{policyid}]
+        (How-To 008, "How to get list of changes made on a Policy Package?" /
+        "How to get list of changes made in a firewall policy?")
+
+        Each entry's ``act`` is 1 (created), 2 (deleted) or 3 (modified);
+        ``key`` is the policyid; ``config`` is the JSON-encoded policy
+        snapshot at that change -- the value to hand to
+        revert_firewall_policy_snapshot.
+
+        Returns:
+            List of change-log entries, oldest first
+        """
+        url = f"/pm/config/adom/{adom}/_objrev/pkg/{pkg}/firewall/policy"
+        if policyid is not None:
+            url = f"{url}/{policyid}"
+        result = await self.get(url)
+        return result if isinstance(result, list) else [result] if result else []
+
+    async def revert_firewall_policy_snapshot(
+        self,
+        adom: str,
+        pkg: str,
+        config: dict[str, Any],
+        revision_note: str | None = None,
+    ) -> dict[str, Any]:
+        """Restore a firewall policy to a past change-log snapshot.
+
+        `config` must be a snapshot captured from list_policy_revisions
+        (its ``policyid`` selects which policy is updated; no policyid is
+        appended to the URL -- the guide's example targets the package's
+        policy collection directly). `revision_note` must be a sibling of
+        `url`/`data`, not nested inside `data` -- see
+        FortiManagerClient._flat_request.
+
+        FNDN: UPDATE /pm/config/adom/{adom}/pkg/{pkg}/firewall/policy (How-To
+        008, "How to revert a firewall policy from a past changes?")
+        """
+        url = f"/pm/config/adom/{adom}/pkg/{pkg}/firewall/policy"
+        payload: dict[str, Any] = {"data": config}
+        if revision_note:
+            payload["revision note"] = revision_note
+        return await self._flat_request("update", url, payload)
 
     # =========================================================================
     # Firewall Objects - Addresses
@@ -1526,6 +1896,273 @@ class FortiManagerClient:
         FNDN: DELETE /pm/config/adom/{adom}/obj/firewall/service/group/{name}
         """
         return await self.delete(f"/pm/config/adom/{adom}/obj/firewall/service/group/{name}")
+
+    # =========================================================================
+    # Security Profiles - IPS Sensor
+    # =========================================================================
+
+    async def list_ips_sensors(
+        self,
+        adom: str,
+        fields: list[str] | None = None,
+        filter: list | None = None,
+    ) -> list[dict[str, Any]]:
+        """List IPS sensors.
+
+        FNDN: GET /pm/config/adom/{adom}/obj/ips/sensor
+        """
+        params: dict[str, Any] = {}
+        if fields:
+            params["fields"] = fields
+        if filter:
+            params["filter"] = filter
+
+        result = await self.get(f"/pm/config/adom/{adom}/obj/ips/sensor", **params)
+        return result if isinstance(result, list) else [result] if result else []
+
+    async def get_ips_sensor(self, adom: str, name: str) -> dict[str, Any]:
+        """Get a specific IPS sensor.
+
+        FNDN: GET /pm/config/adom/{adom}/obj/ips/sensor/{sensor}
+        """
+        return await self.get(f"/pm/config/adom/{adom}/obj/ips/sensor/{name}")
+
+    async def create_ips_sensor(self, adom: str, sensor: dict[str, Any]) -> dict[str, Any]:
+        """Create an IPS sensor.
+
+        FNDN: ADD /pm/config/adom/{adom}/obj/ips/sensor
+        """
+        return await self.add(f"/pm/config/adom/{adom}/obj/ips/sensor", data=sensor)
+
+    async def update_ips_sensor(
+        self,
+        adom: str,
+        name: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Update an IPS sensor.
+
+        FNDN: UPDATE /pm/config/adom/{adom}/obj/ips/sensor/{sensor}
+        """
+        return await self.update(f"/pm/config/adom/{adom}/obj/ips/sensor/{name}", **data)
+
+    async def delete_ips_sensor(self, adom: str, name: str) -> dict[str, Any]:
+        """Delete an IPS sensor.
+
+        FNDN: DELETE /pm/config/adom/{adom}/obj/ips/sensor/{sensor}
+        """
+        return await self.delete(f"/pm/config/adom/{adom}/obj/ips/sensor/{name}")
+
+    async def list_ips_sensor_entries(self, adom: str, sensor: str) -> list[dict[str, Any]]:
+        """List the signature-override entries of an IPS sensor.
+
+        FNDN: GET /pm/config/adom/{adom}/obj/ips/sensor/{sensor}/entries
+        """
+        result = await self.get(f"/pm/config/adom/{adom}/obj/ips/sensor/{sensor}/entries")
+        return result if isinstance(result, list) else [result] if result else []
+
+    async def add_ips_sensor_entry(
+        self,
+        adom: str,
+        sensor: str,
+        entry: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Add a signature-override entry to an IPS sensor.
+
+        This is the entries sub-resource's own ADD endpoint, not a
+        read-modify-write of the parent sensor -- FMG exposes
+        ``entries`` as an addressable nested collection with its own
+        add/get/set/update/delete/move verbs (confirmed in the FNDN
+        swagger), so appending here does not require reading the sensor
+        first the way a plain array field would.
+
+        FNDN: ADD /pm/config/adom/{adom}/obj/ips/sensor/{sensor}/entries
+        """
+        return await self.add(f"/pm/config/adom/{adom}/obj/ips/sensor/{sensor}/entries", data=entry)
+
+    async def delete_ips_sensor_entry(
+        self,
+        adom: str,
+        sensor: str,
+        entry_id: int,
+    ) -> dict[str, Any]:
+        """Remove a signature-override entry from an IPS sensor.
+
+        FNDN: DELETE /pm/config/adom/{adom}/obj/ips/sensor/{sensor}/entries/{entries}
+        """
+        return await self.delete(
+            f"/pm/config/adom/{adom}/obj/ips/sensor/{sensor}/entries/{entry_id}"
+        )
+
+    # =========================================================================
+    # Security Profiles - SSL/SSH Inspection Profile
+    # =========================================================================
+
+    async def list_ssl_ssh_profiles(
+        self,
+        adom: str,
+        fields: list[str] | None = None,
+        filter: list | None = None,
+    ) -> list[dict[str, Any]]:
+        """List SSL/SSH inspection profiles.
+
+        FNDN: GET /pm/config/adom/{adom}/obj/firewall/ssl-ssh-profile
+        """
+        params: dict[str, Any] = {}
+        if fields:
+            params["fields"] = fields
+        if filter:
+            params["filter"] = filter
+
+        result = await self.get(f"/pm/config/adom/{adom}/obj/firewall/ssl-ssh-profile", **params)
+        return result if isinstance(result, list) else [result] if result else []
+
+    async def get_ssl_ssh_profile(self, adom: str, name: str) -> dict[str, Any]:
+        """Get a specific SSL/SSH inspection profile.
+
+        FNDN: GET /pm/config/adom/{adom}/obj/firewall/ssl-ssh-profile/{ssl-ssh-profile}
+        """
+        return await self.get(f"/pm/config/adom/{adom}/obj/firewall/ssl-ssh-profile/{name}")
+
+    async def create_ssl_ssh_profile(self, adom: str, profile: dict[str, Any]) -> dict[str, Any]:
+        """Create an SSL/SSH inspection profile.
+
+        FNDN: ADD /pm/config/adom/{adom}/obj/firewall/ssl-ssh-profile
+        """
+        return await self.add(f"/pm/config/adom/{adom}/obj/firewall/ssl-ssh-profile", data=profile)
+
+    async def update_ssl_ssh_profile(
+        self,
+        adom: str,
+        name: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Update an SSL/SSH inspection profile.
+
+        FNDN: UPDATE /pm/config/adom/{adom}/obj/firewall/ssl-ssh-profile/{ssl-ssh-profile}
+        """
+        return await self.update(
+            f"/pm/config/adom/{adom}/obj/firewall/ssl-ssh-profile/{name}", **data
+        )
+
+    async def delete_ssl_ssh_profile(self, adom: str, name: str) -> dict[str, Any]:
+        """Delete an SSL/SSH inspection profile.
+
+        FNDN: DELETE /pm/config/adom/{adom}/obj/firewall/ssl-ssh-profile/{ssl-ssh-profile}
+        """
+        return await self.delete(f"/pm/config/adom/{adom}/obj/firewall/ssl-ssh-profile/{name}")
+
+    # =========================================================================
+    # Security Profiles - DLP Profile
+    # =========================================================================
+
+    async def list_dlp_profiles(
+        self,
+        adom: str,
+        fields: list[str] | None = None,
+        filter: list | None = None,
+    ) -> list[dict[str, Any]]:
+        """List DLP profiles.
+
+        FNDN: GET /pm/config/adom/{adom}/obj/dlp/profile
+        """
+        params: dict[str, Any] = {}
+        if fields:
+            params["fields"] = fields
+        if filter:
+            params["filter"] = filter
+
+        result = await self.get(f"/pm/config/adom/{adom}/obj/dlp/profile", **params)
+        return result if isinstance(result, list) else [result] if result else []
+
+    async def get_dlp_profile(self, adom: str, name: str) -> dict[str, Any]:
+        """Get a specific DLP profile.
+
+        FNDN: GET /pm/config/adom/{adom}/obj/dlp/profile/{profile}
+        """
+        return await self.get(f"/pm/config/adom/{adom}/obj/dlp/profile/{name}")
+
+    async def create_dlp_profile(self, adom: str, profile: dict[str, Any]) -> dict[str, Any]:
+        """Create a DLP profile.
+
+        FNDN: ADD /pm/config/adom/{adom}/obj/dlp/profile
+        """
+        return await self.add(f"/pm/config/adom/{adom}/obj/dlp/profile", data=profile)
+
+    async def update_dlp_profile(
+        self,
+        adom: str,
+        name: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Update a DLP profile.
+
+        FNDN: UPDATE /pm/config/adom/{adom}/obj/dlp/profile/{profile}
+        """
+        return await self.update(f"/pm/config/adom/{adom}/obj/dlp/profile/{name}", **data)
+
+    async def delete_dlp_profile(self, adom: str, name: str) -> dict[str, Any]:
+        """Delete a DLP profile.
+
+        FNDN: DELETE /pm/config/adom/{adom}/obj/dlp/profile/{profile}
+        """
+        return await self.delete(f"/pm/config/adom/{adom}/obj/dlp/profile/{name}")
+
+    # =========================================================================
+    # Security Profiles - WAF Profile
+    # =========================================================================
+
+    async def list_waf_profiles(
+        self,
+        adom: str,
+        fields: list[str] | None = None,
+        filter: list | None = None,
+    ) -> list[dict[str, Any]]:
+        """List WAF profiles.
+
+        FNDN: GET /pm/config/adom/{adom}/obj/waf/profile
+        """
+        params: dict[str, Any] = {}
+        if fields:
+            params["fields"] = fields
+        if filter:
+            params["filter"] = filter
+
+        result = await self.get(f"/pm/config/adom/{adom}/obj/waf/profile", **params)
+        return result if isinstance(result, list) else [result] if result else []
+
+    async def get_waf_profile(self, adom: str, name: str) -> dict[str, Any]:
+        """Get a specific WAF profile.
+
+        FNDN: GET /pm/config/adom/{adom}/obj/waf/profile/{profile}
+        """
+        return await self.get(f"/pm/config/adom/{adom}/obj/waf/profile/{name}")
+
+    async def create_waf_profile(self, adom: str, profile: dict[str, Any]) -> dict[str, Any]:
+        """Create a WAF profile.
+
+        FNDN: ADD /pm/config/adom/{adom}/obj/waf/profile
+        """
+        return await self.add(f"/pm/config/adom/{adom}/obj/waf/profile", data=profile)
+
+    async def update_waf_profile(
+        self,
+        adom: str,
+        name: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Update a WAF profile.
+
+        FNDN: UPDATE /pm/config/adom/{adom}/obj/waf/profile/{profile}
+        """
+        return await self.update(f"/pm/config/adom/{adom}/obj/waf/profile/{name}", **data)
+
+    async def delete_waf_profile(self, adom: str, name: str) -> dict[str, Any]:
+        """Delete a WAF profile.
+
+        FNDN: DELETE /pm/config/adom/{adom}/obj/waf/profile/{profile}
+        """
+        return await self.delete(f"/pm/config/adom/{adom}/obj/waf/profile/{name}")
 
     # =========================================================================
     # Workspace Mode (ADOM Locking)
@@ -2404,4 +3041,339 @@ class FortiManagerClient:
         """
         return await self.delete(
             f"/pm/config/device/{device}/vdom/{vdom}/wireless-controller/wtp/{wtp_id}",
+        )
+
+    # =========================================================================
+    # VPN: IPsec phase1/phase2 interfaces, SSL-VPN settings/portal (device DB)
+    # =========================================================================
+
+    async def list_device_ipsec_phase1_interfaces(
+        self,
+        device: str,
+        vdom: str = "root",
+    ) -> Any:
+        """List device-DB IPsec phase1-interface (remote gateway) definitions.
+
+        FNDN: GET /pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase1-interface
+        """
+        return await self.get(f"/pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase1-interface")
+
+    async def get_device_ipsec_phase1_interface(
+        self,
+        device: str,
+        vdom: str,
+        name: str,
+    ) -> Any:
+        """Get a device-DB IPsec phase1-interface by name.
+
+        FNDN: GET /pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase1-interface/{name}
+        """
+        return await self.get(
+            f"/pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase1-interface/{name}",
+        )
+
+    async def create_device_ipsec_phase1_interface(
+        self,
+        device: str,
+        vdom: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Create a device-DB IPsec phase1-interface (remote gateway).
+
+        FNDN: ADD /pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase1-interface
+        """
+        return await self.add(
+            f"/pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase1-interface",
+            data=data,
+        )
+
+    async def update_device_ipsec_phase1_interface(
+        self,
+        device: str,
+        vdom: str,
+        name: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Update a device-DB IPsec phase1-interface.
+
+        FNDN: UPDATE /pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase1-interface/{name}
+        """
+        return await self.update(
+            f"/pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase1-interface/{name}",
+            data=data,
+        )
+
+    async def delete_device_ipsec_phase1_interface(
+        self,
+        device: str,
+        vdom: str,
+        name: str,
+    ) -> dict[str, Any]:
+        """Delete a device-DB IPsec phase1-interface.
+
+        FNDN: DELETE /pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase1-interface/{name}
+        """
+        return await self.delete(
+            f"/pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase1-interface/{name}",
+        )
+
+    async def list_device_ipsec_phase2_interfaces(
+        self,
+        device: str,
+        vdom: str = "root",
+    ) -> Any:
+        """List device-DB IPsec phase2-interface (tunnel/selector) definitions.
+
+        FNDN: GET /pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase2-interface
+        """
+        return await self.get(f"/pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase2-interface")
+
+    async def get_device_ipsec_phase2_interface(
+        self,
+        device: str,
+        vdom: str,
+        name: str,
+    ) -> Any:
+        """Get a device-DB IPsec phase2-interface by name.
+
+        FNDN: GET /pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase2-interface/{name}
+        """
+        return await self.get(
+            f"/pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase2-interface/{name}",
+        )
+
+    async def create_device_ipsec_phase2_interface(
+        self,
+        device: str,
+        vdom: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Create a device-DB IPsec phase2-interface (tunnel/selector).
+
+        FNDN: ADD /pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase2-interface
+        """
+        return await self.add(
+            f"/pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase2-interface",
+            data=data,
+        )
+
+    async def update_device_ipsec_phase2_interface(
+        self,
+        device: str,
+        vdom: str,
+        name: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Update a device-DB IPsec phase2-interface.
+
+        FNDN: UPDATE /pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase2-interface/{name}
+        """
+        return await self.update(
+            f"/pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase2-interface/{name}",
+            data=data,
+        )
+
+    async def delete_device_ipsec_phase2_interface(
+        self,
+        device: str,
+        vdom: str,
+        name: str,
+    ) -> dict[str, Any]:
+        """Delete a device-DB IPsec phase2-interface.
+
+        FNDN: DELETE /pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase2-interface/{name}
+        """
+        return await self.delete(
+            f"/pm/config/device/{device}/vdom/{vdom}/vpn/ipsec/phase2-interface/{name}",
+        )
+
+    async def get_device_sslvpn_settings(
+        self,
+        device: str,
+        vdom: str,
+    ) -> Any:
+        """Get the device-DB SSL-VPN (Agentless VPN) settings object.
+
+        FNDN: GET /pm/config/device/{device}/vdom/{vdom}/vpn/ssl/settings
+        """
+        return await self.get(f"/pm/config/device/{device}/vdom/{vdom}/vpn/ssl/settings")
+
+    async def update_device_sslvpn_settings(
+        self,
+        device: str,
+        vdom: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Update the device-DB SSL-VPN (Agentless VPN) settings object.
+
+        FNDN: UPDATE /pm/config/device/{device}/vdom/{vdom}/vpn/ssl/settings
+        """
+        return await self.update(
+            f"/pm/config/device/{device}/vdom/{vdom}/vpn/ssl/settings",
+            data=data,
+        )
+
+    async def get_device_sslvpn_web_portal(
+        self,
+        device: str,
+        vdom: str,
+        name: str,
+    ) -> Any:
+        """Get a device-DB SSL-VPN web portal by name.
+
+        FNDN: GET /pm/config/device/{device}/vdom/{vdom}/vpn/ssl/web/portal/{name}
+        """
+        return await self.get(
+            f"/pm/config/device/{device}/vdom/{vdom}/vpn/ssl/web/portal/{name}",
+        )
+
+    async def update_device_sslvpn_web_portal(
+        self,
+        device: str,
+        vdom: str,
+        name: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Update a device-DB SSL-VPN web portal.
+
+        FNDN: UPDATE /pm/config/device/{device}/vdom/{vdom}/vpn/ssl/web/portal/{name}
+        """
+        return await self.update(
+            f"/pm/config/device/{device}/vdom/{vdom}/vpn/ssl/web/portal/{name}",
+            data=data,
+        )
+
+    # =========================================================================
+    # Firmware Management (um) -- swagger/um.json covers only the two
+    # /um/image/upgrade* paths; the version/list, list, and upgrade/report
+    # endpoints below have no bundled swagger schema in any FNDN version
+    # under docs/fndn/, so their shape is taken from the How-To Guide's
+    # captured request/response examples (007_device_management.rst,
+    # "Firmware upgrade" section) rather than a machine schema.
+    # =========================================================================
+
+    async def get_firmware_upgrade_path(
+        self,
+        adom: str,
+        device: list[dict[str, str]],
+        release: str,
+    ) -> Any:
+        """Preview the multi-step upgrade path to a target firmware release.
+
+        Passes flags="f_preview" so FortiManager returns the path without
+        starting an upgrade -- confirmed both by swagger/um.json (um.image.upgrade
+        "flags" enum includes "f_preview") and by the How-To Guide's captured
+        example for this exact request.
+
+        FNDN: EXEC /um/image/upgrade (swagger/um.json: um.image.upgrade)
+        """
+        return await self.execute(
+            "/um/image/upgrade",
+            adom=adom,
+            device=device,
+            flags="f_preview",
+            image={"release": release},
+        )
+
+    async def upgrade_device_firmware(
+        self,
+        adom: str,
+        device: list[dict[str, str]],
+        release: str,
+        flags: str | None = None,
+        schedule_time: str | None = None,
+    ) -> Any:
+        """Trigger a device firmware upgrade. Asynchronous: returns a task id
+        (create_task="enable") to poll with get_task/wait_for_task.
+
+        FNDN: EXEC /um/image/upgrade (swagger/um.json: um.image.upgrade). The
+        How-To Guide's captured "how to upgrade a device" example shows
+        "flags" as a JSON array (e.g. ["none"]), which conflicts with
+        swagger/um.json's declared type (a single enum string) -- this
+        method follows the swagger type since it is the machine-checked
+        source, so `flags` here is one flag name, not a list.
+        """
+        data: dict[str, Any] = {
+            "adom": adom,
+            "device": device,
+            "image": {"release": release},
+            "create_task": "enable",
+        }
+        if flags:
+            data["flags"] = flags
+        if schedule_time:
+            data["schedule_time"] = schedule_time
+        return await self.execute("/um/image/upgrade", **data)
+
+    async def list_available_firmware(
+        self,
+        platform: str | None = None,
+        product: str | None = None,
+    ) -> Any:
+        """List firmware versions available from FortiGuard servers plus any
+        versions imported by an administrator (device-reported catalog, not
+        limited to what's already on the FortiManager's local disk).
+
+        FNDN: EXEC /um/image/version/list (How-To Guide 007_device_management.rst
+        "How to get list of available firmware for a specific platform?";
+        no bundled swagger schema -- see section note above)
+        """
+        data: dict[str, Any] = {}
+        if platform:
+            data["platform"] = platform
+        if product:
+            data["product"] = product
+        return await self.execute("/um/image/version/list", **data)
+
+    async def list_firmware_images(
+        self,
+        system: str | None = None,
+    ) -> Any:
+        """List firmware image files present on the FortiManager's local disk
+        (imported by an administrator and/or downloaded from FortiGuard).
+
+        FNDN: EXEC /um/image/list (How-To Guide 007_device_management.rst
+        "How to get list of firmwares available on FortiManager drive?";
+        no bundled swagger schema -- see section note above)
+        """
+        data: dict[str, Any] = {}
+        if system:
+            data["system"] = system
+        return await self.execute("/um/image/list", **data)
+
+    async def get_firmware_upgrade_report(
+        self,
+        adom: str,
+        devices: list[dict[str, str]],
+        profile_name: str,
+    ) -> Any:
+        """Get the firmware upgrade report for a named upgrade profile.
+
+        The How-To Guide lists a separate "how to get the upgrade history"
+        question but marks it TBD with no confirmed distinct URL/shape (it
+        speculates the same "um/image/upgrade/report" URL) -- this method
+        wraps only the one endpoint the guide actually captured traffic for.
+
+        FNDN: GET um/image/upgrade/report (How-To Guide 007_device_management.rst
+        "How to get the Upgrade Report for managed devices?"; no bundled
+        swagger schema -- see section note above)
+
+        Shape note (live-verified 2026-08-14 against fmg-prod-01): pyfmg's
+        common_datagram_params flat-merges kwargs for the 'get' method type
+        by default (each becomes a sibling of 'url'), but the guide's
+        captured request nests adom/devices/flags/name under 'data'. A
+        flat call was confirmed live to fail with "The data is invalid for
+        the selected URL". Passing a single `data=` kwarg works around this:
+        common_datagram_params still flat-merges (method_type == 'get'), but
+        the only kwarg being merged is itself named 'data', so it lands
+        correctly nested rather than spread across the top level.
+        """
+        return await self.get(
+            "um/image/upgrade/report",
+            data={
+                "adom": adom,
+                "devices": devices,
+                "flags": 0,
+                "name": profile_name,
+            },
         )

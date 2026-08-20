@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from fortimanager_mcp.utils.validation import (
+    CONFIG_TEXT_SECRET_DIRECTIVES,
     MASK_VALUE,
     VALID_ADDRESS_TYPES,
     VALID_LOG_TRAFFIC_MODES,
@@ -12,6 +13,7 @@ from fortimanager_mcp.utils.validation import (
     VALID_POLICY_ACTIONS,
     ValidationError,
     get_allowed_output_dirs,
+    redact_config_text_secrets,
     sanitize_for_logging,
     sanitize_json_for_logging,
     validate_address_type,
@@ -134,6 +136,159 @@ class TestSanitizeJsonForLogging:
         data = {"key": "value"}
         result = sanitize_json_for_logging(data, indent=2)
         assert "\n" in result
+
+
+class TestRedactConfigTextSecrets:
+    """Tests for redact_config_text_secrets (CLI config-text redaction)."""
+
+    def test_redacts_known_secret_directives(self):
+        text = "config vpn ipsec phase1-interface\n    set psksecret ENC AbC123==\nend\n"
+        result = redact_config_text_secrets(text)
+        assert "AbC123==" not in result
+        assert "set psksecret ***REDACTED***" in result
+
+    def test_redacts_multiple_directives_independently(self):
+        text = (
+            "    set password ENC PwdValue==\n"
+            "    set community public-string\n"
+            "    set private-key '-----BEGIN KEY-----'\n"
+        )
+        result = redact_config_text_secrets(text)
+        assert "PwdValue" not in result
+        assert "public-string" not in result
+        assert "BEGIN KEY" not in result
+        assert result.count(MASK_VALUE) == 3
+
+    def test_does_not_touch_non_secret_lines(self):
+        text = "config system global\n    set hostname myfw01\nend\n"
+        assert redact_config_text_secrets(text) == text
+
+    def test_does_not_false_match_similar_directive_names(self):
+        """passwd-time is a real FortiOS field name (a timeout in minutes,
+        not a secret) -- must not be caught by a "passwd" substring match."""
+        text = "    set passwd-time 5\n"
+        assert redact_config_text_secrets(text) == text
+
+    def test_preserves_directive_name_and_structure(self):
+        text = "    edit hq-gw\n        set psksecret ENC X==\n    next\n"
+        result = redact_config_text_secrets(text)
+        assert "edit hq-gw" in result
+        assert "next" in result
+        assert "set psksecret ***REDACTED***" in result
+
+    def test_empty_string(self):
+        assert redact_config_text_secrets("") == ""
+
+    def test_redacts_pr65_08_18_review_directives(self):
+        """PR #65 review (Christian, 08-18): 8 more format=password
+        directives confirmed against the bundled 8.0.0 swagger --
+        sdn-connector, api-user, user fsso, user radius, router
+        key-chain/ospf -- were reachable via config-text export but
+        missing from CONFIG_TEXT_SECRET_DIRECTIVES."""
+        text = (
+            "    set secret-key ENC AAA==\n"
+            "    set client-secret ENC BBB==\n"
+            "    set api-key ENC CCC==\n"
+            "    set password2 ENC DDD==\n"
+            "    set password3 ENC EEE==\n"
+            "    set password4 ENC FFF==\n"
+            "    set password5 ENC GGG==\n"
+            "    set rsso-secret ENC HHH==\n"
+            "    set key-string ENC III==\n"
+        )
+        result = redact_config_text_secrets(text)
+        for raw in (
+            "AAA==",
+            "BBB==",
+            "CCC==",
+            "DDD==",
+            "EEE==",
+            "FFF==",
+            "GGG==",
+            "HHH==",
+            "III==",
+        ):
+            assert raw not in result
+        assert result.count(MASK_VALUE) == 9
+
+    def test_redacts_multiline_quoted_value(self):
+        """PR #65 review (Christian): a per-line regex only caught the
+        first line of a multi-line quoted value like a PEM private key --
+        the body and END line leaked raw. Live-reproduced against a real
+        multi-line private-key export before fixing."""
+        text = (
+            "config vpn certificate local\n"
+            '    edit "mycert"\n'
+            '        set private-key "-----BEGIN ENCRYPTED PRIVATE KEY-----\n'
+            "MIIFHDBOBgkqhkiG9w0BBQ0wQTApBgkqhkiG9w0BBQwwHAQI\n"
+            '-----END ENCRYPTED PRIVATE KEY-----"\n'
+            '        set comment "prod cert"\n'
+            "    next\n"
+            "end\n"
+        )
+        result = redact_config_text_secrets(text)
+        assert "MIIFHDBOBgkqhkiG9w0BBQ0w" not in result
+        assert "END ENCRYPTED PRIVATE KEY" not in result
+        assert "BEGIN ENCRYPTED PRIVATE KEY" not in result
+        assert "set private-key ***REDACTED***" in result
+        # unrelated lines survive untouched
+        assert 'edit "mycert"' in result
+        assert 'set comment "prod cert"' in result
+        assert "next" in result
+        assert "end" in result
+
+    def test_unterminated_quote_redacts_to_end_of_text(self):
+        """A truncated export (no closing quote) must fail closed -- redact
+        everything after the opening line rather than guess where a close
+        that isn't there would have been."""
+        text = 'set private-key "-----BEGIN KEY-----\nMIIsomebody\nmore body\n'
+        result = redact_config_text_secrets(text)
+        assert "MIIsomebody" not in result
+        assert "more body" not in result
+        assert "set private-key ***REDACTED***" in result
+
+    def test_single_line_quoted_value_unaffected(self):
+        """A quoted value that opens and closes on the same line is not
+        mistaken for a multi-line one -- only the matched line is touched."""
+        text = 'set comment "hello world"\nset psksecret "ENC AbC=="\nset hostname fw01\n'
+        result = redact_config_text_secrets(text)
+        assert 'set comment "hello world"' in result
+        assert "ENC AbC==" not in result
+        assert "set hostname fw01" in result
+
+    @pytest.mark.parametrize(
+        "directive",
+        [
+            "sae-password",
+            "login-passwd",
+            "authpasswd",
+            "priv-pwd",
+            "tertiary-secret",
+            "group-authentication-secret",
+            "authkey",
+            "enckey",
+        ],
+    )
+    def test_redacts_previously_missing_directives(self, directive):
+        """PR #65 review (Christian): these were declared secret by sibling
+        field lists elsewhere in the same PR (_VAP_SECRET_FIELDS,
+        _WTP_SECRET_FIELDS, _PHASE1_SECRET_FIELDS) but missing from this
+        list, so they leaked raw despite the codebase already knowing they
+        were sensitive."""
+        text = f"    set {directive} ENC XYZ123==\n"
+        result = redact_config_text_secrets(text)
+        assert "XYZ123" not in result
+        assert f"set {directive} ***REDACTED***" in result
+
+    def test_tacacs_secret_directive_removed(self):
+        """The old tacacs+-secret entry never matched anything real -- the
+        documented TACACS+ secret fields are key/secondary-key/tertiary-key
+        (confirmed against the FNDN schema, type "password")."""
+        assert "tacacs+-secret" not in CONFIG_TEXT_SECRET_DIRECTIVES
+        for directive in ("key", "secondary-key", "tertiary-key"):
+            text = f"    set {directive} ENC realsecret==\n"
+            result = redact_config_text_secrets(text)
+            assert "realsecret" not in result
 
 
 # =============================================================================
