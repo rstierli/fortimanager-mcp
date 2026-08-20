@@ -180,6 +180,30 @@ _CONFIG_TEXT_SECRET_LINE = re.compile(
 )
 
 
+def _has_unescaped_quote(text: str) -> bool:
+    """True if text contains a double quote that is not backslash-escaped.
+
+    ``'"' in text`` closed a quoted span on the first quote it saw,
+    including an escaped one, so a value containing ``\\"`` ended its span
+    early and everything after it leaked past the redactor (upstream #71).
+    Measured before fixing: a PEM whose second line was ``body \\" still
+    secret`` left the remaining body and the END line in clear.
+
+    Tracks the escape state character by character rather than using a
+    lookbehind, so ``\\\\"`` (an escaped backslash followed by a real
+    closing quote) still closes the span.
+    """
+    escaped = False
+    for char in text:
+        if escaped:
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == '"':
+            return True
+    return False
+
+
 def redact_config_text_secrets(text: str) -> str:
     """Mask secret-bearing directive values in raw FortiOS CLI config text.
 
@@ -214,11 +238,11 @@ def redact_config_text_secrets(text: str) -> str:
         out.append(match.group("prefix") + MASK_VALUE)
         rest = match.group("rest")
         i += 1
-        if rest.startswith('"') and '"' not in rest[1:]:
+        if rest.startswith('"') and not _has_unescaped_quote(rest[1:]):
             # Unterminated quote: consume continuation lines until the one
             # that closes it (or end of text, if the export was truncated --
             # safer to over-redact than to guess a close that isn't there).
-            while i < len(lines) and '"' not in lines[i]:
+            while i < len(lines) and not _has_unescaped_quote(lines[i]):
                 i += 1
             if i < len(lines):
                 i += 1  # also drop the closing line itself
@@ -373,11 +397,13 @@ def validate_device_name(device: str) -> str:
         raise ValidationError("Device name cannot be empty")
 
     device = device.strip()
+    _reject_traversal_segment(device, "device name")
 
     # Check for VDOM suffix like "device[vdom]"
     if "[" in device:
         base_name = device.split("[")[0]
         vdom_part = device.split("[")[1].rstrip("]")
+        _reject_traversal_segment(base_name, "device name")
         if not DEVICE_NAME_PATTERN.match(base_name):
             raise ValidationError(f"Invalid device name '{base_name}'")
         if not ADOM_PATTERN.match(vdom_part):
@@ -480,6 +506,24 @@ def validate_policy_name(name: str) -> str:
     return name
 
 
+#: Path segments that mean "this directory" and "the parent directory".
+#: Both match the name patterns below (dots are legal in device and object
+#: names), and both end up as the last segment of a URL template, so a name
+#: of ".." walks the caller one level up the API tree instead of addressing
+#: an object. No real FortiManager object is named "." or ".." (upstream
+#: #71). Only the exact segments are refused -- a dot anywhere else in a
+#: name is legitimate and stays allowed.
+_TRAVERSAL_SEGMENTS = frozenset({".", ".."})
+
+
+def _reject_traversal_segment(value: str, label: str) -> None:
+    """Refuse a name that is only dots, before it reaches a URL template."""
+    if value in _TRAVERSAL_SEGMENTS:
+        raise ValidationError(
+            f"Invalid {label} '{value}': a name of '.' or '..' is a path segment, not a name."
+        )
+
+
 def validate_object_name(name: str, object_type: str = "object") -> str:
     """Validate firewall object name format.
 
@@ -497,6 +541,7 @@ def validate_object_name(name: str, object_type: str = "object") -> str:
         raise ValidationError(f"{object_type.capitalize()} name cannot be empty")
 
     name = name.strip()
+    _reject_traversal_segment(name, f"{object_type} name")
 
     if not OBJECT_NAME_PATTERN.match(name):
         raise ValidationError(

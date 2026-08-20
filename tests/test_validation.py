@@ -1080,3 +1080,74 @@ class TestFortiApSerialPrefixes:
         """
         with pytest.raises(ValidationError):
             validate_device_serial(serial)
+
+
+class TestEscapedQuoteInASecretValue:
+    """An escaped quote must not close a multi-line quoted span.
+
+    upstream #71: the span scan closed on the first double quote it saw,
+    escaped or not, so a value containing \\" ended early and everything
+    after it went out in clear.
+    """
+
+    def test_escaped_quote_does_not_end_the_redaction_early(self):
+        text = (
+            'set private-key "-----BEGIN KEY-----\n'
+            'body \\" still secret\n'
+            "MORE-SECRET-BODY\n"
+            '-----END KEY-----"\n'
+            "set hostname fw01\n"
+        )
+        result = redact_config_text_secrets(text)
+        assert "MORE-SECRET-BODY" not in result
+        assert "END KEY" not in result
+        assert "still secret" not in result
+        assert "set private-key ***REDACTED***" in result
+        # the line after the real closing quote is untouched
+        assert "set hostname fw01" in result
+
+    def test_escaped_quote_on_the_opening_line_does_not_end_it_early(self):
+        text = 'set psksecret "abc \\" def\nSTILL-SECRET\nreal-end"\nset hostname fw01\n'
+        result = redact_config_text_secrets(text)
+        assert "STILL-SECRET" not in result
+        assert "real-end" not in result
+        assert "set hostname fw01" in result
+
+    def test_an_escaped_backslash_still_lets_the_quote_close(self):
+        r"""\\" is an escaped backslash followed by a real closing quote, so
+        the span ends there and the next line must survive."""
+        text = 'set psksecret "abc\\\\"\nset hostname fw01\n'
+        result = redact_config_text_secrets(text)
+        assert "set hostname fw01" in result
+        assert "abc" not in result
+
+
+class TestTraversalSegmentNames:
+    """A name of "." or ".." is a path segment, not a name.
+
+    upstream #71: both matched the name patterns (dots are legal in names)
+    and both land as the last segment of a URL template.
+    """
+
+    @pytest.mark.parametrize("segment", [".", ".."])
+    def test_object_name_refuses_a_traversal_segment(self, segment):
+        with pytest.raises(ValidationError):
+            validate_object_name(segment)
+
+    @pytest.mark.parametrize("segment", [".", ".."])
+    def test_device_name_refuses_a_traversal_segment(self, segment):
+        with pytest.raises(ValidationError):
+            validate_device_name(segment)
+
+    def test_device_name_refuses_it_behind_a_vdom_suffix(self):
+        """The VDOM branch validates the base name separately, so it needs
+        the same guard or "..[root]" walks up regardless."""
+        with pytest.raises(ValidationError):
+            validate_device_name("..[root]")
+
+    @pytest.mark.parametrize("name", ["fw.01", "site.a.fw", "FGT-01", "_edge"])
+    def test_a_dot_elsewhere_in_a_name_is_still_fine(self, name):
+        """Only the exact segments are refused. Tightening the pattern to
+        ban dots outright would reject legitimate names."""
+        assert validate_device_name(name) == name
+        assert validate_object_name(name) == name
