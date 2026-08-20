@@ -133,28 +133,27 @@ def _prepare_policy_snapshot(config: str | dict[str, Any]) -> dict[str, Any]:
     return snapshot
 
 
-def _snapshot_action_for_safety_check(action: Any) -> str | None:
-    """Normalize a policy snapshot's raw ``action`` field for the gate.
+def _snapshot_scope(snapshot: dict[str, Any], *keys: str) -> list[Any]:
+    """Collect every scope value a snapshot carries for one gate argument.
 
-    A real change-log snapshot encodes action as FMG's internal integer,
-    not the string a caller sends when creating/updating a policy --
-    live-verified against fmg-prod-01 (a real accept policy on myfw01
-    returned action=1; a test policy created with action="deny" and read
-    back returned action=0). Fed straight into check_policy_safety, which
-    calls ``.lower()`` on it, this crashed with 'int' object has no
-    attribute 'lower' (PR #65 review, Christian) -- the gate had never
-    been exercised against a real snapshot's actual shape.
+    The gate used to be fed a four-key projection of the snapshot while
+    ``client.revert_firewall_policy_snapshot`` forwards the whole dict, so
+    scope expressed in any other key was written unscreened (upstream #69).
+    ``srcaddr6``/``dstaddr6`` are the case that reaches a real FMG policy:
+    this repo's create path never writes them, but a revert snapshot comes
+    from FMG rather than from this repo.
 
-    Only whether action is "accept" matters to the permissiveness check,
-    so any int other than 1 normalizes to "deny" as a safe placeholder --
-    which specific non-accept action it really was (ipsec, ssl-vpn, ...)
-    doesn't change the gate's answer.
+    Values are concatenated rather than merged per key -- the gate only
+    asks whether anything in the field is "all", so a v6 any-to-any is as
+    broad as a v4 one and should read the same.
     """
-    if isinstance(action, str):
-        return action
-    if isinstance(action, int):
-        return "accept" if action == 1 else "deny"
-    return None
+    collected: list[Any] = []
+    for key in keys:
+        value = snapshot.get(key)
+        if value is None:
+            continue
+        collected.extend(value if isinstance(value, list | tuple) else [value])
+    return collected
 
 
 def _snapshot_negate_for_safety_check(value: Any) -> bool:
@@ -803,11 +802,16 @@ async def revert_firewall_policy(
         # as create/update -- it must go through the same permissiveness
         # gate or it's an unguarded general-purpose policy-write path.
         safety_warning = None
+        # A snapshot with no "action" is not the same as create/update
+        # omitting one. Those take FMG's default (deny); a revert writes the
+        # snapshot as given, so there is no default to fall back on and the
+        # absence has to be read the dangerous way (upstream #69).
+        raw_action = snapshot.get("action")
         safety_result = check_policy_safety(
-            snapshot.get("srcaddr"),
-            snapshot.get("dstaddr"),
-            snapshot.get("service"),
-            _snapshot_action_for_safety_check(snapshot.get("action")),
+            _snapshot_scope(snapshot, "srcaddr", "srcaddr6"),
+            _snapshot_scope(snapshot, "dstaddr", "dstaddr6"),
+            _snapshot_scope(snapshot, "service"),
+            "accept" if raw_action is None else raw_action,
             srcaddr_negate=_snapshot_negate_for_safety_check(snapshot.get("srcaddr-negate")),
             dstaddr_negate=_snapshot_negate_for_safety_check(snapshot.get("dstaddr-negate")),
             service_negate=_snapshot_negate_for_safety_check(snapshot.get("service-negate")),

@@ -123,6 +123,97 @@ class TestCheckPolicyPermissiveness:
         assert "fully open" in result
 
 
+class TestCheckPolicyPermissivenessShapes:
+    """Shapes the gate was not built for must refuse, never crash.
+
+    PR #65 review follow-up (upstream #69). Every case here was measured
+    against the pre-fix gate before the fix was written: the digit-string
+    action reached the client call, and the dict and raw-int shapes raised
+    AttributeError out of the six policy_tools call sites, which sit
+    *outside* their function's try block and so propagate uncaught rather
+    than returning an error envelope.
+    """
+
+    def test_digit_string_action_does_not_bypass(self):
+        """FMG encodes action as an int in change-log snapshots (1=accept).
+        A snapshot round-tripped through JSON hands the gate "1", which is
+        a str, so it was returned unchanged and then failed the exact
+        != "accept" comparison. Measured pre-fix: this reached the client
+        call in create_firewall_policy."""
+        result = check_policy_permissiveness(["all"], ["all"], ["ALL"], "1")
+        assert result is not None
+        assert "fully open" in result
+
+    def test_digit_string_non_accept_action_still_passes(self):
+        """0 is deny. Normalizing must not turn every digit into accept."""
+        assert check_policy_permissiveness(["all"], ["all"], ["ALL"], "0") is None
+
+    def test_raw_int_accept_action_does_not_bypass(self):
+        result = check_policy_permissiveness(["all"], ["all"], ["ALL"], 1)
+        assert result is not None
+        assert "fully open" in result
+
+    def test_raw_int_deny_action_still_passes(self):
+        assert check_policy_permissiveness(["all"], ["all"], ["ALL"], 0) is None
+
+    @pytest.mark.parametrize("field", ["srcaddr", "dstaddr", "service"])
+    def test_dict_member_is_read_by_name(self, field):
+        """FMG returns [{"name": "all"}] from some reads. Pre-fix this
+        raised AttributeError on .strip()."""
+        args = {"srcaddr": ["all"], "dstaddr": ["all"], "service": ["ALL"]}
+        args[field] = [{"name": "all" if field != "service" else "ALL"}]
+        result = check_policy_permissiveness(
+            args["srcaddr"], args["dstaddr"], args["service"], "accept"
+        )
+        assert result is not None
+        assert "fully open" in result
+
+    def test_dict_member_that_is_not_all_still_passes(self):
+        result = check_policy_permissiveness(
+            [{"name": "LAN"}], [{"name": "DMZ"}], ["HTTP"], "accept"
+        )
+        assert result is None
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"srcaddr": [1], "dstaddr": ["all"], "service": ["ALL"], "action": "accept"},
+            {"srcaddr": ["all"], "dstaddr": [None], "service": ["ALL"], "action": "accept"},
+            {"srcaddr": ["all"], "dstaddr": ["all"], "service": [object()], "action": "accept"},
+            {"srcaddr": 7, "dstaddr": ["all"], "service": ["ALL"], "action": "accept"},
+            {"srcaddr": ["all"], "dstaddr": ["all"], "service": ["ALL"], "action": object()},
+            {"srcaddr": ["all"], "dstaddr": ["all"], "service": ["ALL"], "action": True},
+        ],
+    )
+    def test_unreadable_shape_refuses_instead_of_raising(self, kwargs):
+        """A safety gate that crashes on an input it does not understand is
+        not a gate. It refuses through its normal return channel, so strict
+        mode turns it into an error envelope and warn mode into a warning,
+        the same as any other block."""
+        result = check_policy_permissiveness(**kwargs)
+        assert result is not None
+        assert "cannot read" in result
+
+    def test_unreadable_shape_refuses_even_when_narrow(self):
+        """The refusal is about not being able to tell, so it does not
+        depend on the readable fields looking broad."""
+        result = check_policy_permissiveness([1], ["DMZ"], ["HTTP"], "accept")
+        assert result is not None
+        assert "cannot read" in result
+
+    def test_dict_member_without_a_name_key_is_unreadable(self):
+        result = check_policy_permissiveness([{"q": "all"}], ["all"], ["ALL"], "accept")
+        assert result is not None
+        assert "cannot read" in result
+
+    def test_absent_action_is_still_not_gated(self):
+        """Unchanged contract: create/update omit action to take FMG's
+        default (deny), so None must stay a pass here. The revert path,
+        where an absent action means the snapshot is unreadable rather
+        than defaulted, handles it at its own call site."""
+        assert check_policy_permissiveness(["all"], ["all"], ["ALL"], None) is None
+
+
 class TestCheckPolicyPermissivenessNegate:
     """Negation inverts a field's match set, changing what counts as broad."""
 

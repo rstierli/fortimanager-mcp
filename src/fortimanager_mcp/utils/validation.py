@@ -1139,6 +1139,85 @@ def validate_script_content(content: str) -> list[str]:
 # =============================================================================
 
 
+#: Sentinel for a value the gate cannot interpret. Distinct from None,
+#: which is a legitimate "field not supplied".
+_UNREADABLE = object()
+
+
+def _normalize_policy_action(value: Any) -> Any:
+    """Reduce a policy ``action`` from any shape a caller sends to a string.
+
+    FMG stores this enum as an int in change-log snapshots (1=accept,
+    0=deny, live-verified against fmg-prod-01), and a snapshot that has
+    been round-tripped through JSON as a string carries the digit as
+    ``"1"``. Both reach this gate: revert_firewall_policy feeds it
+    snapshot data directly.
+
+    Normalizing here rather than in the callers is deliberate --
+    check_policy_safety's docstring requires exactly one copy of the gate,
+    and a per-caller normalizer is a second copy of it that only some
+    write paths get. An int handled in one caller was exactly how ``"1"``
+    stayed a bypass (upstream #69).
+
+    Returns the normalized string, None when no action was supplied, or
+    _UNREADABLE for a shape with no defensible reading.
+    """
+    if value is None:
+        return None
+    # bool before int: True is not an action, and would otherwise read as 1.
+    if isinstance(value, bool):
+        return _UNREADABLE
+    if isinstance(value, int):
+        return "accept" if value == 1 else "deny"
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text.isdigit():
+            return "accept" if int(text) == 1 else "deny"
+        return text
+    return _UNREADABLE
+
+
+def _normalize_policy_members(value: Any) -> Any:
+    """Reduce an address/service field to a flat list of names.
+
+    Tolerates the three shapes that reach this gate in practice: a list of
+    names, a bare scalar name (treated as a one-element list -- a safety
+    check must not be foolable by a caller passing the "wrong" shape), and
+    a list of ``{"name": ...}`` dicts, which is what FMG returns from some
+    reads.
+
+    Returns the list of names, or _UNREADABLE for anything else. It does
+    not fall back to "no match": a member the gate cannot read is the case
+    where it has no idea how broad the policy is, and silently answering
+    "not broad" there is the bypass this is meant to close.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str | dict):
+        value = [value]
+    if not isinstance(value, list | tuple):
+        return _UNREADABLE
+    names: list[str] = []
+    for member in value:
+        if isinstance(member, str):
+            names.append(member)
+        elif isinstance(member, dict) and isinstance(member.get("name"), str):
+            names.append(member["name"])
+        else:
+            return _UNREADABLE
+    return names
+
+
+def _unreadable_message(fields: list[str]) -> str:
+    """The gate's refusal for a shape it has no defensible reading of."""
+    return (
+        f"Policy safety gate cannot read {', '.join(fields)}: refusing rather "
+        "than guessing how broad this policy is. Supply each field as a name, "
+        'a list of names, or a list of {"name": ...} entries, and action as '
+        "one of the policy action strings or FMG's 0/1 encoding."
+    )
+
+
 def check_policy_permissiveness(
     srcaddr: list[str] | str | None,
     dstaddr: list[str] | str | None,
@@ -1170,38 +1249,43 @@ def check_policy_permissiveness(
     Returns:
         Warning message string if overly permissive, None if acceptable
     """
-    # .strip() before comparing: PR #65 review (Christian) found a padded
-    # action ("accept " with a trailing space) bypassed this check entirely
-    # -- reachable from any caller that doesn't validate action against the
-    # enum first (revert_firewall_policy's snapshot input, in particular).
-    if action is None or action.strip().lower() != "accept":
+    # Action is settled first, before any address is looked at: a policy
+    # that does not accept cannot be overly permissive, so a deny policy
+    # carrying an odd address shape must not be refused over it.
+    action_name = _normalize_policy_action(action)
+    if action_name is _UNREADABLE:
+        return _unreadable_message(["action"])
+    if action_name != "accept":
         return None
 
-    def _is_all(addrs: list[str] | str | None) -> bool:
-        # Same review: a caller passing a bare string ("all" instead of
-        # ["all"]) was iterated character-by-character ('a','l','l', none
-        # of which equals "all"), silently returning False -- a scalar
-        # bypassed the check completely. A list is still the contract this
-        # function documents; a bare string is tolerated defensively
-        # (treated as its own single-element list) rather than trusted
-        # blindly, since a safety check must not be foolable by a caller
-        # passing the "wrong" shape. Follow-up (08-18): a padded value
-        # ("all " with a trailing space) survived the unpadded check the
-        # same way the padded "accept " did above -- .strip() before
-        # comparing here too.
-        if not addrs:
-            return False
-        if isinstance(addrs, str):
-            addrs = [addrs]
-        return any(a.strip().lower() == "all" for a in addrs)
+    # Padding, case, scalars, FMG's int enums and {"name": ...} members are
+    # all handled by the normalizers above, so the comparisons below stay
+    # exact. A shape with no defensible reading refuses through this
+    # function's normal return channel rather than raising: the six
+    # policy_tools call sites invoke this gate *outside* their own try
+    # block, so an exception here leaves the tool uncaught rather than
+    # returning an error envelope (measured, upstream #69).
+    members = {
+        "srcaddr": _normalize_policy_members(srcaddr),
+        "dstaddr": _normalize_policy_members(dstaddr),
+        "service": _normalize_policy_members(service),
+    }
+    unreadable = [field for field, value in members.items() if value is _UNREADABLE]
+    if unreadable:
+        return _unreadable_message(unreadable)
 
-    src_all = _is_all(srcaddr)
-    dst_all = _is_all(dstaddr)
-    svc_all = service is not None and (
-        any(s.strip().upper() == "ALL" for s in service)
-        if not isinstance(service, str)
-        else service.strip().upper() == "ALL"
-    )
+    src_names: list[str] = members["srcaddr"]
+    dst_names: list[str] = members["dstaddr"]
+    svc_names: list[str] = members["service"]
+
+    def _is_all(names: list[str]) -> bool:
+        # A padded or differently-cased value ("all ", "ALL") survived the
+        # exact comparison before PR #65's review caught it.
+        return any(name.strip().lower() == "all" for name in names)
+
+    src_all = _is_all(src_names)
+    dst_all = _is_all(dst_names)
+    svc_all = _is_all(svc_names)
 
     # Negating "all" produces an empty match set — the policy matches no
     # traffic. Almost always a mistake, and FortiOS may reject it at install.
@@ -1223,8 +1307,8 @@ def check_policy_permissiveness(
 
     # A negated specific list matches its complement, which is effectively
     # as broad as "all" for permissiveness purposes.
-    src_broad = src_all or (srcaddr_negate and bool(srcaddr))
-    dst_broad = dst_all or (dstaddr_negate and bool(dstaddr))
+    src_broad = src_all or (srcaddr_negate and bool(src_names))
+    dst_broad = dst_all or (dstaddr_negate and bool(dst_names))
     if not (src_broad and dst_broad):
         return None
 
@@ -1244,7 +1328,7 @@ def check_policy_permissiveness(
             "the complement of the listed values, which is effectively full scope."
         )
 
-    if svc_all or (service_negate and bool(service)):
+    if svc_all or (service_negate and bool(svc_names)):
         return (
             "Policy is fully open: srcaddr='all', dstaddr='all', service='ALL', "
             "action='accept'. This allows all traffic from any source to any "
