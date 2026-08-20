@@ -7,6 +7,7 @@ and installation operations.
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from fortimanager_mcp.api.client import FortiManagerClient
@@ -16,6 +17,7 @@ from fortimanager_mcp.utils.install_gate import package_revision, record_preview
 from fortimanager_mcp.utils.responses import error_response
 from fortimanager_mcp.utils.task_guard import TaskSlotsExhausted, spawn_guarded
 from fortimanager_mcp.utils.validation import (
+    ValidationError,
     check_policy_safety,
     validate_adom,
     validate_move_position,
@@ -401,6 +403,80 @@ async def get_firewall_policy(
         return {"status": "error", "message": msg, "error_code": code}
 
 
+#: The fields the permissiveness gate reads. A stored policy carrying
+#: none of them is not a policy, whatever else the read returned.
+_SCOPE_KEYS = frozenset({"srcaddr", "dstaddr", "service", "action"})
+
+
+async def _check_partial_update_safety(
+    *,
+    fetch_stored: "Callable[[], Awaitable[Any]]",
+    srcaddr: Any,
+    dstaddr: Any,
+    service: Any,
+    action: Any,
+    srcaddr_negate: bool,
+    dstaddr_negate: bool,
+    service_negate: bool,
+) -> dict[str, Any] | None:
+    """Gate an update against the policy as it will exist, not the delta.
+
+    An update sends only the fields the caller named, so screening the delta
+    alone answers the wrong question. The three update tools required
+    srcaddr, dstaddr and action to arrive together and skipped the merged
+    check entirely otherwise, noting the existing values were not known
+    without an extra API call. The consequence: an update setting
+    srcaddr=all, dstaddr=all, service=ALL on an existing accept policy was
+    written completely ungated whenever action was left out (upstream #71).
+
+    So it makes the extra call, but only when the caller actually named one
+    of the gate's scope fields. An update that touches none of them cannot
+    change how permissive the policy is, and screening it anyway made
+    strict mode refuse ``status="disable"``, ``utm_status=True`` and even a
+    rename on an existing all/all/accept policy: the gate blocking the two
+    fastest ways to remediate the policy it objects to.
+
+    Negation is passed through to the gate unchanged and never triggers the
+    read. A negate-only update warns rather than blocks, which is the
+    behaviour that shipped before this change and is pinned by its own
+    tests.
+    """
+    if any(field is not None for field in (srcaddr, dstaddr, service, action)):
+        if None in (srcaddr, dstaddr, service, action):
+            stored = await fetch_stored()
+            if isinstance(stored, list):
+                stored = stored[0] if stored else None
+            if not isinstance(stored, dict) or not _SCOPE_KEYS & set(stored):
+                # A read that carries no scope field at all (empty, or an
+                # error envelope shaped like a payload) used to be coerced
+                # to {}, which fed the gate all-None, which passes -- so a
+                # widening update went through unscreened. That is the
+                # fail-open this docstring rules out.
+                raise ValidationError(
+                    "policy safety gate could not read the stored policy, so "
+                    "this update cannot be screened; refusing rather than "
+                    "writing unscreened"
+                )
+            if srcaddr is None:
+                srcaddr = stored.get("srcaddr")
+            if dstaddr is None:
+                dstaddr = stored.get("dstaddr")
+            if service is None:
+                service = stored.get("service")
+            if action is None:
+                action = stored.get("action")
+
+    return check_policy_safety(
+        srcaddr,
+        dstaddr,
+        service,
+        action,
+        srcaddr_negate=srcaddr_negate,
+        dstaddr_negate=dstaddr_negate,
+        service_negate=service_negate,
+    )
+
+
 @mcp.tool()
 async def create_firewall_policy(
     adom: str,
@@ -700,25 +776,7 @@ async def update_firewall_policy(
         ...     srcaddr=["New-Subnet", "Other-Subnet"]
         ... )
     """
-    # Safety check — permissiveness only when all critical fields are explicitly
-    # provided (for partial updates we can't know existing values without an
-    # extra API call). Negation flags are always checked so enabling one is
-    # never silent, even on a negate-only partial update.
     safety_warning = None
-    full_check = srcaddr is not None and dstaddr is not None and action is not None
-    safety_result = check_policy_safety(
-        srcaddr if full_check else None,
-        dstaddr if full_check else None,
-        service if full_check else None,
-        action if full_check else None,
-        srcaddr_negate=bool(srcaddr_negate),
-        dstaddr_negate=bool(dstaddr_negate),
-        service_negate=bool(service_negate),
-    )
-    if safety_result:
-        if safety_result.get("status") == "error":
-            return safety_result
-        safety_warning = safety_result.get("_safety_warning")
 
     try:
         adom = validate_adom(adom)
@@ -738,6 +796,21 @@ async def update_firewall_policy(
             profile_protocol_options=profile_protocol_options,
         )
         client = _get_client()
+
+        safety_result = await _check_partial_update_safety(
+            fetch_stored=lambda: client.get_firewall_policy(adom, package, policyid),
+            srcaddr=srcaddr,
+            dstaddr=dstaddr,
+            service=service,
+            action=action,
+            srcaddr_negate=bool(srcaddr_negate),
+            dstaddr_negate=bool(dstaddr_negate),
+            service_negate=bool(service_negate),
+        )
+        if safety_result:
+            if safety_result.get("status") == "error":
+                return safety_result
+            safety_warning = safety_result.get("_safety_warning")
 
         data: dict[str, Any] = {}
 
@@ -1751,25 +1824,28 @@ async def update_local_in_policy(
         ... )
     """
     safety_warning = None
-    full_check = srcaddr is not None and dstaddr is not None and action is not None
-    safety_result = check_policy_safety(
-        srcaddr if full_check else None,
-        dstaddr if full_check else None,
-        service if full_check else None,
-        action if full_check else None,
-        srcaddr_negate=bool(srcaddr_negate),
-        dstaddr_negate=bool(dstaddr_negate),
-        service_negate=bool(service_negate),
-    )
-    if safety_result:
-        if safety_result.get("status") == "error":
-            return safety_result
-        safety_warning = safety_result.get("_safety_warning")
 
     try:
         adom = validate_adom(adom)
         package = validate_package_name(package)
         client = _get_client()
+
+        safety_result = await _check_partial_update_safety(
+            fetch_stored=lambda: client.get(
+                f"{_LOCAL_IN_POLICY_URL.format(adom=adom, pkg=package)}/{policyid}"
+            ),
+            srcaddr=srcaddr,
+            dstaddr=dstaddr,
+            service=service,
+            action=action,
+            srcaddr_negate=bool(srcaddr_negate),
+            dstaddr_negate=bool(dstaddr_negate),
+            service_negate=bool(service_negate),
+        )
+        if safety_result:
+            if safety_result.get("status") == "error":
+                return safety_result
+            safety_warning = safety_result.get("_safety_warning")
 
         data = _build_local_in_policy_fields(
             action=action,
@@ -2130,25 +2206,28 @@ async def update_local_in_policy6(
         ... )
     """
     safety_warning = None
-    full_check = srcaddr is not None and dstaddr is not None and action is not None
-    safety_result = check_policy_safety(
-        srcaddr if full_check else None,
-        dstaddr if full_check else None,
-        service if full_check else None,
-        action if full_check else None,
-        srcaddr_negate=bool(srcaddr_negate),
-        dstaddr_negate=bool(dstaddr_negate),
-        service_negate=bool(service_negate),
-    )
-    if safety_result:
-        if safety_result.get("status") == "error":
-            return safety_result
-        safety_warning = safety_result.get("_safety_warning")
 
     try:
         adom = validate_adom(adom)
         package = validate_package_name(package)
         client = _get_client()
+
+        safety_result = await _check_partial_update_safety(
+            fetch_stored=lambda: client.get(
+                f"{_LOCAL_IN_POLICY6_URL.format(adom=adom, pkg=package)}/{policyid}"
+            ),
+            srcaddr=srcaddr,
+            dstaddr=dstaddr,
+            service=service,
+            action=action,
+            srcaddr_negate=bool(srcaddr_negate),
+            dstaddr_negate=bool(dstaddr_negate),
+            service_negate=bool(service_negate),
+        )
+        if safety_result:
+            if safety_result.get("status") == "error":
+                return safety_result
+            safety_warning = safety_result.get("_safety_warning")
 
         data = _build_local_in_policy_fields(
             action=action,
