@@ -1448,6 +1448,8 @@ class TestVdomIsValidatedOnEveryWritePath:
         "create_device_wtp": {"wtp_id": "FP231FTF24000123", "wtp_profile": "AP-profile"},
         "update_device_wtp": {"wtp_id": "FP231FTF24000123", "name": "ap-1"},
         "delete_device_wtp": {"wtp_id": "FP231FTF24000123"},
+        "create_device_sniffer": {"interface": "port1"},
+        "create_device_on_demand_sniffer": {"name": "TEST-ODS", "interface": "port1"},
     }
 
     def test_every_vdom_taking_tool_is_listed(self) -> None:

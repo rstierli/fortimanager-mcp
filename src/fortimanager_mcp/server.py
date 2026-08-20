@@ -2,7 +2,7 @@
 
 Uses FastMCP pattern for tool registration.
 Supports two modes:
-- full: All 230 tools loaded (default)
+- full: All 232 tools loaded (default)
 - dynamic: Only discovery tools loaded (~90% context reduction)
 """
 
@@ -81,7 +81,7 @@ async def health_check() -> str:
     """Check FortiManager MCP server health and connection status."""
     mode = settings.FMG_TOOL_MODE
     if mode == "full":
-        tool_info = "All 230 tools loaded"
+        tool_info = "All 232 tools loaded"
     else:
         tool_info = "Discovery tools + dynamic execution"
     return f"FortiManager MCP Server is healthy (mode: {mode}, {tool_info})"
@@ -103,7 +103,7 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
         """
         op = operation.lower().strip()
 
-        # Define available tools and their categories (230 tools total)
+        # Define available tools and their categories (232 tools total)
         tool_catalog = {
             "system": [
                 ("get_system_status", "Get FortiManager system status and version info"),
@@ -169,6 +169,11 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
                 ("create_device_wtp", "Register a managed FortiAP (wtp-id, wtp-profile)"),
                 ("update_device_wtp", "Update a managed FortiAP's fields"),
                 ("delete_device_wtp", "Delete a managed FortiAP registration"),
+                ("create_device_sniffer", "Create a firewall sniffer definition on a device"),
+                (
+                    "create_device_on_demand_sniffer",
+                    "Create a bounded on-demand packet sniffer on a device",
+                ),
             ],
             "policy": [
                 ("create_package", "Create a new policy package"),
@@ -535,7 +540,7 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
             Categories with descriptions and tool counts
         """
         return {
-            "total_tools": 230,
+            "total_tools": 232,
             "categories": {
                 "system": {
                     "count": 17,
@@ -549,11 +554,12 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
                     ),
                 },
                 "device_config": {
-                    "count": 19,
+                    "count": 21,
                     "description": (
                         "Device-DB configuration: VLAN interfaces, DHCP servers, "
                         "wireless VAPs/SSIDs, FortiAP profile assignment, WTP-profile "
-                        "radio channel/bonding, managed FortiAP (wtp) registration"
+                        "radio channel/bonding, managed FortiAP (wtp) registration, "
+                        "firewall sniffer + on-demand-sniffer definitions"
                     ),
                 },
                 "policy": {
@@ -704,6 +710,8 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
                     "create_device_wtp",
                     "update_device_wtp",
                     "delete_device_wtp",
+                    "create_device_sniffer",
+                    "create_device_on_demand_sniffer",
                 },
                 "policy_tools": {
                     "create_package",
@@ -957,7 +965,7 @@ if settings.FMG_TOOL_MODE == "dynamic":
 
 else:
     # Full mode: Load all tools (default behavior)
-    logger.info("Loading in FULL mode - all 230 tools")
+    logger.info("Loading in FULL mode - all 232 tools")
 
     # Import all tool modules (registers them with the server)
     from fortimanager_mcp.tools import (  # noqa: E402, F401

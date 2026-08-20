@@ -218,10 +218,10 @@ FortiManager MCP supports two tool loading modes to optimize context window usag
 
 | Mode | Tools Loaded | Context Usage | Best For |
 |------|-------------|---------------|----------|
-| `full` (default) | All 230 tools | ~100% | Large context windows, full functionality |
+| `full` (default) | All 232 tools | ~100% | Large context windows, full functionality |
 | `dynamic` | 4 discovery tools | ~10% | Smaller context windows, on-demand loading |
 
-**Full Mode** (default): All 230 tools are loaded at startup. Best when you have sufficient context window and need immediate access to all FortiManager operations.
+**Full Mode** (default): All 232 tools are loaded at startup. Best when you have sufficient context window and need immediate access to all FortiManager operations.
 
 **Dynamic Mode**: Only lightweight discovery tools are loaded:
 - `find_fortimanager_tool(operation)` - Search for tools by keyword
@@ -462,7 +462,7 @@ networks:
     external: true
 ```
 
-## Available Tools (230 tools)
+## Available Tools (232 tools)
 
 ### System Tools (17 tools)
 
@@ -505,7 +505,7 @@ networks:
 | `get_device_interface_config` | Read device-DB interface config objects, filterable by VLAN id / interface name (maps a client IP to its VLAN/interface/port) |
 | `get_device_client_location` | Asset Identity Center: locate a client (by ip/mac/hostname) via the live detected-device inventory — resolves the FortiAP/FortiSwitch, port and VLAN it is connected through |
 
-### Device Configuration Tools (19 tools)
+### Device Configuration Tools (21 tools)
 
 Typed device-DB configuration (issues #45, #52): everything is staged in FortiManager's
 device database and pushed with `preview_install` + `install_device_settings`;
@@ -532,6 +532,8 @@ nothing talks to the FortiGate directly.
 | `create_device_wtp` | Register a managed FortiAP (wtp-id, wtp-profile, authorization state) |
 | `update_device_wtp` | Update a managed FortiAP's profile/name/admin/location/comment |
 | `delete_device_wtp` | Delete a managed FortiAP registration |
+| `create_device_sniffer` | Create a firewall sniffer definition (`firewall sniffer`) on the device itself, not FortiManager's own local sniffer |
+| `create_device_on_demand_sniffer` | Create a bounded, name-keyed on-demand packet sniffer (`firewall on-demand-sniffer`), distinct from the persistent `firewall sniffer` object |
 
 ### Policy Tools (25 tools)
 
