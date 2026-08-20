@@ -4,17 +4,6 @@ Uses FastMCP pattern for tool registration.
 Supports two modes:
 - full: All 230 tools loaded (default)
 - dynamic: Only discovery tools loaded (~90% context reduction)
-
-Note (2026-08-14): the find_fortimanager_tool/list_fortimanager_categories
-discovery catalogs below are NOT yet updated for the 9 tool modules added in
-the high-priority expansion batch (security_profile_tools,
-security_profile_advanced_tools, vpn_tools, device_group_tools,
-revision_tools, firmware_tools, object_usage_tools, fmg_ops_tools,
-policy_lookup_tools) or the local-in-policy additions to policy_tools -
-those tools ARE registered and callable (see _TOOL_MODULES and the FULL-mode
-import list), just not yet discoverable via search/category-browse in
-dynamic mode. Deliberate scope cut, not an oversight - tracked as a
-follow-up.
 """
 
 import hmac
@@ -92,7 +81,7 @@ async def health_check() -> str:
     """Check FortiManager MCP server health and connection status."""
     mode = settings.FMG_TOOL_MODE
     if mode == "full":
-        tool_info = "All 127 tools loaded"
+        tool_info = "All 230 tools loaded"
     else:
         tool_info = "Discovery tools + dynamic execution"
     return f"FortiManager MCP Server is healthy (mode: {mode}, {tool_info})"
@@ -114,7 +103,7 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
         """
         op = operation.lower().strip()
 
-        # Define available tools and their categories (127 tools total)
+        # Define available tools and their categories (230 tools total)
         tool_catalog = {
             "system": [
                 ("get_system_status", "Get FortiManager system status and version info"),
@@ -197,6 +186,22 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
                 ("search_firewall_policies", "Search policies with filters"),
                 ("preview_install", "Preview installation changes"),
                 ("get_preview_result", "Get preview results"),
+                ("create_local_in_policy", "Create a new IPv4 local-in policy"),
+                ("create_local_in_policy6", "Create a new IPv6 local-in policy"),
+                ("delete_local_in_policy", "Delete an IPv4 local-in policy"),
+                ("delete_local_in_policy6", "Delete an IPv6 local-in policy"),
+                (
+                    "get_local_in_policy",
+                    "Get detailed information about a specific IPv4 local-in policy",
+                ),
+                (
+                    "get_local_in_policy6",
+                    "Get detailed information about a specific IPv6 local-in policy",
+                ),
+                ("list_local_in_policies", "List IPv4 local-in policies in a policy package"),
+                ("list_local_in_policies6", "List IPv6 local-in policies in a policy package"),
+                ("update_local_in_policy", "Update an existing IPv4 local-in policy"),
+                ("update_local_in_policy6", "Update an existing IPv6 local-in policy"),
             ],
             "object": [
                 ("list_addresses", "List firewall address objects"),
@@ -271,6 +276,222 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
                 ),
                 ("resolve_datasource", "Resolve objects a config attribute can reference"),
             ],
+            "security_profile": [
+                ("create_antivirus_profile", "Create an antivirus profile"),
+                ("create_application_list", "Create an application-control list"),
+                ("create_dnsfilter_profile", "Create a DNS filter profile"),
+                ("create_webfilter_profile", "Create a web filter profile"),
+                ("delete_antivirus_profile", "Delete an antivirus profile"),
+                ("delete_application_list", "Delete an application-control list"),
+                ("delete_dnsfilter_profile", "Delete a DNS filter profile"),
+                ("delete_webfilter_profile", "Delete a web filter profile"),
+                ("get_antivirus_profile", "Get detailed information about an antivirus profile"),
+                (
+                    "get_application_list",
+                    "Get detailed information about an application-control list",
+                ),
+                ("get_dnsfilter_profile", "Get detailed information about a DNS filter profile"),
+                ("get_webfilter_profile", "Get detailed information about a web filter profile"),
+                ("list_antivirus_profiles", "List antivirus profiles in an ADOM"),
+                ("list_application_lists", "List application-control lists in an ADOM"),
+                ("list_dnsfilter_profiles", "List DNS filter profiles in an ADOM"),
+                ("list_webfilter_profiles", "List web filter profiles in an ADOM"),
+                ("update_antivirus_profile", "Update an existing antivirus profile"),
+                ("update_application_list", "Update an existing application-control list"),
+                ("update_dnsfilter_profile", "Update an existing DNS filter profile"),
+                ("update_webfilter_profile", "Update an existing web filter profile"),
+            ],
+            "security_profile_advanced": [
+                (
+                    "add_ips_sensor_signature_override",
+                    "Add a signature filter/override entry to an IPS sensor",
+                ),
+                ("create_dlp_profile", "Create a DLP (Data Loss Prevention) profile"),
+                ("create_ips_sensor", "Create an IPS sensor"),
+                ("create_ssl_ssh_profile", "Create an SSL/SSH inspection profile"),
+                ("create_waf_profile", "Create a WAF (Web Application Firewall) profile"),
+                ("delete_dlp_profile", "Delete a DLP profile"),
+                ("delete_ips_sensor", "Delete an IPS sensor"),
+                ("delete_ssl_ssh_profile", "Delete an SSL/SSH inspection profile"),
+                ("delete_waf_profile", "Delete a WAF profile"),
+                ("get_dlp_profile", "Get detailed information about a DLP profile"),
+                ("get_ips_sensor", "Get detailed information about an IPS sensor"),
+                (
+                    "get_ssl_ssh_profile",
+                    "Get detailed information about an SSL/SSH inspection profile",
+                ),
+                ("get_waf_profile", "Get detailed information about a WAF profile"),
+                ("list_dlp_profiles", "List DLP (Data Loss Prevention) profiles in an ADOM"),
+                (
+                    "list_ips_sensor_signature_overrides",
+                    "List the signature-filter/override entries of an IPS sensor",
+                ),
+                ("list_ips_sensors", "List IPS sensors in an ADOM"),
+                ("list_ssl_ssh_profiles", "List SSL/SSH inspection profiles in an ADOM"),
+                ("list_waf_profiles", "List WAF (Web Application Firewall) profiles in an ADOM"),
+                (
+                    "remove_ips_sensor_signature_override",
+                    "Remove a signature filter/override entry from an IPS sensor",
+                ),
+                ("update_dlp_profile", "Update a DLP profile's top-level settings"),
+                ("update_ips_sensor", "Update an IPS sensor's top-level settings"),
+                ("update_ssl_ssh_profile", "Update an SSL/SSH inspection profile"),
+                ("update_waf_profile", "Update a WAF profile's top-level settings"),
+            ],
+            "vpn": [
+                (
+                    "create_device_ipsec_phase1_interface",
+                    "Create an IPsec phase1-interface (remote gateway / IKE SA) in a device's device DB",
+                ),
+                (
+                    "create_device_ipsec_phase2_interface",
+                    "Create an IPsec phase2-interface (tunnel/traffic selector) in a device's device DB",
+                ),
+                (
+                    "delete_device_ipsec_phase1_interface",
+                    "Delete an IPsec phase1-interface from a device's device DB",
+                ),
+                (
+                    "delete_device_ipsec_phase2_interface",
+                    "Delete an IPsec phase2-interface from a device's device DB",
+                ),
+                (
+                    "get_device_ipsec_phase1_interface",
+                    "Get one IPsec phase1-interface (remote gateway) from a device's device DB",
+                ),
+                (
+                    "get_device_ipsec_phase2_interface",
+                    "Get one IPsec phase2-interface (tunnel/selector) from a device's device DB",
+                ),
+                (
+                    "get_device_sslvpn_settings",
+                    "Get the SSL-VPN (Agentless VPN) settings object from a device's device DB",
+                ),
+                (
+                    "get_device_sslvpn_web_portal",
+                    "Get an SSL-VPN web portal from a device's device DB",
+                ),
+                (
+                    "list_device_ipsec_phase1_interfaces",
+                    "List IPsec phase1-interface (remote gateway) definitions in a device's device DB",
+                ),
+                (
+                    "list_device_ipsec_phase2_interfaces",
+                    "List IPsec phase2-interface (tunnel/selector) definitions in a device's device DB",
+                ),
+                (
+                    "update_device_ipsec_phase1_interface",
+                    "Update fields on a device-DB IPsec phase1-interface, unspecified fields unchanged",
+                ),
+                (
+                    "update_device_ipsec_phase2_interface",
+                    "Update fields on a device-DB IPsec phase2-interface, unspecified fields unchanged",
+                ),
+                (
+                    "update_device_sslvpn_settings",
+                    "Update the SSL-VPN (Agentless VPN) settings object in a device's device DB",
+                ),
+                (
+                    "update_device_sslvpn_web_portal",
+                    "Update an SSL-VPN web portal in a device's device DB",
+                ),
+            ],
+            "revision": [
+                (
+                    "diff_adom_revision",
+                    "Diff a past ADOM DB revision against the CURRENT live ADOM",
+                ),
+                (
+                    "diff_device_revision",
+                    "Diff a past device DB revision against the CURRENT device DB",
+                ),
+                (
+                    "diff_policy_package",
+                    "Diff a policy package's objects at a past ADOM revision against its CURRENT live state",
+                ),
+                ("get_adom_revision", "Get one ADOM DB revision's metadata"),
+                (
+                    "get_device_revision",
+                    "Check out one device DB revision's stored configuration text",
+                ),
+                ("list_adom_revisions", "List the ADOM DB revision history for an ADOM"),
+                (
+                    "list_device_revisions",
+                    "List the device DB revision history for a managed device",
+                ),
+                (
+                    "list_policy_revisions",
+                    "List the change log for a policy package's firewall policies",
+                ),
+                ("revert_adom_revision", "Revert the live ADOM DB to a past revision"),
+                ("revert_device_revision", "Revert a device's device DB to a past revision"),
+                (
+                    "revert_firewall_policy",
+                    "Restore a firewall policy to a past change-log snapshot",
+                ),
+            ],
+            "fmg_ops": [
+                ("add_packet_capture", "Add a new FortiManager packet capture definition"),
+                ("delete_task", "Delete a task record from FortiManager's task list"),
+                ("get_fmg_license", "Get the FortiManager license/contract status"),
+                (
+                    "get_packet_capture_status",
+                    "Get the running/packet-count status of packet captures",
+                ),
+                ("list_packet_captures", "List existing FortiManager packet capture definitions"),
+                ("start_packet_capture", "Start a packet capture from an existing definition"),
+                ("stop_packet_capture", "Stop a running packet capture"),
+                ("trigger_fmg_backup", "Trigger a FortiManager system backup to a remote server"),
+                (
+                    "trigger_fmg_restore",
+                    "Restore the FortiManager system from a backup on a remote server",
+                ),
+            ],
+            "device_group": [
+                ("add_device_to_group", "Add a single device to a device group"),
+                ("add_devices_to_group_bulk", "Add multiple devices to a device group in one call"),
+                ("add_group_to_group", "Nest a device group inside another device group"),
+                (
+                    "create_device_group",
+                    "Create a device group in FortiManager's device manager database",
+                ),
+                ("delete_device_group", "Delete a device group from FortiManager"),
+                ("remove_device_from_group", "Remove a single device from a device group"),
+                (
+                    "remove_devices_from_group_bulk",
+                    "Remove multiple devices from a device group in one call",
+                ),
+                ("remove_group_from_group", "Remove a nested group from its parent device group"),
+            ],
+            "firmware": [
+                (
+                    "get_firmware_upgrade_path",
+                    "Preview the multi-step firmware upgrade path to a target version",
+                ),
+                (
+                    "get_firmware_upgrade_report",
+                    "Get the firmware upgrade report for a device under a named profile",
+                ),
+                ("list_available_firmware", "List firmware versions available for a platform"),
+                (
+                    "list_firmware_images",
+                    "List firmware image files stored on the FortiManager's local disk",
+                ),
+                ("upgrade_device_firmware", "Trigger a firmware upgrade on a managed device"),
+            ],
+            "object_usage": [
+                (
+                    "find_duplicate_objects",
+                    "Find objects with identical content configured under different names",
+                ),
+                ("find_object_usage", "Find everywhere an ADOM object is referenced (where-used)"),
+            ],
+            "policy_lookup": [
+                (
+                    "policy_lookup",
+                    "Simulate a firewall policy lookup for a traffic 5-tuple against a managed device",
+                ),
+            ],
         }
 
         # Search for matching tools
@@ -314,7 +535,7 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
             Categories with descriptions and tool counts
         """
         return {
-            "total_tools": 127,
+            "total_tools": 230,
             "categories": {
                 "system": {
                     "count": 17,
@@ -336,11 +557,11 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
                     ),
                 },
                 "policy": {
-                    "count": 14,
-                    "description": "Firewall policies, packages, installation",
+                    "count": 25,
+                    "description": "Firewall policies, packages, installation, local-in policies",
                 },
                 "object": {
-                    "count": 24,
+                    "count": 25,
                     "description": "Addresses, services, groups, object search",
                 },
                 "script": {
@@ -357,6 +578,53 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
                         "SD-WAN templates, assignment, device config + live monitor, "
                         "datasource resolution"
                     ),
+                },
+                "security_profile": {
+                    "count": 20,
+                    "description": (
+                        "Antivirus, application-control, DNS filter, and web filter profile CRUD"
+                    ),
+                },
+                "security_profile_advanced": {
+                    "count": 23,
+                    "description": (
+                        "DLP, IPS sensor (incl. signature overrides), SSL/SSH "
+                        "inspection, and WAF profile CRUD"
+                    ),
+                },
+                "vpn": {
+                    "count": 14,
+                    "description": (
+                        "Device-DB IPsec phase1/phase2 interfaces, SSL-VPN settings and web portals"
+                    ),
+                },
+                "revision": {
+                    "count": 11,
+                    "description": "ADOM/device/policy-package revision history, diff, and revert",
+                },
+                "fmg_ops": {
+                    "count": 9,
+                    "description": (
+                        "FortiManager license, system backup/restore, task deletion, packet capture"
+                    ),
+                },
+                "device_group": {
+                    "count": 8,
+                    "description": "Device group CRUD, membership, and group nesting",
+                },
+                "firmware": {
+                    "count": 5,
+                    "description": (
+                        "Firmware image listing, upgrade path preview, and device firmware upgrade"
+                    ),
+                },
+                "object_usage": {
+                    "count": 2,
+                    "description": "Duplicate-object detection and object where-used lookup",
+                },
+                "policy_lookup": {
+                    "count": 1,
+                    "description": "Simulate a firewall policy lookup for a traffic 5-tuple",
                 },
             },
             "usage": "Use find_fortimanager_tool(category) to see tools in a category",

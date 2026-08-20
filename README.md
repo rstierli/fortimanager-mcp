@@ -218,10 +218,10 @@ FortiManager MCP supports two tool loading modes to optimize context window usag
 
 | Mode | Tools Loaded | Context Usage | Best For |
 |------|-------------|---------------|----------|
-| `full` (default) | All 127 tools | ~100% | Large context windows, full functionality |
+| `full` (default) | All 230 tools | ~100% | Large context windows, full functionality |
 | `dynamic` | 4 discovery tools | ~10% | Smaller context windows, on-demand loading |
 
-**Full Mode** (default): All 127 tools are loaded at startup. Best when you have sufficient context window and need immediate access to all FortiManager operations.
+**Full Mode** (default): All 230 tools are loaded at startup. Best when you have sufficient context window and need immediate access to all FortiManager operations.
 
 **Dynamic Mode**: Only lightweight discovery tools are loaded:
 - `find_fortimanager_tool(operation)` - Search for tools by keyword
@@ -462,7 +462,7 @@ networks:
     external: true
 ```
 
-## Available Tools (127 tools)
+## Available Tools (230 tools)
 
 ### System Tools (17 tools)
 
@@ -533,7 +533,7 @@ nothing talks to the FortiGate directly.
 | `update_device_wtp` | Update a managed FortiAP's profile/name/admin/location/comment |
 | `delete_device_wtp` | Delete a managed FortiAP registration |
 
-### Policy Tools (15 tools)
+### Policy Tools (25 tools)
 
 `create_firewall_policy` and `update_firewall_policy` accept security-profile
 (UTM) fields -- `utm_status`, `av_profile`, `ips_sensor`, `webfilter_profile`,
@@ -560,8 +560,18 @@ mutually exclusive with the individual profile fields it bundles; see
 | `get_policy_services` | Get policy services with optional group resolution |
 | `preview_install` | Preview installation changes |
 | `get_preview_result` | Get preview results |
+| `create_local_in_policy` | Create a new IPv4 local-in policy |
+| `create_local_in_policy6` | Create a new IPv6 local-in policy |
+| `delete_local_in_policy` | Delete an IPv4 local-in policy |
+| `delete_local_in_policy6` | Delete an IPv6 local-in policy |
+| `get_local_in_policy` | Get detailed information about a specific IPv4 local-in policy |
+| `get_local_in_policy6` | Get detailed information about a specific IPv6 local-in policy |
+| `list_local_in_policies` | List IPv4 local-in policies in a policy package |
+| `list_local_in_policies6` | List IPv6 local-in policies in a policy package |
+| `update_local_in_policy` | Update an existing IPv4 local-in policy |
+| `update_local_in_policy6` | Update an existing IPv6 local-in policy |
 
-### Object Tools (24 tools)
+### Object Tools (25 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -587,6 +597,7 @@ mutually exclusive with the individual profile fields it bundles; see
 | `list_service_groups` | List service groups |
 | `get_service_group` | Get service group details |
 | `create_service_group` | Create service group |
+| `update_service_group` | Update service group members and comment |
 | `delete_service_group` | Delete service group |
 | `search_objects` | Search all object types |
 
@@ -641,6 +652,144 @@ mutually exclusive with the individual profile fields it bundles; see
 | `get_device_sdwan` | Read a device's SD-WAN config (members/zones/health-checks/rules) from the device DB — for SD-WAN configured locally, not via a template |
 | `get_device_sdwan_monitor` | Live SD-WAN Monitor via the device proxy — per-member link/bandwidth (`virtual-wan/members`) + per-member SLA health (`virtual-wan/health-check`) |
 | `resolve_datasource` | Generic config-DB introspection: resolve the objects a config attribute is allowed to reference (`option: datasrc`) |
+
+### Security Profile Tools (20 tools)
+
+| Tool | Description |
+|------|-------------|
+| `create_antivirus_profile` | Create an antivirus profile |
+| `create_application_list` | Create an application-control list |
+| `create_dnsfilter_profile` | Create a DNS filter profile |
+| `create_webfilter_profile` | Create a web filter profile |
+| `delete_antivirus_profile` | Delete an antivirus profile |
+| `delete_application_list` | Delete an application-control list |
+| `delete_dnsfilter_profile` | Delete a DNS filter profile |
+| `delete_webfilter_profile` | Delete a web filter profile |
+| `get_antivirus_profile` | Get detailed information about an antivirus profile |
+| `get_application_list` | Get detailed information about an application-control list |
+| `get_dnsfilter_profile` | Get detailed information about a DNS filter profile |
+| `get_webfilter_profile` | Get detailed information about a web filter profile |
+| `list_antivirus_profiles` | List antivirus profiles in an ADOM |
+| `list_application_lists` | List application-control lists in an ADOM |
+| `list_dnsfilter_profiles` | List DNS filter profiles in an ADOM |
+| `list_webfilter_profiles` | List web filter profiles in an ADOM |
+| `update_antivirus_profile` | Update an existing antivirus profile |
+| `update_application_list` | Update an existing application-control list |
+| `update_dnsfilter_profile` | Update an existing DNS filter profile |
+| `update_webfilter_profile` | Update an existing web filter profile |
+
+### Security Profile (Advanced) Tools (23 tools)
+
+| Tool | Description |
+|------|-------------|
+| `add_ips_sensor_signature_override` | Add a signature filter/override entry to an IPS sensor |
+| `create_dlp_profile` | Create a DLP (Data Loss Prevention) profile |
+| `create_ips_sensor` | Create an IPS sensor |
+| `create_ssl_ssh_profile` | Create an SSL/SSH inspection profile |
+| `create_waf_profile` | Create a WAF (Web Application Firewall) profile |
+| `delete_dlp_profile` | Delete a DLP profile |
+| `delete_ips_sensor` | Delete an IPS sensor |
+| `delete_ssl_ssh_profile` | Delete an SSL/SSH inspection profile |
+| `delete_waf_profile` | Delete a WAF profile |
+| `get_dlp_profile` | Get detailed information about a DLP profile |
+| `get_ips_sensor` | Get detailed information about an IPS sensor |
+| `get_ssl_ssh_profile` | Get detailed information about an SSL/SSH inspection profile |
+| `get_waf_profile` | Get detailed information about a WAF profile |
+| `list_dlp_profiles` | List DLP (Data Loss Prevention) profiles in an ADOM |
+| `list_ips_sensor_signature_overrides` | List the signature-filter/override entries of an IPS sensor |
+| `list_ips_sensors` | List IPS sensors in an ADOM |
+| `list_ssl_ssh_profiles` | List SSL/SSH inspection profiles in an ADOM |
+| `list_waf_profiles` | List WAF (Web Application Firewall) profiles in an ADOM |
+| `remove_ips_sensor_signature_override` | Remove a signature filter/override entry from an IPS sensor |
+| `update_dlp_profile` | Update a DLP profile's top-level settings |
+| `update_ips_sensor` | Update an IPS sensor's top-level settings |
+| `update_ssl_ssh_profile` | Update an SSL/SSH inspection profile |
+| `update_waf_profile` | Update a WAF profile's top-level settings |
+
+### VPN Tools (14 tools)
+
+| Tool | Description |
+|------|-------------|
+| `create_device_ipsec_phase1_interface` | Create an IPsec phase1-interface (remote gateway / IKE SA) in a device's device DB |
+| `create_device_ipsec_phase2_interface` | Create an IPsec phase2-interface (tunnel/traffic selector) in a device's device DB |
+| `delete_device_ipsec_phase1_interface` | Delete an IPsec phase1-interface from a device's device DB |
+| `delete_device_ipsec_phase2_interface` | Delete an IPsec phase2-interface from a device's device DB |
+| `get_device_ipsec_phase1_interface` | Get one IPsec phase1-interface (remote gateway) from a device's device DB |
+| `get_device_ipsec_phase2_interface` | Get one IPsec phase2-interface (tunnel/selector) from a device's device DB |
+| `get_device_sslvpn_settings` | Get the SSL-VPN (Agentless VPN) settings object from a device's device DB |
+| `get_device_sslvpn_web_portal` | Get an SSL-VPN web portal from a device's device DB |
+| `list_device_ipsec_phase1_interfaces` | List IPsec phase1-interface (remote gateway) definitions in a device's device DB |
+| `list_device_ipsec_phase2_interfaces` | List IPsec phase2-interface (tunnel/selector) definitions in a device's device DB |
+| `update_device_ipsec_phase1_interface` | Update fields on a device-DB IPsec phase1-interface, unspecified fields unchanged |
+| `update_device_ipsec_phase2_interface` | Update fields on a device-DB IPsec phase2-interface, unspecified fields unchanged |
+| `update_device_sslvpn_settings` | Update the SSL-VPN (Agentless VPN) settings object in a device's device DB |
+| `update_device_sslvpn_web_portal` | Update an SSL-VPN web portal in a device's device DB |
+
+### Revision History Tools (11 tools)
+
+| Tool | Description |
+|------|-------------|
+| `diff_adom_revision` | Diff a past ADOM DB revision against the CURRENT live ADOM |
+| `diff_device_revision` | Diff a past device DB revision against the CURRENT device DB |
+| `diff_policy_package` | Diff a policy package's objects at a past ADOM revision against its CURRENT live state |
+| `get_adom_revision` | Get one ADOM DB revision's metadata |
+| `get_device_revision` | Check out one device DB revision's stored configuration text |
+| `list_adom_revisions` | List the ADOM DB revision history for an ADOM |
+| `list_device_revisions` | List the device DB revision history for a managed device |
+| `list_policy_revisions` | List the change log for a policy package's firewall policies |
+| `revert_adom_revision` | Revert the live ADOM DB to a past revision |
+| `revert_device_revision` | Revert a device's device DB to a past revision |
+| `revert_firewall_policy` | Restore a firewall policy to a past change-log snapshot |
+
+### FortiManager Operations Tools (9 tools)
+
+| Tool | Description |
+|------|-------------|
+| `add_packet_capture` | Add a new FortiManager packet capture definition |
+| `delete_task` | Delete a task record from FortiManager's task list |
+| `get_fmg_license` | Get the FortiManager license/contract status |
+| `get_packet_capture_status` | Get the running/packet-count status of packet captures |
+| `list_packet_captures` | List existing FortiManager packet capture definitions |
+| `start_packet_capture` | Start a packet capture from an existing definition |
+| `stop_packet_capture` | Stop a running packet capture |
+| `trigger_fmg_backup` | Trigger a FortiManager system backup to a remote server |
+| `trigger_fmg_restore` | Restore the FortiManager system from a backup on a remote server |
+
+### Device Group Tools (8 tools)
+
+| Tool | Description |
+|------|-------------|
+| `add_device_to_group` | Add a single device to a device group |
+| `add_devices_to_group_bulk` | Add multiple devices to a device group in one call |
+| `add_group_to_group` | Nest a device group inside another device group |
+| `create_device_group` | Create a device group in FortiManager's device manager database |
+| `delete_device_group` | Delete a device group from FortiManager |
+| `remove_device_from_group` | Remove a single device from a device group |
+| `remove_devices_from_group_bulk` | Remove multiple devices from a device group in one call |
+| `remove_group_from_group` | Remove a nested group from its parent device group |
+
+### Firmware Tools (5 tools)
+
+| Tool | Description |
+|------|-------------|
+| `get_firmware_upgrade_path` | Preview the multi-step firmware upgrade path to a target version |
+| `get_firmware_upgrade_report` | Get the firmware upgrade report for a device under a named profile |
+| `list_available_firmware` | List firmware versions available for a platform |
+| `list_firmware_images` | List firmware image files stored on the FortiManager's local disk |
+| `upgrade_device_firmware` | Trigger a firmware upgrade on a managed device |
+
+### Object Usage Tools (2 tools)
+
+| Tool | Description |
+|------|-------------|
+| `find_duplicate_objects` | Find objects with identical content configured under different names |
+| `find_object_usage` | Find everywhere an ADOM object is referenced (where-used) |
+
+### Policy Lookup Tools (1 tool)
+
+| Tool | Description |
+|------|-------------|
+| `policy_lookup` | Simulate a firewall policy lookup for a traffic 5-tuple against a managed device |
 
 ## Usage Examples
 
@@ -957,6 +1106,33 @@ Blocks overly permissive firewall policies in `create_firewall_policy` and `upda
 FMG_POLICY_SAFETY=strict    # Default: block overly permissive policies
 FMG_POLICY_SAFETY=warn      # Allow but include warning in response
 FMG_POLICY_SAFETY=disabled  # Allow all policies
+```
+
+#### Restore Safety (`FMG_RESTORE_SAFETY`)
+
+Blocks `trigger_fmg_restore` (replaces FortiManager's entire configuration and interrupts the service) unless the caller also passes `confirm=True`.
+
+```bash
+FMG_RESTORE_SAFETY=strict    # Default: refuse without confirm=True
+FMG_RESTORE_SAFETY=disabled  # Allow unconditionally
+```
+
+#### Revert Safety (`FMG_REVERT_SAFETY`)
+
+Blocks `revert_adom_revision` (restores the entire live ADOM DB in one call) and `revert_device_revision` (rewrites a device's entire stored config from a revision) unless the caller also passes `confirm=True`.
+
+```bash
+FMG_REVERT_SAFETY=strict    # Default: refuse without confirm=True
+FMG_REVERT_SAFETY=disabled  # Allow unconditionally
+```
+
+#### Firmware Upgrade Safety (`FMG_FIRMWARE_SAFETY`)
+
+Blocks `upgrade_device_firmware` (reboots the real managed device) unless the caller also passes `confirm=True`.
+
+```bash
+FMG_FIRMWARE_SAFETY=strict    # Default: refuse without confirm=True
+FMG_FIRMWARE_SAFETY=disabled  # Allow unconditionally
 ```
 
 #### Security Profile Field Validation
