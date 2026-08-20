@@ -658,3 +658,27 @@ class TestPolicyToolNegateSafety:
 
         assert result["status"] == "success"
         assert "warning" not in result
+
+
+class TestDigitLikeActionsDoNotCrashTheGate:
+    """`str.isdigit()` is wider than what `int()` accepts.
+
+    Superscripts and enclosed digits are Numeric_Type=Digit but not
+    decimal, so `int()` raises on them. The gate must not: the six
+    policy_tools call sites run it before their own try block, so an
+    exception escapes the tool uncaught rather than becoming an envelope.
+    """
+
+    @pytest.mark.parametrize("action", ["¹", "①", "²", "⑤"])
+    def test_a_non_decimal_digit_action_refuses_rather_than_raising(self, action: str) -> None:
+        result = check_policy_permissiveness(["all"], ["all"], ["ALL"], action)
+        assert result is not None
+        assert "cannot read" in result
+
+    @pytest.mark.parametrize("action", ["١", "१"])
+    def test_a_decimal_digit_in_another_script_still_reads_as_accept(self, action: str) -> None:
+        """int() takes these, so they keep their stricter reading rather
+        than being refused along with the superscripts."""
+        result = check_policy_permissiveness(["all"], ["all"], ["ALL"], action)
+        assert result is not None
+        assert "fully open" in result

@@ -1172,7 +1172,16 @@ def _normalize_policy_action(value: Any) -> Any:
     if isinstance(value, str):
         text = value.strip().lower()
         if text.isdigit():
-            return "accept" if int(text) == 1 else "deny"
+            # str.isdigit() is True for characters int() will not take:
+            # superscripts and enclosed forms ("\u00b9", "\u2460") are
+            # Numeric_Type=Digit but not decimal. Letting int() raise here
+            # would defeat the point of this function, since the six
+            # policy_tools call sites run the gate before their own try and
+            # an exception escapes the tool uncaught. Refuse instead.
+            try:
+                return "accept" if int(text) == 1 else "deny"
+            except ValueError:
+                return _UNREADABLE
         return text
     return _UNREADABLE
 
