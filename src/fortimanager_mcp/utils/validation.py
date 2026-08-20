@@ -876,6 +876,30 @@ def validate_policy_id(policyid: int) -> int:
     return policyid
 
 
+def validate_task_id(task_id: int) -> int:
+    """Validate a FortiManager task ID.
+
+    Every tool taking one interpolates it straight into /task/task/{id}.
+    The type annotation carries that in full mode, but dynamic mode passes
+    ``parameters`` as ``dict[str, Any]`` and nothing enforces the shape
+    there -- which is the mode the newer modules are wired into
+    (upstream #71).
+
+    ``bool`` is refused explicitly: it is a subclass of int, so True would
+    otherwise sail through and address task 1.
+    """
+    if task_id is None:
+        raise ValidationError("Task ID cannot be None")
+
+    if isinstance(task_id, bool) or not isinstance(task_id, int):
+        raise ValidationError(f"Task ID must be an integer, got {type(task_id).__name__}")
+
+    if task_id < 0:
+        raise ValidationError("Task ID must be non-negative")
+
+    return task_id
+
+
 # =============================================================================
 # Security Profile Validation
 # =============================================================================

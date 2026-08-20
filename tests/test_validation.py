@@ -37,6 +37,7 @@ from fortimanager_mcp.utils.validation import (
     validate_port_range,
     validate_security_profiles,
     validate_status,
+    validate_task_id,
 )
 
 # =============================================================================
@@ -1151,3 +1152,26 @@ class TestTraversalSegmentNames:
         ban dots outright would reject legitimate names."""
         assert validate_device_name(name) == name
         assert validate_object_name(name) == name
+
+
+class TestTaskIdValidation:
+    """Every tool taking a task ID interpolates it into /task/task/{id}.
+
+    upstream #71: full mode carries the int annotation, dynamic mode passes
+    parameters as dict[str, Any] and enforces nothing.
+    """
+
+    @pytest.mark.parametrize("bad", ["../../sys/status", "1 OR 1=1", 1.5, True, None, -3, [], {}])
+    def test_a_non_task_id_is_refused(self, bad):
+        with pytest.raises(ValidationError):
+            validate_task_id(bad)
+
+    def test_bool_is_refused_even_though_it_is_an_int(self):
+        """True would otherwise sail through isinstance(x, int) and address
+        task 1."""
+        with pytest.raises(ValidationError):
+            validate_task_id(True)
+
+    @pytest.mark.parametrize("good", [0, 1, 11111])
+    def test_a_real_task_id_passes_through(self, good):
+        assert validate_task_id(good) == good

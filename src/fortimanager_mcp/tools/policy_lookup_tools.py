@@ -36,9 +36,25 @@ logger = logging.getLogger(__name__)
 # IP protocol numbers accepted by the FortiGate policy-lookup monitor API,
 # per the How-To Guide example (TCP=6). UDP/ICMP are the standard IANA
 # protocol numbers for the same field; not independently confirmed against
-# a live device for this specific endpoint, but these are the only protocol
-# values a firewall policy lookup is meaningful for.
-_KNOWN_PROTOCOLS = {1: "ICMP", 6: "TCP", 17: "UDP"}
+# a live device for this specific endpoint.
+#
+# The set used to stop at ICMP/TCP/UDP, described as "the only protocol
+# values a firewall policy lookup is meaningful for". That was wrong:
+# FortiOS services cover GRE, ESP, AH and SCTP, a policy can match on any
+# of them, and refusing them blocked legitimate lookups -- a VPN transit
+# policy is exactly the kind of rule an operator wants to test
+# (upstream #71). These are the IANA numbers, and none of them needs a
+# port: destport already defaults to 0, "any port".
+_KNOWN_PROTOCOLS = {
+    1: "ICMP",
+    6: "TCP",
+    17: "UDP",
+    47: "GRE",
+    50: "ESP",
+    51: "AH",
+    58: "ICMPv6",
+    132: "SCTP",
+}
 
 
 def _get_client() -> FortiManagerClient:
@@ -104,7 +120,8 @@ async def policy_lookup(
             "device[vdom]" bracket suffix used elsewhere in this codebase
             to target a specific VDOM.
         dest: Destination IPv4 address to test (e.g. "8.8.8.8")
-        protocol: IP protocol number to test -- 6=TCP, 17=UDP, 1=ICMP.
+        protocol: IP protocol number to test -- 6=TCP, 17=UDP, 1=ICMP,
+            47=GRE, 50=ESP, 51=AH, 58=ICMPv6, 132=SCTP.
             Sent to the device as both the ``protocol`` and
             ``protocol_number`` query fields, mirroring the one documented
             request/response pair in the How-To Guide where both fields

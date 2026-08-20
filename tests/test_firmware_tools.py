@@ -243,6 +243,29 @@ class TestUpgradeDeviceFirmware:
         assert result["status"] == "success"
 
     @pytest.mark.asyncio
+    async def test_a_missing_task_id_does_not_read_as_a_clean_start(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """upstream #71: when FortiManager returned no task id the tool still
+        answered "started ..., task ID: None". An upgrade reboots the device,
+        so an untrackable one must say so rather than format None into the
+        happy-path sentence."""
+        from fortimanager_mcp.tools import firmware_tools
+
+        mock_fmg_instance.execute.return_value = (0, {})
+
+        with patch.object(firmware_tools, "get_fmg_client", return_value=mock_client):
+            result = await firmware_tools.upgrade_device_firmware(
+                device="FGT-01", target_version="6.4.1-1637", confirm=True
+            )
+
+        assert result["task_id"] is None
+        assert result["tracking"] == "unavailable"
+        assert "no task ID" in result["warning"]
+        assert "None" not in result["message"]
+        assert "cannot be tracked" in result["warning"]
+
+    @pytest.mark.asyncio
     async def test_invalid_flag_rejected(self, mock_client_configured: FortiManagerClient) -> None:
         from fortimanager_mcp.tools import firmware_tools
 
