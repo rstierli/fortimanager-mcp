@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.tools import policy_tools
 from fortimanager_mcp.utils.config import get_settings
 from fortimanager_mcp.utils.errors import PermissionError, ResourceNotFoundError
@@ -1589,3 +1590,61 @@ class TestLocalInPolicy6Tools:
 
         assert result["status"] == "success"
         assert "message" in result
+
+
+class TestPreviewResultRedaction:
+    """An install preview is pending device config rendered as FortiOS CLI,
+    so it carries credentials in clear the same way revision content does.
+    get_preview_result returned it raw (upstream #71).
+    """
+
+    @pytest.mark.asyncio
+    async def test_credentials_in_the_preview_cli_are_redacted(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        preview_cli = (
+            "config vpn ipsec phase1-interface\n"
+            '    edit "hq-gw"\n'
+            "        set psksecret ENC RealPreSharedKey==\n"
+            "    next\n"
+            "end\n"
+            "config system admin\n"
+            '    edit "admin"\n'
+            "        set password ENC AdminPassword==\n"
+            "    next\n"
+            "end\n"
+        )
+        mock_fmg_instance.execute.return_value = (0, {"message": preview_cli, "status": 1})
+
+        with patch.object(policy_tools, "get_fmg_client", return_value=mock_client):
+            result = await policy_tools.get_preview_result(
+                "demo", [{"name": "FGT-01", "vdom": "root"}]
+            )
+
+        assert result["status"] == "success"
+        rendered = str(result["preview"])
+        assert "RealPreSharedKey" not in rendered
+        assert "AdminPassword" not in rendered
+        assert "set psksecret ***REDACTED***" in rendered
+        # structure and non-secret lines survive
+        assert 'edit "hq-gw"' in rendered
+        assert result["preview"]["status"] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_nested_envelope_is_still_redacted(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """The endpoint's envelope is not pinned anywhere in this repo, so
+        the redaction walks the structure rather than one expected key."""
+        mock_fmg_instance.execute.return_value = (
+            0,
+            {"data": [{"device": "FGT-01", "cli": "    set psksecret ENC Nested=="}]},
+        )
+
+        with patch.object(policy_tools, "get_fmg_client", return_value=mock_client):
+            result = await policy_tools.get_preview_result(
+                "demo", [{"name": "FGT-01", "vdom": "root"}]
+            )
+
+        assert "Nested==" not in str(result["preview"])
+        assert result["preview"]["data"][0]["device"] == "FGT-01"

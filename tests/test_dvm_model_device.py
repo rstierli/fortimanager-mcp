@@ -151,7 +151,7 @@ class TestBulkDeviceNameValidation:
                 ],
             )
         assert result["status"] == "success", result
-        assert result["added_count"] == 2
+        assert result["requested_count"] == 2
         # Every secret must be stripped from the returned device dicts, not
         # just the password spelling this test started with.
         assert "p1" not in repr(result["devices"])
@@ -184,5 +184,5 @@ class TestBulkDeviceNameValidation:
                 devices=["FGT-Old1", "FGT-Old2"],
             )
         assert result["status"] == "success", result
-        assert result["deleted_count"] == 2
+        assert result["requested_count"] == 2
         client.delete_device_list.assert_called_once()

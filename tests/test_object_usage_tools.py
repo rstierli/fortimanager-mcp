@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.tools import object_usage_tools
 
 
@@ -377,3 +378,43 @@ class TestFindDuplicateObjects:
             result = await object_usage_tools.find_duplicate_objects("root")
 
         assert result["status"] == "error"
+
+
+class TestGlobalAdomObjectPath:
+    """The Global ADOM has its own branch of the object tree.
+
+    Live-verified against a lab FortiManager while closing upstream #71:
+    /pm/config/global/obj/firewall/address returns objects, while
+    /pm/config/adom/global/obj/firewall/address is refused with
+    "Invalid url". find_duplicate_objects built the second form, so it
+    could never have worked against Global.
+    """
+
+    def test_global_adom_does_not_go_through_the_adom_branch(self) -> None:
+        assert object_usage_tools._obj_path("global", "address") == "global/obj/firewall/address"
+
+    def test_global_is_matched_case_insensitively(self) -> None:
+        assert object_usage_tools._obj_path("Global", "address").startswith("global/obj/")
+
+    def test_a_named_adom_still_goes_through_the_adom_branch(self) -> None:
+        assert object_usage_tools._obj_path("demo", "address") == "adom/demo/obj/firewall/address"
+
+    def test_both_callers_agree_on_every_adom(self) -> None:
+        """The two builders disagreeing is the bug itself, so pin that they
+        cannot drift apart again."""
+        for adom in ("global", "Global", "demo", "root"):
+            assert object_usage_tools._where_used_obj_ref(adom, "address") == (
+                object_usage_tools._obj_path(adom, "address")
+            )
+
+    @pytest.mark.asyncio
+    async def test_find_duplicate_objects_uses_the_global_branch(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        mock_fmg_instance.get.return_value = (0, [])
+
+        with patch.object(object_usage_tools, "get_fmg_client", return_value=mock_client):
+            result = await object_usage_tools.find_duplicate_objects("global", "address")
+
+        assert result["status"] == "success"
+        assert mock_fmg_instance.get.call_args.args[0] == "/pm/config/global/obj/firewall/address"
