@@ -77,3 +77,59 @@ class TestSettings:
 
         monkeypatch.setenv("MCP_ALLOWED_HOSTS", "")
         assert Settings().MCP_ALLOWED_HOSTS == []
+
+
+class TestSafetyDefaultsAreShippedStrict:
+    """The shipped default of every safety gate, pinned.
+
+    upstream #69: flipping FMG_SCRIPT_SAFETY's default from strict to
+    disabled left the whole suite green, because every script-safety test
+    sets the env var explicitly and so never exercises the default anyone
+    actually deploys with. The same held for the other five.
+
+    Read off the model rather than a constructed instance so a stray env
+    var or a developer's .env cannot make this pass by accident.
+    """
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "FMG_SCRIPT_SAFETY",
+            "FMG_RESTORE_SAFETY",
+            "FMG_REVERT_SAFETY",
+            "FMG_FIRMWARE_SAFETY",
+            "FMG_POLICY_SAFETY",
+            "FMG_INSTALL_SAFETY",
+        ],
+    )
+    def test_shipped_default_is_strict(self, name: str) -> None:
+        assert Settings.model_fields[name].default == "strict", (
+            f"{name} ships defaulting to "
+            f"{Settings.model_fields[name].default!r}, not 'strict'. A gate "
+            f"that is off unless someone opts in is not a gate."
+        )
+
+    def test_a_deployment_with_no_env_overrides_gets_strict(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The model default is only the shipped value if nothing in the
+        settings machinery overrides it on the way out."""
+        monkeypatch.setenv("FORTIMANAGER_HOST", "test-fmg.example.com")
+        for name in (
+            "FMG_SCRIPT_SAFETY",
+            "FMG_RESTORE_SAFETY",
+            "FMG_REVERT_SAFETY",
+            "FMG_FIRMWARE_SAFETY",
+            "FMG_POLICY_SAFETY",
+            "FMG_INSTALL_SAFETY",
+        ):
+            monkeypatch.delenv(name, raising=False)
+
+        settings = Settings(_env_file=None)
+
+        assert settings.FMG_SCRIPT_SAFETY == "strict"
+        assert settings.FMG_RESTORE_SAFETY == "strict"
+        assert settings.FMG_REVERT_SAFETY == "strict"
+        assert settings.FMG_FIRMWARE_SAFETY == "strict"
+        assert settings.FMG_POLICY_SAFETY == "strict"
+        assert settings.FMG_INSTALL_SAFETY == "strict"
