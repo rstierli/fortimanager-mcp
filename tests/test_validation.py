@@ -12,6 +12,7 @@ from fortimanager_mcp.utils.validation import (
     VALID_MOVE_POSITIONS,
     VALID_POLICY_ACTIONS,
     ValidationError,
+    coerce_device_name_list,
     get_allowed_output_dirs,
     redact_config_text_secrets,
     sanitize_for_logging,
@@ -373,6 +374,27 @@ class TestValidateDeviceName:
         """Test invalid device names raise ValidationError."""
         with pytest.raises(ValidationError):
             validate_device_name(device)
+
+
+class TestCoerceDeviceNameList:
+    """Tests for coerce_device_name_list -- shared by every bulk-device
+    tool (dvm_tools, script_tools, device_group_tools) since a bare string
+    iterated character-by-character is exactly how "FGT-01" became six
+    bogus single-character device names (upstream #71)."""
+
+    def test_a_list_passes_through(self):
+        assert coerce_device_name_list(["FGT-01", "FGT-02"]) == ["FGT-01", "FGT-02"]
+
+    def test_a_bare_string_becomes_a_one_element_list(self):
+        assert coerce_device_name_list("FGT-01") == ["FGT-01"]
+
+    def test_rejects_a_dict(self):
+        """list({"devices": [...]}) returns the dict's keys, not its
+        values -- a caller nesting the argument one level too deep must be
+        refused, not silently coerced to a list containing the dict's own
+        key names."""
+        with pytest.raises(ValidationError):
+            coerce_device_name_list({"devices": ["FGT-01", "FGT-02"]})
 
 
 class TestValidateDeviceSerial:
@@ -779,6 +801,13 @@ class TestValidatePolicyId:
         """Test string policy ID raises error."""
         with pytest.raises(ValidationError):
             validate_policy_id("123")
+
+    def test_rejects_bool(self):
+        """bool is a subclass of int, so True would otherwise pass the
+        isinstance check and silently address policy ID 1 -- the same gap
+        validate_task_id explicitly guards against."""
+        with pytest.raises(ValidationError):
+            validate_policy_id(True)
 
 
 class TestValidateSecurityProfiles:

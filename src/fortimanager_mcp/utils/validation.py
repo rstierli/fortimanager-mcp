@@ -419,6 +419,44 @@ def validate_device_name(device: str) -> str:
     return device
 
 
+def coerce_device_name_list(devices: list[str] | str) -> list[str]:
+    """Coerce a devices argument to a list before it is iterated.
+
+    A bare string was iterated character by character, so devices="FGT-01"
+    became six single-character device names -- each of which passes the
+    device-name pattern, so nothing downstream noticed and six bogus
+    members were sent to FortiManager (upstream #71). Full mode has the
+    list annotation; dynamic mode passes ``parameters`` as
+    ``dict[str, Any]``, which nothing enforces against it.
+
+    Tolerated rather than refused, matching how check_policy_permissiveness
+    already treats a scalar where it documents a list: the caller's intent
+    is unambiguous, and an argument that decides what gets written should
+    not be foolable by the "wrong" shape.
+
+    Shared by every bulk-device tool rather than reimplemented per module
+    -- a second independent copy of this coercion is exactly how the
+    original bug (device_group_tools.py) stayed unfixed in dvm_tools.py
+    and script_tools.py after the first fix.
+
+    Rejects a dict explicitly rather than falling through to ``list()``:
+    ``list({"devices": [...]})`` returns the dict's *keys*, not its
+    values, so a caller nesting the argument one level too deep (e.g.
+    ``{"devices": {"devices": [...]}}`` via the dynamic dispatcher, which
+    enforces no nested shape) would silently add/remove a single bogus
+    device literally named "devices" with a success response, dropping
+    every intended device without an error.
+    """
+    if isinstance(devices, str):
+        return [devices]
+    if isinstance(devices, dict):
+        raise ValidationError(
+            "devices must be a list of device names or a single device name "
+            f"string, not a dict ({devices!r})"
+        )
+    return list(devices)
+
+
 def validate_device_serial(serial: str) -> str:
     """Validate device serial number format.
 
@@ -867,7 +905,10 @@ def validate_policy_id(policyid: int) -> int:
     if policyid is None:
         raise ValidationError("Policy ID cannot be None")
 
-    if not isinstance(policyid, int):
+    # bool is refused explicitly: it is a subclass of int, so True would
+    # otherwise sail through and address policy 1 (same gap validate_task_id
+    # closes below, missing here).
+    if isinstance(policyid, bool) or not isinstance(policyid, int):
         raise ValidationError("Policy ID must be an integer")
 
     if policyid < 0:

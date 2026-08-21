@@ -23,6 +23,7 @@ from fortimanager_mcp.utils.errors import client_safe_error
 from fortimanager_mcp.utils.validation import (
     ADOM_PATTERN,
     ValidationError,
+    coerce_device_name_list,
     validate_adom,
     validate_device_name,
     validate_object_name,
@@ -315,26 +316,6 @@ async def remove_device_from_group(
         return {"status": "error", "message": msg, "error_code": code}
 
 
-def _device_name_list(devices: list[str] | str) -> list[str]:
-    """Coerce the devices argument to a list before it is iterated.
-
-    A bare string was iterated character by character, so devices="FGT-01"
-    became six single-character device names -- each of which passes the
-    device-name pattern, so nothing downstream noticed and six bogus
-    members were sent to FortiManager (upstream #71). Full mode has the
-    list annotation; dynamic mode passes ``parameters`` as
-    ``dict[str, Any]``.
-
-    Tolerated rather than refused, matching how check_policy_permissiveness
-    already treats a scalar where it documents a list: the caller's intent
-    is unambiguous, and an argument that decides what gets written should
-    not be foolable by the "wrong" shape.
-    """
-    if isinstance(devices, str):
-        return [devices]
-    return list(devices)
-
-
 @mcp.tool()
 async def add_devices_to_group_bulk(
     adom: str,
@@ -372,7 +353,7 @@ async def add_devices_to_group_bulk(
         adom = validate_adom(adom)
         group = _validate_group_name(group)
         vdom = _validate_vdom_name(vdom)
-        devices = [validate_device_name(d) for d in _device_name_list(devices)]
+        devices = [validate_device_name(d) for d in coerce_device_name_list(devices)]
         client = _get_client()
 
         members = [{"name": d, "vdom": vdom} for d in devices]
@@ -422,7 +403,7 @@ async def remove_devices_from_group_bulk(
         adom = validate_adom(adom)
         group = _validate_group_name(group)
         vdom = _validate_vdom_name(vdom)
-        devices = [validate_device_name(d) for d in _device_name_list(devices)]
+        devices = [validate_device_name(d) for d in coerce_device_name_list(devices)]
         client = _get_client()
 
         members = [{"name": d, "vdom": vdom} for d in devices]
