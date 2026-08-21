@@ -60,9 +60,13 @@ def _carry_through_radio(radio: dict[str, Any]) -> dict[str, Any]:
 
 
 #: FortiOS wtp-profile channel-bonding device-DB integer codes. 2=80MHz and
-#: 5=160MHz confirmed live (FGT-MCP-TEST-01 sandbox and myfw01, 2026-08-13);
-#: 3/4/6 filled in by the same enum ordering (40/20/320MHz) but not
-#: independently exercised against a live appliance.
+#: 5=160MHz confirmed live 2026-08-13 (FGT-MCP-TEST-01 sandbox and myfw01).
+#: 4=20MHz and 3=40MHz confirmed live 2026-08-21 against myfw01's real
+#: wtp-profiles: 4 on every radio-1 (2.4GHz) observed across all 4
+#: profiles on the device, 3 on radio-2 (5GHz) on two of them. 6=320MHz is
+#: still unconfirmed -- no profile on this fleet has ever used it -- and
+#: filled in by the same enum ordering purely because the bundled 7.4+
+#: swagger's string enum lists 320MHz as a valid channel-bonding value.
 _CHANNEL_BONDING_INT_TO_MHZ = {2: 80, 3: 40, 4: 20, 5: 160, 6: 320}
 
 
