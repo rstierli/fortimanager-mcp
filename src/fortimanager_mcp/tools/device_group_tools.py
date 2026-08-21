@@ -23,6 +23,7 @@ from fortimanager_mcp.utils.errors import client_safe_error
 from fortimanager_mcp.utils.validation import (
     ADOM_PATTERN,
     ValidationError,
+    coerce_device_name_list,
     validate_adom,
     validate_device_name,
     validate_object_name,
@@ -352,7 +353,7 @@ async def add_devices_to_group_bulk(
         adom = validate_adom(adom)
         group = _validate_group_name(group)
         vdom = _validate_vdom_name(vdom)
-        devices = [validate_device_name(d) for d in devices]
+        devices = [validate_device_name(d) for d in coerce_device_name_list(devices)]
         client = _get_client()
 
         members = [{"name": d, "vdom": vdom} for d in devices]
@@ -402,7 +403,7 @@ async def remove_devices_from_group_bulk(
         adom = validate_adom(adom)
         group = _validate_group_name(group)
         vdom = _validate_vdom_name(vdom)
-        devices = [validate_device_name(d) for d in devices]
+        devices = [validate_device_name(d) for d in coerce_device_name_list(devices)]
         client = _get_client()
 
         members = [{"name": d, "vdom": vdom} for d in devices]

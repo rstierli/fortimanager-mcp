@@ -365,6 +365,52 @@ class TestExecutePathInputValidation:
         client.execute_script.assert_not_called()
 
 
+class TestExecuteScriptOnDevicesListCoercion:
+    """execute_script_on_devices took a bare devices="FGT-01" string and
+    iterated it character by character -- the same bug device_group_tools.py
+    fixed elsewhere in this PR, left unpatched here (#71 follow-up)."""
+
+    @pytest.mark.asyncio
+    async def test_a_bare_string_is_one_device_not_iterated_as_characters(self, monkeypatch):
+        monkeypatch.setenv("FORTIMANAGER_HOST", "test.example.com")
+        monkeypatch.setenv("FMG_SCRIPT_SAFETY", "disabled")
+
+        from fortimanager_mcp.tools.script_tools import execute_script_on_devices
+
+        client = AsyncMock()
+        client.execute_script = AsyncMock(return_value={"task": 1})
+
+        with patch("fortimanager_mcp.tools.script_tools.get_fmg_client", return_value=client):
+            result = await execute_script_on_devices(adom="root", script="safe", devices="FGT-01")
+
+        assert result.get("success") is True
+        assert "1 devices" in result["message"]
+        scope = client.execute_script.call_args.kwargs["scope"]
+        assert scope == [{"name": "FGT-01", "vdom": "global"}]
+
+    @pytest.mark.asyncio
+    async def test_a_list_of_devices_still_works(self, monkeypatch):
+        monkeypatch.setenv("FORTIMANAGER_HOST", "test.example.com")
+        monkeypatch.setenv("FMG_SCRIPT_SAFETY", "disabled")
+
+        from fortimanager_mcp.tools.script_tools import execute_script_on_devices
+
+        client = AsyncMock()
+        client.execute_script = AsyncMock(return_value={"task": 1})
+
+        with patch("fortimanager_mcp.tools.script_tools.get_fmg_client", return_value=client):
+            result = await execute_script_on_devices(
+                adom="root", script="safe", devices=["FGT-01", "FGT-02"]
+            )
+
+        assert result.get("success") is True
+        scope = client.execute_script.call_args.kwargs["scope"]
+        assert scope == [
+            {"name": "FGT-01", "vdom": "global"},
+            {"name": "FGT-02", "vdom": "global"},
+        ]
+
+
 class TestScriptTypeSafety:
     """Tcl scripts assemble commands at runtime, defeating static screening.
 

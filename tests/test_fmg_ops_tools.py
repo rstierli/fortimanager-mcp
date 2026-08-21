@@ -514,6 +514,25 @@ class TestDeleteTask:
 
         assert result["status"] == "error"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad", ["../../sys/status", "1 OR 1=1", 1.5, True, None, -3])
+    async def test_a_bad_task_id_never_reaches_the_url(
+        self, bad: Any, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """upstream #71: task_id was interpolated straight into
+        /task/task/{id} with nothing enforcing its shape. Full mode carries
+        the int annotation; dynamic mode passes parameters as
+        dict[str, Any], which is the mode the newer modules are wired into.
+
+        Asserts the delete never happened, not just that the call errored --
+        an error after the request has gone out is not a guard."""
+        with patch.object(fmg_ops_tools, "get_fmg_client", return_value=mock_client):
+            result = await fmg_ops_tools.delete_task(bad)
+
+        assert result["status"] == "error"
+        assert result["error_code"] == "validation_error"
+        mock_fmg_instance.delete.assert_not_called()
+
 
 async def _fake_task(task_id: int) -> dict[str, Any]:
     return {"task": task_id}

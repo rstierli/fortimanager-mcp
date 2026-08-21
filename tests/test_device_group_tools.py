@@ -310,3 +310,55 @@ class TestGroupNesting:
 def _patched(client):
     """Patch device_group_tools.get_fmg_client to return the given client (or None)."""
     return patch.object(device_group_tools, "get_fmg_client", return_value=client)
+
+
+class TestBulkDeviceArgumentShape:
+    """A bare string is one device name, not one per character.
+
+    upstream #71: devices="FGT-01" was iterated character by character into
+    six single-character names, each of which passes the device-name
+    pattern, so nothing downstream noticed and six bogus members were sent.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_bare_string_adds_one_device(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        mock_fmg_instance.add.return_value = (0, {})
+
+        with patch.object(device_group_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_group_tools.add_devices_to_group_bulk(
+                "root", "Branch-Firewalls", "FGT-01"
+            )
+
+        assert result["status"] == "success"
+        assert result["added_count"] == 1
+        members = mock_fmg_instance.add.call_args.kwargs["data"]
+        assert [m["name"] for m in members] == ["FGT-01"]
+
+    @pytest.mark.asyncio
+    async def test_a_bare_string_removes_one_device(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        mock_fmg_instance.delete.return_value = (0, {})
+
+        with patch.object(device_group_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_group_tools.remove_devices_from_group_bulk(
+                "root", "Branch-Firewalls", "FGT-01"
+            )
+
+        assert result["status"] == "success"
+        assert result["removed_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_real_list_is_unchanged(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        mock_fmg_instance.add.return_value = (0, {})
+
+        with patch.object(device_group_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_group_tools.add_devices_to_group_bulk(
+                "root", "Branch-Firewalls", ["FGT-01", "FGT-02"]
+            )
+
+        assert result["added_count"] == 2

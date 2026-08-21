@@ -15,6 +15,7 @@ from fortimanager_mcp.utils.errors import client_safe_error
 from fortimanager_mcp.utils.responses import error_response
 from fortimanager_mcp.utils.task_guard import TaskSlotsExhausted, spawn_guarded
 from fortimanager_mcp.utils.validation import (
+    coerce_device_name_list,
     validate_adom,
     validate_device_name,
     validate_object_name,
@@ -496,7 +497,7 @@ async def execute_script_on_devices(
     try:
         adom = validate_adom(adom)
         script = validate_object_name(script, "script")
-        devices = [validate_device_name(d) for d in devices]
+        devices = [validate_device_name(d) for d in coerce_device_name_list(devices)]
     except Exception as e:
         logger.error(f"Script tool operation failed: {e}")
         msg, code = client_safe_error(e)

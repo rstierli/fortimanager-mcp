@@ -180,6 +180,30 @@ _CONFIG_TEXT_SECRET_LINE = re.compile(
 )
 
 
+def _has_unescaped_quote(text: str) -> bool:
+    """True if text contains a double quote that is not backslash-escaped.
+
+    ``'"' in text`` closed a quoted span on the first quote it saw,
+    including an escaped one, so a value containing ``\\"`` ended its span
+    early and everything after it leaked past the redactor (upstream #71).
+    Measured before fixing: a PEM whose second line was ``body \\" still
+    secret`` left the remaining body and the END line in clear.
+
+    Tracks the escape state character by character rather than using a
+    lookbehind, so ``\\\\"`` (an escaped backslash followed by a real
+    closing quote) still closes the span.
+    """
+    escaped = False
+    for char in text:
+        if escaped:
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == '"':
+            return True
+    return False
+
+
 def redact_config_text_secrets(text: str) -> str:
     """Mask secret-bearing directive values in raw FortiOS CLI config text.
 
@@ -214,11 +238,11 @@ def redact_config_text_secrets(text: str) -> str:
         out.append(match.group("prefix") + MASK_VALUE)
         rest = match.group("rest")
         i += 1
-        if rest.startswith('"') and '"' not in rest[1:]:
+        if rest.startswith('"') and not _has_unescaped_quote(rest[1:]):
             # Unterminated quote: consume continuation lines until the one
             # that closes it (or end of text, if the export was truncated --
             # safer to over-redact than to guess a close that isn't there).
-            while i < len(lines) and '"' not in lines[i]:
+            while i < len(lines) and not _has_unescaped_quote(lines[i]):
                 i += 1
             if i < len(lines):
                 i += 1  # also drop the closing line itself
@@ -373,11 +397,13 @@ def validate_device_name(device: str) -> str:
         raise ValidationError("Device name cannot be empty")
 
     device = device.strip()
+    _reject_traversal_segment(device, "device name")
 
     # Check for VDOM suffix like "device[vdom]"
     if "[" in device:
         base_name = device.split("[")[0]
         vdom_part = device.split("[")[1].rstrip("]")
+        _reject_traversal_segment(base_name, "device name")
         if not DEVICE_NAME_PATTERN.match(base_name):
             raise ValidationError(f"Invalid device name '{base_name}'")
         if not ADOM_PATTERN.match(vdom_part):
@@ -391,6 +417,44 @@ def validate_device_name(device: str) -> str:
         )
 
     return device
+
+
+def coerce_device_name_list(devices: list[str] | str) -> list[str]:
+    """Coerce a devices argument to a list before it is iterated.
+
+    A bare string was iterated character by character, so devices="FGT-01"
+    became six single-character device names -- each of which passes the
+    device-name pattern, so nothing downstream noticed and six bogus
+    members were sent to FortiManager (upstream #71). Full mode has the
+    list annotation; dynamic mode passes ``parameters`` as
+    ``dict[str, Any]``, which nothing enforces against it.
+
+    Tolerated rather than refused, matching how check_policy_permissiveness
+    already treats a scalar where it documents a list: the caller's intent
+    is unambiguous, and an argument that decides what gets written should
+    not be foolable by the "wrong" shape.
+
+    Shared by every bulk-device tool rather than reimplemented per module
+    -- a second independent copy of this coercion is exactly how the
+    original bug (device_group_tools.py) stayed unfixed in dvm_tools.py
+    and script_tools.py after the first fix.
+
+    Rejects a dict explicitly rather than falling through to ``list()``:
+    ``list({"devices": [...]})`` returns the dict's *keys*, not its
+    values, so a caller nesting the argument one level too deep (e.g.
+    ``{"devices": {"devices": [...]}}`` via the dynamic dispatcher, which
+    enforces no nested shape) would silently add/remove a single bogus
+    device literally named "devices" with a success response, dropping
+    every intended device without an error.
+    """
+    if isinstance(devices, str):
+        return [devices]
+    if isinstance(devices, dict):
+        raise ValidationError(
+            "devices must be a list of device names or a single device name "
+            f"string, not a dict ({devices!r})"
+        )
+    return list(devices)
 
 
 def validate_device_serial(serial: str) -> str:
@@ -480,6 +544,24 @@ def validate_policy_name(name: str) -> str:
     return name
 
 
+#: Path segments that mean "this directory" and "the parent directory".
+#: Both match the name patterns below (dots are legal in device and object
+#: names), and both end up as the last segment of a URL template, so a name
+#: of ".." walks the caller one level up the API tree instead of addressing
+#: an object. No real FortiManager object is named "." or ".." (upstream
+#: #71). Only the exact segments are refused -- a dot anywhere else in a
+#: name is legitimate and stays allowed.
+_TRAVERSAL_SEGMENTS = frozenset({".", ".."})
+
+
+def _reject_traversal_segment(value: str, label: str) -> None:
+    """Refuse a name that is only dots, before it reaches a URL template."""
+    if value in _TRAVERSAL_SEGMENTS:
+        raise ValidationError(
+            f"Invalid {label} '{value}': a name of '.' or '..' is a path segment, not a name."
+        )
+
+
 def validate_object_name(name: str, object_type: str = "object") -> str:
     """Validate firewall object name format.
 
@@ -497,6 +579,7 @@ def validate_object_name(name: str, object_type: str = "object") -> str:
         raise ValidationError(f"{object_type.capitalize()} name cannot be empty")
 
     name = name.strip()
+    _reject_traversal_segment(name, f"{object_type} name")
 
     if not OBJECT_NAME_PATTERN.match(name):
         raise ValidationError(
@@ -822,13 +905,40 @@ def validate_policy_id(policyid: int) -> int:
     if policyid is None:
         raise ValidationError("Policy ID cannot be None")
 
-    if not isinstance(policyid, int):
+    # bool is refused explicitly: it is a subclass of int, so True would
+    # otherwise sail through and address policy 1 (same gap validate_task_id
+    # closes below, missing here).
+    if isinstance(policyid, bool) or not isinstance(policyid, int):
         raise ValidationError("Policy ID must be an integer")
 
     if policyid < 0:
         raise ValidationError("Policy ID must be non-negative")
 
     return policyid
+
+
+def validate_task_id(task_id: int) -> int:
+    """Validate a FortiManager task ID.
+
+    Every tool taking one interpolates it straight into /task/task/{id}.
+    The type annotation carries that in full mode, but dynamic mode passes
+    ``parameters`` as ``dict[str, Any]`` and nothing enforces the shape
+    there -- which is the mode the newer modules are wired into
+    (upstream #71).
+
+    ``bool`` is refused explicitly: it is a subclass of int, so True would
+    otherwise sail through and address task 1.
+    """
+    if task_id is None:
+        raise ValidationError("Task ID cannot be None")
+
+    if isinstance(task_id, bool) or not isinstance(task_id, int):
+        raise ValidationError(f"Task ID must be an integer, got {type(task_id).__name__}")
+
+    if task_id < 0:
+        raise ValidationError("Task ID must be non-negative")
+
+    return task_id
 
 
 # =============================================================================
