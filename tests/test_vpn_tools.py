@@ -269,6 +269,47 @@ class TestUpdateDeviceIpsecPhase1Interface:
         assert kwargs["data"] == {"remote-gw": "203.0.113.5", "comments": "rehomed"}
 
     @pytest.mark.asyncio
+    async def test_strips_credentials_from_the_echo(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """upstream #69: the update path did run _sanitize_phase1_result, but
+        the only fixture reaching it echoed {"name": "hq-gw"} with no secret
+        in it, so removing the sanitizer changed nothing and the suite stayed
+        green. The create path was tested properly; this is the same echo on
+        the other verb."""
+        mock_fmg_instance.update.return_value = (
+            0,
+            {
+                "name": "hq-gw",
+                "psksecret": "ENC RealPreSharedKey==",
+                "psksecret-remote": "ENC RemoteKey==",
+                "authpasswd": "ENC XAuthPassword==",
+                "group-authentication-secret": "ENC GroupSecret==",
+                "ppk-secret": "ENC PostQuantumKey==",
+                "remote-gw": "203.0.113.5",
+            },
+        )
+
+        with patch.object(vpn_tools, "get_fmg_client", return_value=mock_client):
+            result = await vpn_tools.update_device_ipsec_phase1_interface(
+                device="FGT-01", name="hq-gw", remote_gw="203.0.113.5"
+            )
+
+        assert result.get("success") is True
+        echoed = str(result["result"])
+        for secret in (
+            "RealPreSharedKey",
+            "RemoteKey",
+            "XAuthPassword",
+            "GroupSecret",
+            "PostQuantumKey",
+        ):
+            assert secret not in echoed, f"{secret} survived the update echo"
+        # non-secret fields survive, so this is a strip and not a blanket drop
+        assert result["result"]["name"] == "hq-gw"
+        assert result["result"]["remote-gw"] == "203.0.113.5"
+
+    @pytest.mark.asyncio
     async def test_no_fields_is_an_error(
         self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
     ) -> None:

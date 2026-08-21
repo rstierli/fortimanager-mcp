@@ -1021,6 +1021,94 @@ class TestUpdateDeviceWtpProfileRadio:
         mock_fmg_instance.update.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_expands_a_wide_channel_label_when_existing_bonding_is_the_device_db_int_form(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """channel-bonding comes back from a live GET as the device-DB
+        integer code, not the human string -- confirmed live against
+        myfw01's FAP23JK-AP1/AP2 radio-3 (2026-08-21): both report
+        "channel-bonding": 5 (int), never the "160MHz" string, whenever
+        only `channel` is passed and channel_bonding is left unset,
+        effective_bonding is read straight from this int. Every other test
+        in this class hard-codes the string form in the mocked GET, so
+        this path -- the one every real read actually takes -- had no
+        coverage (issue #76, gap 1)."""
+        mock_fmg_instance.get.return_value = (
+            0,
+            {"name": "AP-profile", "radio-3": {"channel-bonding": 5}},
+        )
+        mock_fmg_instance.update.return_value = (0, {"name": "AP-profile"})
+
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.update_device_wtp_profile_radio(
+                device="FGT-01", profile="AP-profile", radio=3, channel=[15]
+            )
+
+        assert result.get("success") is True
+        data = mock_fmg_instance.update.call_args.kwargs["data"]
+        assert data["radio-3"]["channel"] == ["1", "5", "9", "13", "17", "21", "25", "29"]
+        # The int form is carried through untouched -- only `channel` was
+        # asked for, so channel-bonding isn't touched or reformatted.
+        assert data["radio-3"]["channel-bonding"] == 5
+
+    @pytest.mark.asyncio
+    async def test_rejects_a_wide_channel_label_that_fails_alignment_but_not_the_lower_bound(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """test_rejects_a_misaligned_6ghz_wide_channel_label uses label 5,
+        which fails via `first < 1` (5 - 14 = -9) and never reaches the
+        `(first - 1) % (4 * n) != 0` alignment check on the next line.
+        Label 17 computes first = 17 - 14 = 3, which clears the lower
+        bound (3 >= 1) but fails alignment (3 - 1 = 2, 2 % 32 != 0) --
+        removing the alignment check leaves the whole suite green because
+        nothing else exercises it (issue #76, gap 2)."""
+        mock_fmg_instance.get.return_value = (
+            0,
+            {"name": "AP-profile", "radio-3": {"channel-bonding": "160MHz"}},
+        )
+
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.update_device_wtp_profile_radio(
+                device="FGT-01", profile="AP-profile", radio=3, channel=[17]
+            )
+
+        assert "error" in result
+        mock_fmg_instance.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_radio_3_reads_the_incoming_bonding_not_the_stale_existing_value(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """channel and channel_bonding arriving together on radio-3 is
+        never exercised anywhere else in this class -- every wide-channel
+        test above relies solely on the profile's already-stored
+        channel-bonding. effective_bonding must prefer the value arriving
+        in this same call over the stale one already on the profile: a
+        caller widening from 80MHz to 160MHz in one call, passing both
+        channel=[47] and channel_bonding="160MHz", must have the label
+        expanded against 160MHz, not against the 80MHz still sitting in
+        the read (issue #76, gap 3)."""
+        mock_fmg_instance.get.return_value = (
+            0,
+            {"name": "AP-profile", "radio-3": {"channel-bonding": "80MHz"}},
+        )
+        mock_fmg_instance.update.return_value = (0, {"name": "AP-profile"})
+
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.update_device_wtp_profile_radio(
+                device="FGT-01",
+                profile="AP-profile",
+                radio=3,
+                channel=[47],
+                channel_bonding="160MHz",
+            )
+
+        assert result.get("success") is True
+        data = mock_fmg_instance.update.call_args.kwargs["data"]
+        assert data["radio-3"]["channel"] == ["33", "37", "41", "45", "49", "53", "57", "61"]
+        assert data["radio-3"]["channel-bonding"] == "160MHz"
+
+    @pytest.mark.asyncio
     async def test_radio_3_at_20mhz_bonding_is_a_plain_single_pin(
         self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
     ) -> None:
@@ -1448,6 +1536,8 @@ class TestVdomIsValidatedOnEveryWritePath:
         "create_device_wtp": {"wtp_id": "FP231FTF24000123", "wtp_profile": "AP-profile"},
         "update_device_wtp": {"wtp_id": "FP231FTF24000123", "name": "ap-1"},
         "delete_device_wtp": {"wtp_id": "FP231FTF24000123"},
+        "create_device_sniffer": {"interface": "port1"},
+        "create_device_on_demand_sniffer": {"name": "TEST-ODS", "interface": "port1"},
     }
 
     def test_every_vdom_taking_tool_is_listed(self) -> None:

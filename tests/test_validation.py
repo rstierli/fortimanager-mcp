@@ -294,6 +294,133 @@ class TestRedactConfigTextSecrets:
 
 
 # =============================================================================
+# Secret Directive Coverage Tests
+# =============================================================================
+
+#: Every directive redact_config_text_secrets is required to mask.
+#:
+#: Deliberately a second, hand-maintained copy of
+#: CONFIG_TEXT_SECRET_DIRECTIVES rather than a reference to it. A test
+#: parametrized over the live set cannot fail when an entry is deleted:
+#: _CONFIG_TEXT_SECRET_LINE is built from that same set at import time, so
+#: a surviving entry always redacts and a deleted one simply drops out of
+#: the parametrization. Measured while closing upstream #68 -- deleting
+#: "auth-pwd" with exactly that test in place left the suite green at 1428
+#: passed, the case count sliding 37 -> 36 with nothing to notice.
+#:
+#: The cost is that adding a directive fails this test until the name is
+#: added here too. That is the intent: both directions become a deliberate
+#: edit rather than a silent one.
+EXPECTED_CONFIG_TEXT_SECRET_DIRECTIVES = frozenset(
+    {
+        "api-key",
+        "auth-pwd",
+        "auth-pwd-alt",
+        "authkey",
+        "authpasswd",
+        "certificate-password",
+        "client-secret",
+        "community",
+        "enckey",
+        "group-authentication-secret",
+        "key",
+        "key-string",
+        "login-passwd",
+        "logon-password",
+        "passphrase",
+        "passwd",
+        "password",
+        "password2",
+        "password3",
+        "password4",
+        "password5",
+        "ppk-secret",
+        "preshared-key",
+        "priv-pwd",
+        "private-key",
+        "psksecret",
+        "psksecret-remote",
+        "radius-secret",
+        "rsso-secret",
+        "sae-password",
+        "secondary-key",
+        "secondary-secret",
+        "secret",
+        "secret-key",
+        "sso-password",
+        "tertiary-key",
+        "tertiary-secret",
+    }
+)
+
+
+class TestConfigTextSecretDirectiveCoverage:
+    """The directive set is pinned, and every pinned entry is exercised.
+
+    Coverage here used to be per-directive and added by hand, so it drifted
+    out of sync with the set it was meant to cover: 14 of the 37 entries
+    could be deleted with the full suite green, each deletion returning
+    that secret in clear from get_device_revision and both sides of
+    diff_device_revision (upstream #68).
+    """
+
+    def test_the_directive_set_matches_the_pinned_list(self):
+        """A deletion is the failure this pins. An addition fails too, on
+        purpose -- the new name has to be added here, which is where it
+        picks up the redaction test below."""
+        dropped = EXPECTED_CONFIG_TEXT_SECRET_DIRECTIVES - CONFIG_TEXT_SECRET_DIRECTIVES
+        added = CONFIG_TEXT_SECRET_DIRECTIVES - EXPECTED_CONFIG_TEXT_SECRET_DIRECTIVES
+        assert not dropped, (
+            f"{len(dropped)} directive(s) left CONFIG_TEXT_SECRET_DIRECTIVES: "
+            f"{sorted(dropped)}. Each one now returns in clear from "
+            f"get_device_revision and both sides of diff_device_revision."
+        )
+        assert not added, (
+            f"{len(added)} directive(s) added to CONFIG_TEXT_SECRET_DIRECTIVES: "
+            f"{sorted(added)}. Add them to "
+            f"EXPECTED_CONFIG_TEXT_SECRET_DIRECTIVES so they get covered."
+        )
+
+    @pytest.mark.parametrize("directive", sorted(EXPECTED_CONFIG_TEXT_SECRET_DIRECTIVES))
+    def test_each_pinned_directive_redacts(self, directive):
+        text = f"    set {directive} ENC SECRETVALUE==\n"
+        result = redact_config_text_secrets(text)
+        assert "SECRETVALUE" not in result
+        # The literal, not MASK_VALUE. Asserting against the imported
+        # constant is self-referential: emptying MASK_VALUE keeps this test
+        # green while every secret starts coming back unmasked.
+        assert f"set {directive} ***REDACTED***" in result
+
+    @pytest.mark.parametrize("directive", sorted(EXPECTED_CONFIG_TEXT_SECRET_DIRECTIVES))
+    def test_each_pinned_directive_redacts_across_a_tab_separator(self, directive):
+        """Every other case here puts exactly one space after the directive.
+
+        Narrowing the matcher's separator from ``\\s+`` to a literal single
+        space leaves the whole suite green while a tab-separated secret line
+        goes out in clear. Measured, so the separator is pinned rather than
+        assumed.
+        """
+        text = f"    set {directive}\tENC TabbedSecret==\n"
+        result = redact_config_text_secrets(text)
+        assert "TabbedSecret" not in result
+        assert "***REDACTED***" in result
+
+    @pytest.mark.parametrize("directive", sorted(EXPECTED_CONFIG_TEXT_SECRET_DIRECTIVES))
+    def test_each_pinned_directive_redacts_an_unencoded_value(self, directive):
+        """Not every secret in a config export is ENC-wrapped.
+
+        The case above uses an "ENC ..." value for all 37, so a matcher
+        narrowed to only that shape would pass it while leaving every
+        plaintext value in clear. A community string or a WEP key is
+        written bare.
+        """
+        text = f"    set {directive} PlainTextSecret\n"
+        result = redact_config_text_secrets(text)
+        assert "PlainTextSecret" not in result
+        assert f"set {directive} ***REDACTED***" in result
+
+
+# =============================================================================
 # ADOM Validation Tests
 # =============================================================================
 

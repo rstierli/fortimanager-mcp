@@ -2841,6 +2841,49 @@ class FortiManagerClient:
             data=data,
         )
 
+    async def create_device_sniffer(
+        self,
+        device: str,
+        vdom: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Create a firewall sniffer definition in a device's device DB.
+
+        This is the FortiGate's own persistent ``firewall sniffer`` object
+        (Configuration API: firewall.json, /firewall/sniffer), not
+        FortiManager's local diagnostic sniffer (/cli/global/system/sniffer,
+        see fmg_ops_tools.trigger_fmg_backup's siblings) -- the two are
+        unrelated FortiOS-vs-FMG objects that happen to share a name.
+
+        FNDN: ADD /pm/config/device/{device}/vdom/{vdom}/firewall/sniffer
+        """
+        return await self.add(
+            f"/pm/config/device/{device}/vdom/{vdom}/firewall/sniffer",
+            data=data,
+        )
+
+    async def create_device_on_demand_sniffer(
+        self,
+        device: str,
+        vdom: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Create a firewall on-demand-sniffer definition in a device's device DB.
+
+        Distinct object from ``firewall.sniffer`` (see create_device_sniffer):
+        this one is name-keyed rather than id-keyed, bounded by
+        ``max-packet-count`` rather than running continuously, and filters
+        each host/port/protocol as a separate list entry rather than a
+        single range string -- closer to the old FMG-local packet-capture
+        tool's one-shot semantics, just running on the device itself.
+
+        FNDN: ADD /pm/config/device/{device}/vdom/{vdom}/firewall/on-demand-sniffer
+        """
+        return await self.add(
+            f"/pm/config/device/{device}/vdom/{vdom}/firewall/on-demand-sniffer",
+            data=data,
+        )
+
     async def update_device_dhcp_server(
         self,
         device: str,

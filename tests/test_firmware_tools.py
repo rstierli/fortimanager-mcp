@@ -266,6 +266,34 @@ class TestUpgradeDeviceFirmware:
         assert "cannot be tracked" in result["warning"]
 
     @pytest.mark.asyncio
+    async def test_the_validated_flag_reaches_the_upgrade_call(
+        self, mock_client_configured: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """upstream #69: test_valid_flag_accepted above asserts only that the
+        call succeeded, so hardcoding flags=None in the client call left the
+        suite green. Validating a flag and then dropping it is worse than
+        refusing it: the caller asked to skip the config retrieve and gets a
+        plain upgrade instead, on a real reboot."""
+        from fortimanager_mcp.tools import firmware_tools
+
+        with patch.object(firmware_tools, "get_fmg_client", return_value=mock_client_configured):
+            result = await firmware_tools.upgrade_device_firmware(
+                device="FGT-01",
+                target_version="6.4.1-1637",
+                flags="f_skip_retrieve",
+                confirm=True,
+            )
+
+        assert result["status"] == "success"
+        upgrade_calls = [
+            call
+            for call in mock_fmg_instance.execute.call_args_list
+            if call.args and call.args[0] == "/um/image/upgrade"
+        ]
+        assert len(upgrade_calls) == 1
+        assert upgrade_calls[0].kwargs.get("flags") == "f_skip_retrieve"
+
+    @pytest.mark.asyncio
     async def test_invalid_flag_rejected(self, mock_client_configured: FortiManagerClient) -> None:
         from fortimanager_mcp.tools import firmware_tools
 

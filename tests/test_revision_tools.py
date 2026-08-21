@@ -10,6 +10,7 @@ import pytest
 from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.tools import revision_tools
 from fortimanager_mcp.utils.config import get_settings
+from fortimanager_mcp.utils.validation import _normalize_policy_action
 
 # =============================================================================
 # Device DB revisions
@@ -541,7 +542,23 @@ class TestRevertFirewallPolicy:
     async def test_reverts_from_json_string_snapshot_and_strips_oid(
         self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
     ) -> None:
-        snapshot = json.dumps({"policyid": 14, "name": "Policy_001", "oid": 11310})
+        """A policyid/name-only snapshot has no addressing fields at all,
+        which the safety gate now reads as broad (see
+        test_snapshot_missing_scope_keys_entirely_is_read_as_broad) --
+        this test is about JSON-string parsing and oid-stripping, so its
+        snapshot needs a realistic narrow shape to stay orthogonal to
+        that concern rather than incidentally exercise it."""
+        snapshot = json.dumps(
+            {
+                "policyid": 14,
+                "name": "Policy_001",
+                "oid": 11310,
+                "srcaddr": ["LAN-Subnet"],
+                "dstaddr": ["Server-Net"],
+                "service": ["HTTPS"],
+                "action": "accept",
+            }
+        )
         mock_fmg_instance.update.return_value = (0, {"status": {"code": 0, "message": "OK"}})
 
         with patch.object(revision_tools, "get_fmg_client", return_value=mock_client):
@@ -562,11 +579,23 @@ class TestRevertFirewallPolicy:
     async def test_reverts_from_dict_snapshot_without_note(
         self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
     ) -> None:
+        """See test_reverts_from_json_string_snapshot_and_strips_oid: this
+        is about the optional revision_note, so the snapshot needs a
+        realistic narrow shape to stay orthogonal to the safety gate."""
         mock_fmg_instance.update.return_value = (0, {"status": {"code": 0, "message": "OK"}})
 
         with patch.object(revision_tools, "get_fmg_client", return_value=mock_client):
             result = await revision_tools.revert_firewall_policy(
-                "demo", "ppkg_001", {"policyid": 3, "name": "Policy_003"}
+                "demo",
+                "ppkg_001",
+                {
+                    "policyid": 3,
+                    "name": "Policy_003",
+                    "srcaddr": ["LAN-Subnet"],
+                    "dstaddr": ["Server-Net"],
+                    "service": ["HTTPS"],
+                    "action": "accept",
+                },
             )
 
         assert result["status"] == "success"
@@ -651,6 +680,166 @@ class TestRevertFirewallPolicy:
 
         assert result["status"] == "success"
         mock_fmg_instance.update.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_snapshot_without_an_action_key_is_gated_as_accept(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """upstream #69: the gate treats action=None as "not supplied", which
+        is right for create/update (FMG defaults those to deny) and wrong
+        here. A revert writes the snapshot as given, so an absent action
+        means the resulting policy's action is whatever the snapshot does,
+        not deny. Read the most dangerous way rather than the most
+        convenient one."""
+        monkeypatch.setenv("FMG_POLICY_SAFETY", "strict")
+        get_settings.cache_clear()
+        snapshot = {
+            "policyid": 14,
+            "srcaddr": ["all"],
+            "dstaddr": ["all"],
+            "service": ["ALL"],
+        }
+
+        try:
+            with patch.object(revision_tools, "get_fmg_client", return_value=mock_client):
+                result = await revision_tools.revert_firewall_policy("demo", "ppkg_001", snapshot)
+        finally:
+            get_settings.cache_clear()
+
+        assert result["status"] == "error"
+        mock_fmg_instance.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_snapshot_without_an_action_key_still_writes_when_narrow(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Reading an absent action as accept must not block every
+        action-less snapshot -- only the ones that are also broad."""
+        monkeypatch.setenv("FMG_POLICY_SAFETY", "strict")
+        get_settings.cache_clear()
+        mock_fmg_instance.update.return_value = (0, {"status": {"code": 0, "message": "OK"}})
+        snapshot = {
+            "policyid": 14,
+            "srcaddr": ["LAN-Subnet"],
+            "dstaddr": ["Server-Net"],
+            "service": ["HTTPS"],
+        }
+
+        try:
+            with patch.object(revision_tools, "get_fmg_client", return_value=mock_client):
+                result = await revision_tools.revert_firewall_policy("demo", "ppkg_001", snapshot)
+        finally:
+            get_settings.cache_clear()
+
+        assert result["status"] == "success"
+        mock_fmg_instance.update.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_ipv6_scope_in_the_snapshot_reaches_the_gate(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """upstream #69: the gate was fed a four-key projection while the
+        client forwards the whole snapshot, so scope expressed in any other
+        key was invisible. srcaddr6/dstaddr6 are the case that reaches a
+        real FMG policy -- this repo's create path never emits them, but a
+        revert takes an arbitrary snapshot, which is the point."""
+        monkeypatch.setenv("FMG_POLICY_SAFETY", "strict")
+        get_settings.cache_clear()
+        snapshot = {
+            "policyid": 14,
+            "srcaddr": ["LAN-Subnet"],
+            "dstaddr": ["Server-Net"],
+            "srcaddr6": ["all"],
+            "dstaddr6": ["all"],
+            "service": ["ALL"],
+            "action": 1,
+        }
+
+        try:
+            with patch.object(revision_tools, "get_fmg_client", return_value=mock_client):
+                result = await revision_tools.revert_firewall_policy("demo", "ppkg_001", snapshot)
+        finally:
+            get_settings.cache_clear()
+
+        assert result["status"] == "error"
+        mock_fmg_instance.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_ipv6_negated_scope_reaches_the_gate_as_negated(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """_snapshot_scope merges srcaddr+srcaddr6 into one gate argument,
+        but negation was only ever read from the v4 "srcaddr-negate" key.
+        A snapshot carrying only srcaddr6/srcaddr6-negate -- no v4 keys at
+        all -- is a negated narrow list, which the gate treats as broad as
+        "all" (see check_policy_permissiveness's src_broad). Before this
+        fix, srcaddr_negate always came back False for a v6-only snapshot
+        regardless of the real value, so this sailed through as narrow."""
+        monkeypatch.setenv("FMG_POLICY_SAFETY", "strict")
+        get_settings.cache_clear()
+        snapshot = {
+            "policyid": 14,
+            "srcaddr6": ["Some-V6-Object"],
+            "srcaddr6-negate": 1,
+            "dstaddr": ["all"],
+            "service": ["ALL"],
+            "action": 1,
+        }
+
+        try:
+            with patch.object(revision_tools, "get_fmg_client", return_value=mock_client):
+                result = await revision_tools.revert_firewall_policy("demo", "ppkg_001", snapshot)
+        finally:
+            get_settings.cache_clear()
+
+        assert result["status"] == "error"
+        mock_fmg_instance.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_snapshot_missing_scope_keys_entirely_is_read_as_broad(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """client.revert_firewall_policy_snapshot issues FMG's `update`, a
+        partial merge (live-verified: an update sending only one field
+        leaves every other field on the live object untouched, not
+        cleared). A snapshot with no "srcaddr" key at all therefore means
+        the live policy's current -- unknown -- srcaddr survives the
+        write. Before this fix, _snapshot_scope read that absence as []
+        ("narrow"), so a truncated/hand-built snapshot omitting srcaddr
+        would gate as safe no matter how broad the live policy already
+        was."""
+        monkeypatch.setenv("FMG_POLICY_SAFETY", "strict")
+        get_settings.cache_clear()
+        snapshot = {
+            "policyid": 14,
+            "dstaddr": ["all"],
+            "service": ["ALL"],
+            "action": 1,
+        }
+
+        try:
+            with patch.object(revision_tools, "get_fmg_client", return_value=mock_client):
+                result = await revision_tools.revert_firewall_policy("demo", "ppkg_001", snapshot)
+        finally:
+            get_settings.cache_clear()
+
+        assert result["status"] == "error"
+        mock_fmg_instance.update.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_real_snapshot_shape_does_not_crash_the_gate(
@@ -766,7 +955,13 @@ class TestSnapshotSafetyNormalizers:
         ],
     )
     def test_action_normalization(self, raw, expected) -> None:
-        assert revision_tools._snapshot_action_for_safety_check(raw) == expected
+        """The int encoding this pins is live-verified (fmg-prod-01: a real
+        accept policy read back action=1, a deny one action=0). It moved
+        into the gate itself in upstream #69 -- check_policy_safety's
+        docstring requires exactly one copy of the gate, and a per-caller
+        normalizer was a second copy that only the revert path got, which
+        is how the digit-string "1" stayed a bypass for the other six."""
+        assert _normalize_policy_action(raw) == expected
 
     @pytest.mark.parametrize(
         ("raw", "expected"),
@@ -781,7 +976,24 @@ class TestSnapshotSafetyNormalizers:
         ],
     )
     def test_negate_normalization(self, raw, expected) -> None:
-        assert revision_tools._snapshot_negate_for_safety_check(raw) == expected
+        snapshot = {"srcaddr-negate": raw}
+        assert (
+            revision_tools._snapshot_negate_for_safety_check(snapshot, "srcaddr-negate") == expected
+        )
+
+    def test_negate_normalization_ors_the_v4_and_v6_keys(self) -> None:
+        """A v6-only negated scope must not be invisible to the gate just
+        because the v4 key is the one always read. Reproduces the case
+        _snapshot_scope's own docstring calls out: a revert snapshot with
+        only srcaddr6/srcaddr6-negate set, no srcaddr/srcaddr-negate keys
+        at all."""
+        snapshot = {"srcaddr6-negate": 1}
+        assert (
+            revision_tools._snapshot_negate_for_safety_check(
+                snapshot, "srcaddr-negate", "srcaddr6-negate"
+            )
+            is True
+        )
 
 
 # =============================================================================
