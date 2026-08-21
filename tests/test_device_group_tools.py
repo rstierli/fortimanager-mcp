@@ -199,7 +199,7 @@ class TestBulkDeviceMembership:
             )
 
         assert result["status"] == "success"
-        assert result["added_count"] == 2
+        assert result["requested_count"] == 2
         sent_data = mock_fmg_instance.add.call_args.kwargs.get("data")
         assert sent_data == [
             {"name": "FGT-1", "vdom": "root"},
@@ -216,7 +216,7 @@ class TestBulkDeviceMembership:
             )
 
         assert result["status"] == "success"
-        assert result["removed_count"] == 2
+        assert result["requested_count"] == 2
         sent_data = mock_fmg_instance.delete.call_args.kwargs.get("data")
         assert sent_data == [
             {"name": "FGT-1", "vdom": "root"},
@@ -332,7 +332,7 @@ class TestBulkDeviceArgumentShape:
             )
 
         assert result["status"] == "success"
-        assert result["added_count"] == 1
+        assert result["requested_count"] == 1
         members = mock_fmg_instance.add.call_args.kwargs["data"]
         assert [m["name"] for m in members] == ["FGT-01"]
 
@@ -348,7 +348,7 @@ class TestBulkDeviceArgumentShape:
             )
 
         assert result["status"] == "success"
-        assert result["removed_count"] == 1
+        assert result["requested_count"] == 1
 
     @pytest.mark.asyncio
     async def test_a_real_list_is_unchanged(
@@ -361,4 +361,78 @@ class TestBulkDeviceArgumentShape:
                 "root", "Branch-Firewalls", ["FGT-01", "FGT-02"]
             )
 
-        assert result["added_count"] == 2
+        assert result["requested_count"] == 2
+
+
+class TestBulkMembershipDoesNotFabricateCounts:
+    """A bulk add/remove cannot know how many memberships it changed.
+
+    Both tools discarded the response and returned ``len(devices)`` as
+    the outcome count. Measured upstream (#78) against a live sandbox:
+    removing a device that was NOT a member returned code 0, and the
+    tool answered ``{"status": "success", "removed_count": 1}``. FMG's
+    DELETE on a non-member is a lenient no-op, so a count derived from
+    the request is a claim the appliance never made. The add side has
+    the same shape, so a device that does not exist or is already a
+    member would also be reported as a successful change.
+
+    A count cannot be recovered from the response either: the client
+    raises on any non-zero code, so everything that reaches this line
+    is a code 0 that says nothing about individual members.
+
+    The singular ``add_device_to_group`` and ``remove_device_from_group``
+    already report no count, for this reason. These now match them, and
+    keep only the request size, which is a fact about the call rather
+    than about the appliance.
+    """
+
+    @pytest.mark.asyncio
+    async def test_add_bulk_does_not_report_an_outcome_count(
+        self, mock_client_ok: FortiManagerClient
+    ) -> None:
+        with _patched(mock_client_ok):
+            result = await device_group_tools.add_devices_to_group_bulk(
+                adom="root", group="Grp1", devices=["FGT-1", "FGT-2"]
+            )
+        assert result["status"] == "success"
+        assert "added_count" not in result
+
+    @pytest.mark.asyncio
+    async def test_remove_bulk_does_not_report_an_outcome_count(
+        self, mock_client_ok: FortiManagerClient
+    ) -> None:
+        with _patched(mock_client_ok):
+            result = await device_group_tools.remove_devices_from_group_bulk(
+                adom="root", group="Grp1", devices=["FGT-1", "FGT-2"]
+            )
+        assert result["status"] == "success"
+        assert "removed_count" not in result
+
+    @pytest.mark.asyncio
+    async def test_the_request_size_is_still_reported(
+        self, mock_client_ok: FortiManagerClient
+    ) -> None:
+        """The one number that is knowable: what the caller asked for."""
+        with _patched(mock_client_ok):
+            added = await device_group_tools.add_devices_to_group_bulk(
+                adom="root", group="Grp1", devices=["FGT-1", "FGT-2"]
+            )
+            removed = await device_group_tools.remove_devices_from_group_bulk(
+                adom="root", group="Grp1", devices=["FGT-1"]
+            )
+        assert added["requested_count"] == 2
+        assert removed["requested_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_the_message_does_not_read_as_a_confirmed_outcome(
+        self, mock_client_ok: FortiManagerClient
+    ) -> None:
+        """ "Removed 1 device(s)" is the same fabricated claim in prose.
+        An LLM reading the message rather than the keys must not be told
+        the membership changed either."""
+        with _patched(mock_client_ok):
+            result = await device_group_tools.remove_devices_from_group_bulk(
+                adom="root", group="Grp1", devices=["FGT-1"]
+            )
+        assert "Requested" in result["message"]
+        assert not result["message"].startswith("Removed")

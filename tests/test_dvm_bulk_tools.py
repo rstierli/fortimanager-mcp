@@ -22,7 +22,7 @@ class TestDeleteDevicesBulk:
             result = await dvm_tools.delete_devices_bulk("root", ["FGT-Old1", "FGT-Old2"])
 
         assert result["status"] == "success"
-        assert result["deleted_count"] == 2
+        assert result["requested_count"] == 2
         args, kwargs = mock_fmg_instance.execute.call_args
         assert args[0] == "/dvm/cmd/del/dev-list"
         assert kwargs["del-dev-member-list"] == [{"name": "FGT-Old1"}, {"name": "FGT-Old2"}]
@@ -42,7 +42,7 @@ class TestDeleteDevicesBulk:
             result = await dvm_tools.delete_devices_bulk("root", "FGT-01")
 
         assert result["status"] == "success"
-        assert result["deleted_count"] == 1
+        assert result["requested_count"] == 1
         kwargs = mock_fmg_instance.execute.call_args.kwargs
         assert kwargs["del-dev-member-list"] == [{"name": "FGT-01"}]
 
@@ -56,3 +56,66 @@ class TestDeleteDevicesBulk:
             result = await dvm_tools.delete_devices_bulk("root", {"devices": ["FGT-01"]})
 
         assert result["status"] == "error"
+
+
+class TestBulkDeviceOpsDoNotFabricateCounts:
+    """These two submit a TASK. The outcome lives in the task, not here.
+
+    Both returned ``len(devices)`` as the outcome count and a message in
+    the past tense the instant FortiManager accepted the request, before
+    the task had run at all. So "Deleted 2 devices" was reported for a
+    job whose per-device results did not exist yet, and a device that
+    fails inside the task is indistinguishable from one that succeeds.
+
+    Same class as #78 on the group tools, and the same class the policy
+    layer already refused: ``delete_firewall_policies_bulk`` carries a
+    comment saying the previous single filtered DELETE "reported
+    len(policyids) as deleted no matter how many IDs actually matched".
+    It fixed that by counting real per-item results. These cannot, since
+    there is one task for the whole batch, so they report the request
+    size and point at ``task_id`` instead.
+    """
+
+    @pytest.mark.asyncio
+    async def test_delete_bulk_does_not_report_an_outcome_count(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        mock_fmg_instance.execute.return_value = (0, {"taskid": 42})
+        with patch.object(dvm_tools, "get_fmg_client", return_value=mock_client):
+            result = await dvm_tools.delete_devices_bulk("root", ["FGT-Old1", "FGT-Old2"])
+
+        assert result["status"] == "success"
+        assert "deleted_count" not in result
+        assert result["requested_count"] == 2
+        assert result["task_id"] == 42
+
+    @pytest.mark.asyncio
+    async def test_add_bulk_does_not_report_an_outcome_count(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        mock_fmg_instance.execute.return_value = (0, {"taskid": 43})
+        with patch.object(dvm_tools, "get_fmg_client", return_value=mock_client):
+            result = await dvm_tools.add_devices_bulk(
+                "root", [{"name": "FGT-New1"}, {"name": "FGT-New2"}]
+            )
+
+        assert result["status"] == "success"
+        assert "added_count" not in result
+        assert result["requested_count"] == 2
+        assert result["task_id"] == 43
+
+    @pytest.mark.asyncio
+    async def test_the_messages_point_at_the_task_rather_than_claim_completion(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """An LLM reading the message rather than the keys must not be
+        told the devices were already added or deleted."""
+        mock_fmg_instance.execute.return_value = (0, {"taskid": 44})
+        with patch.object(dvm_tools, "get_fmg_client", return_value=mock_client):
+            deleted = await dvm_tools.delete_devices_bulk("root", ["FGT-Old1"])
+            added = await dvm_tools.add_devices_bulk("root", [{"name": "FGT-New1"}])
+
+        for result in (deleted, added):
+            assert "task 44" in result["message"]
+        assert not deleted["message"].startswith("Deleted")
+        assert not added["message"].startswith("Added")
