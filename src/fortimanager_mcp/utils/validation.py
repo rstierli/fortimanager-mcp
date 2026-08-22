@@ -1171,6 +1171,18 @@ def _normalize_policy_action(value: Any) -> Any:
         return "accept" if value == 1 else "deny"
     if isinstance(value, str):
         text = value.strip().lower()
+        if not text:
+            # Supplied but empty is NOT the same as absent. None means the
+            # caller omitted the field and FMG's default applies, which
+            # stays ungated by contract. An empty string means the caller
+            # named the field and gave it nothing readable, which is the
+            # same position as object() or True below. Before this, "" fell
+            # through to the `action_name != "accept"` branch and read as a
+            # non-accept action, so a fully open policy was not gated at
+            # all. Reachable from the tool surface without FortiManager
+            # producing it, since action is a caller parameter on every
+            # create and update path.
+            return _UNREADABLE
         if text.isdigit():
             # str.isdigit() is True for characters int() will not take:
             # superscripts and enclosed forms ("\u00b9", "\u2460") are

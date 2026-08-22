@@ -1166,3 +1166,57 @@ class TestTheGateDoesNotBlockRemediation:
 
         assert result["status"] == "error"
         instance.update.assert_not_called()
+
+
+class TestEmptyActionIsUnreadableNotAbsent:
+    """A supplied-but-empty action was read as "not accept", so the gate
+    let a fully open policy through.
+
+    Flagged during review of this PR as an unconfirmed edge case, on the
+    grounds that a real FMG response may never carry it. That is true of
+    the STORED-read path and beside the point: ``action`` is a caller
+    parameter on every create and update tool, so the shape is reachable
+    from the tool surface without FortiManager producing it at all.
+
+    Measured on ``dbc38fb``, strict mode, same all/all/ALL policy:
+
+        action="accept"  ->  blocked
+        action=""        ->  gate returned None, the write proceeded
+        action="  "      ->  gate returned None, the write proceeded
+
+    None still means "not supplied" and stays ungated, which is the
+    documented contract for a create that omits action to take FMG's
+    default. An empty string is not that: the caller named the field and
+    gave it no readable value, which is the same position as ``object()``
+    or ``True``, both of which already refuse.
+    """
+
+    @pytest.mark.parametrize("action", ["", "   ", "\t", "\n"])
+    def test_an_empty_action_refuses_on_a_fully_open_policy(self, action):
+        result = check_policy_permissiveness(["all"], ["all"], ["ALL"], action)
+        assert result is not None
+        assert "cannot read" in result
+
+    @pytest.mark.parametrize("action", ["", "   "])
+    def test_an_empty_action_refuses_even_when_narrow(self, action):
+        """Consistent with every other unreadable shape: the refusal is
+        about not being able to tell what the action is, so it does not
+        depend on the addresses looking broad. Deliberate, and it is a
+        behaviour change for a narrow policy sent with an empty action,
+        which is malformed input the tool should name rather than accept.
+        """
+        result = check_policy_permissiveness(["DMZ"], ["Web"], ["HTTP"], action)
+        assert result is not None
+        assert "cannot read" in result
+
+    def test_none_is_still_not_gated(self):
+        """The contract that must NOT change. A create or update that
+        omits action entirely takes FMG's default and stays ungated."""
+        assert check_policy_permissiveness(["all"], ["all"], ["ALL"], None) is None
+
+    def test_a_real_action_still_behaves(self):
+        """Both directions of the pre-existing behaviour, so the fix
+        cannot have turned the gate into a blanket refuser."""
+        assert check_policy_permissiveness(["all"], ["all"], ["ALL"], "deny") is None
+        blocked = check_policy_permissiveness(["all"], ["all"], ["ALL"], "accept")
+        assert blocked is not None and "fully open" in blocked
