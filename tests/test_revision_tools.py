@@ -978,7 +978,7 @@ class TestSnapshotSafetyNormalizers:
     def test_negate_normalization(self, raw, expected) -> None:
         snapshot = {"srcaddr-negate": raw}
         assert (
-            revision_tools._snapshot_negate_for_safety_check(snapshot, "srcaddr-negate") == expected
+            revision_tools.resolve_negate_for_safety_check(snapshot, "srcaddr-negate") == expected
         )
 
     def test_negate_normalization_ors_the_v4_and_v6_keys(self) -> None:
@@ -989,7 +989,7 @@ class TestSnapshotSafetyNormalizers:
         at all."""
         snapshot = {"srcaddr6-negate": 1}
         assert (
-            revision_tools._snapshot_negate_for_safety_check(
+            revision_tools.resolve_negate_for_safety_check(
                 snapshot, "srcaddr-negate", "srcaddr6-negate"
             )
             is True

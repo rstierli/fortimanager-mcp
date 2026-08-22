@@ -19,6 +19,8 @@ from fortimanager_mcp.utils.task_guard import TaskSlotsExhausted, spawn_guarded
 from fortimanager_mcp.utils.validation import (
     ValidationError,
     check_policy_safety,
+    collect_scope_values,
+    resolve_negate_for_safety_check,
     validate_adom,
     validate_move_position,
     validate_package_name,
@@ -415,9 +417,9 @@ async def _check_partial_update_safety(
     dstaddr: Any,
     service: Any,
     action: Any,
-    srcaddr_negate: bool,
-    dstaddr_negate: bool,
-    service_negate: bool,
+    srcaddr_negate: bool | None,
+    dstaddr_negate: bool | None,
+    service_negate: bool | None,
 ) -> dict[str, Any] | None:
     """Gate an update against the policy as it will exist, not the delta.
 
@@ -430,50 +432,85 @@ async def _check_partial_update_safety(
     written completely ungated whenever action was left out (upstream #71).
 
     So it makes the extra call, but only when the caller actually named one
-    of the gate's scope fields. An update that touches none of them cannot
-    change how permissive the policy is, and screening it anyway made
-    strict mode refuse ``status="disable"``, ``utm_status=True`` and even a
-    rename on an existing all/all/accept policy: the gate blocking the two
-    fastest ways to remediate the policy it objects to.
+    of the gate's fields (the four scope fields, or a negate flag). An
+    update that touches none of them cannot change how permissive the
+    policy is, and screening it anyway made strict mode refuse
+    ``status="disable"``, ``utm_status=True`` and even a rename on an
+    existing all/all/accept policy: the gate blocking the two fastest ways
+    to remediate the policy it objects to.
 
-    Negation is passed through to the gate unchanged and never triggers the
-    read. A negate-only update warns rather than blocks, which is the
-    behaviour that shipped before this change and is pinned by its own
-    tests.
+    Negation merges from the stored policy independently of whether its
+    address field also needed merging, because the two are independent
+    fields on the wire: an update naming a NEW ``srcaddr`` without also
+    naming ``srcaddr_negate`` leaves negate untouched by the same partial
+    merge (the docstrings on the six negate parameters across this module
+    say exactly that -- "None leaves the field untouched"), so the
+    *stored* negate flag still applies to the resulting policy. Reached
+    the gate as ``False`` regardless before this fix, because negate was
+    only ever merged inside the branch that also merged its address
+    field -- an explicit new narrow ``srcaddr`` over a stored
+    ``srcaddr-negate=1`` computed as narrow+unnegated (safe) rather than
+    narrow+negated (effectively any-source). srcaddr6/dstaddr6 are folded
+    into the address lists the same way :func:`collect_scope_values`
+    already does for a revert snapshot, via the same live-verified 0/1
+    encoding :func:`resolve_negate_for_safety_check` already handles.
     """
-    if any(field is not None for field in (srcaddr, dstaddr, service, action)):
-        if None in (srcaddr, dstaddr, service, action):
-            stored = await fetch_stored()
-            if isinstance(stored, list):
-                stored = stored[0] if stored else None
-            if not isinstance(stored, dict) or not _SCOPE_KEYS & set(stored):
-                # A read that carries no scope field at all (empty, or an
-                # error envelope shaped like a payload) used to be coerced
-                # to {}, which fed the gate all-None, which passes -- so a
-                # widening update went through unscreened. That is the
-                # fail-open this docstring rules out.
-                raise ValidationError(
-                    "policy safety gate could not read the stored policy, so "
-                    "this update cannot be screened; refusing rather than "
-                    "writing unscreened"
-                )
-            if srcaddr is None:
-                srcaddr = stored.get("srcaddr")
-            if dstaddr is None:
-                dstaddr = stored.get("dstaddr")
-            if service is None:
-                service = stored.get("service")
-            if action is None:
-                action = stored.get("action")
+    if any(field is not None for field in (srcaddr, dstaddr, service, action)) and None in (
+        srcaddr,
+        dstaddr,
+        service,
+        action,
+    ):
+        # The fetch is scoped to the four address/action fields only --
+        # not widened to also fire for an unset negate flag on its own --
+        # so a fully-specified scope update still pays nothing extra,
+        # which is this function's own tested guarantee. Once a fetch DOES
+        # happen for scope reasons, though, every negate flag left unset
+        # merges from the same read, whether or not its address field was
+        # also None: the address and its negate are independent fields on
+        # the wire, so an explicit new srcaddr with no srcaddr_negate still
+        # leaves the *stored* negate in effect after the write.
+        stored = await fetch_stored()
+        if isinstance(stored, list):
+            stored = stored[0] if stored else None
+        if not isinstance(stored, dict) or not _SCOPE_KEYS & set(stored):
+            # A read that carries no scope field at all (empty, or an
+            # error envelope shaped like a payload) used to be coerced
+            # to {}, which fed the gate all-None, which passes -- so a
+            # widening update went through unscreened. That is the
+            # fail-open this docstring rules out.
+            raise ValidationError(
+                "policy safety gate could not read the stored policy, so "
+                "this update cannot be screened; refusing rather than "
+                "writing unscreened"
+            )
+        if srcaddr is None:
+            srcaddr = collect_scope_values(stored, "srcaddr", "srcaddr6")
+        if srcaddr_negate is None:
+            srcaddr_negate = resolve_negate_for_safety_check(
+                stored, "srcaddr-negate", "srcaddr6-negate"
+            )
+        if dstaddr is None:
+            dstaddr = collect_scope_values(stored, "dstaddr", "dstaddr6")
+        if dstaddr_negate is None:
+            dstaddr_negate = resolve_negate_for_safety_check(
+                stored, "dstaddr-negate", "dstaddr6-negate"
+            )
+        if service is None:
+            service = stored.get("service")
+        if service_negate is None:
+            service_negate = resolve_negate_for_safety_check(stored, "service-negate")
+        if action is None:
+            action = stored.get("action")
 
     return check_policy_safety(
         srcaddr,
         dstaddr,
         service,
         action,
-        srcaddr_negate=srcaddr_negate,
-        dstaddr_negate=dstaddr_negate,
-        service_negate=service_negate,
+        srcaddr_negate=bool(srcaddr_negate),
+        dstaddr_negate=bool(dstaddr_negate),
+        service_negate=bool(service_negate),
     )
 
 
@@ -803,9 +840,9 @@ async def update_firewall_policy(
             dstaddr=dstaddr,
             service=service,
             action=action,
-            srcaddr_negate=bool(srcaddr_negate),
-            dstaddr_negate=bool(dstaddr_negate),
-            service_negate=bool(service_negate),
+            srcaddr_negate=srcaddr_negate,
+            dstaddr_negate=dstaddr_negate,
+            service_negate=service_negate,
         )
         if safety_result:
             if safety_result.get("status") == "error":
@@ -1838,9 +1875,9 @@ async def update_local_in_policy(
             dstaddr=dstaddr,
             service=service,
             action=action,
-            srcaddr_negate=bool(srcaddr_negate),
-            dstaddr_negate=bool(dstaddr_negate),
-            service_negate=bool(service_negate),
+            srcaddr_negate=srcaddr_negate,
+            dstaddr_negate=dstaddr_negate,
+            service_negate=service_negate,
         )
         if safety_result:
             if safety_result.get("status") == "error":
@@ -2220,9 +2257,9 @@ async def update_local_in_policy6(
             dstaddr=dstaddr,
             service=service,
             action=action,
-            srcaddr_negate=bool(srcaddr_negate),
-            dstaddr_negate=bool(dstaddr_negate),
-            service_negate=bool(service_negate),
+            srcaddr_negate=srcaddr_negate,
+            dstaddr_negate=dstaddr_negate,
+            service_negate=service_negate,
         )
         if safety_result:
             if safety_result.get("status") == "error":

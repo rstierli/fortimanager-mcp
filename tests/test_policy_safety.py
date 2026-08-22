@@ -899,6 +899,92 @@ class TestPartialUpdateGate:
         assert result["status"] == "error"
         mock_fmg_instance.update.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_stored_negate_is_merged_on_a_partial_update(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """srcaddr/dstaddr/service/action were merged from the stored
+        policy, but srcaddr_negate/dstaddr_negate/service_negate were
+        passed through as whatever the caller sent -- unset reads as
+        False regardless of the real stored value. A stored
+        srcaddr-negate=1 (matches everything except the listed object,
+        effectively any-source) combined with a caller-widened dstaddr
+        computed as narrow+broad (safe) instead of broad+broad."""
+        monkeypatch.setenv("FMG_POLICY_SAFETY", "strict")
+        get_settings.cache_clear()
+        mock_fmg_instance.get.return_value = (
+            0,
+            {
+                "policyid": 7,
+                "srcaddr": ["Some-Object"],
+                "srcaddr-negate": 1,
+                "dstaddr": ["OldDst"],
+                "service": ["OldSvc"],
+                "action": 1,
+            },
+        )
+
+        try:
+            with patch.object(policy_tools, "get_fmg_client", return_value=mock_client):
+                result = await policy_tools.update_local_in_policy(
+                    adom="root",
+                    package="default",
+                    policyid=7,
+                    dstaddr=["all"],
+                )
+        finally:
+            get_settings.cache_clear()
+
+        assert result["status"] == "error"
+        mock_fmg_instance.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stored_negate_is_merged_even_when_its_own_address_is_explicit(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The address and its negate flag are independent fields on the
+        wire: a caller re-stating srcaddr explicitly without also
+        re-stating srcaddr_negate leaves the *stored* negate in effect
+        after the write (partial merge), so it must still be read off the
+        stored policy even though srcaddr itself was not None. A fetch is
+        already happening here because action is left unset -- this pins
+        that the negate merge is not nested under "and srcaddr was also
+        None"."""
+        monkeypatch.setenv("FMG_POLICY_SAFETY", "strict")
+        get_settings.cache_clear()
+        mock_fmg_instance.get.return_value = (
+            0,
+            {
+                "policyid": 7,
+                "srcaddr": ["Some-Object"],
+                "srcaddr-negate": 1,
+                "dstaddr": ["OldDst"],
+                "service": ["OldSvc"],
+                "action": 1,
+            },
+        )
+
+        try:
+            with patch.object(policy_tools, "get_fmg_client", return_value=mock_client):
+                result = await policy_tools.update_local_in_policy(
+                    adom="root",
+                    package="default",
+                    policyid=7,
+                    srcaddr=["Some-Object"],
+                    dstaddr=["all"],
+                )
+        finally:
+            get_settings.cache_clear()
+
+        assert result["status"] == "error"
+        mock_fmg_instance.update.assert_not_called()
+
 
 class TestTheGateDoesNotBlockRemediation:
     """An update that names none of the gate's fields cannot change how
