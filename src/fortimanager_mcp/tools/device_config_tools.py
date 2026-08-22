@@ -1,14 +1,15 @@
 """Device-level configuration tools for FortiManager MCP (issue #45).
 
 Typed tools for configuring the device itself in FortiManager's device
-database: interfaces/VLAN subinterfaces, DHCP servers, and wireless VAPs
-(SSIDs). Everything writes to the FMG device DB only; nothing talks to the
-FortiGate directly. Push staged changes with ``preview_install`` followed by
-``install_device_settings``, the same flow the rest of the server uses.
+database: interfaces/VLAN subinterfaces, DHCP servers, wireless VAPs
+(SSIDs), and firewall sniffer definitions. Everything writes to the FMG
+device DB only; nothing talks to the FortiGate directly. Push staged
+changes with ``preview_install`` followed by ``install_device_settings``,
+the same flow the rest of the server uses.
 
 Field names follow the FortiOS cmdb tables the device DB mirrors
 (``system interface``, ``system dhcp server``, ``wireless-controller vap``,
-``wireless-controller wtp-profile``).
+``wireless-controller wtp-profile``, ``firewall sniffer``).
 """
 
 import ipaddress
@@ -59,9 +60,13 @@ def _carry_through_radio(radio: dict[str, Any]) -> dict[str, Any]:
 
 
 #: FortiOS wtp-profile channel-bonding device-DB integer codes. 2=80MHz and
-#: 5=160MHz confirmed live (FGT-MCP-TEST-01 sandbox and myfw01, 2026-08-13);
-#: 3/4/6 filled in by the same enum ordering (40/20/320MHz) but not
-#: independently exercised against a live appliance.
+#: 5=160MHz confirmed live 2026-08-13 (FGT-MCP-TEST-01 sandbox and myfw01).
+#: 4=20MHz and 3=40MHz confirmed live 2026-08-21 against myfw01's real
+#: wtp-profiles: 4 on every radio-1 (2.4GHz) observed across all 4
+#: profiles on the device, 3 on radio-2 (5GHz) on two of them. 6=320MHz is
+#: still unconfirmed -- no profile on this fleet has ever used it -- and
+#: filled in by the same enum ordering purely because the bundled 7.4+
+#: swagger's string enum lists 320MHz as a valid channel-bonding value.
 _CHANNEL_BONDING_INT_TO_MHZ = {2: 80, 3: 40, 4: 20, 5: 160, 6: 320}
 
 
@@ -428,6 +433,190 @@ async def create_device_dhcp_server(
         }
     except Exception as e:
         logger.error(f"DHCP server create failed on {device}: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
+
+
+@mcp.tool()
+async def create_device_sniffer(
+    device: str,
+    interface: str,
+    host: str | None = None,
+    port: str | None = None,
+    protocol: str | None = None,
+    vlan: str | None = None,
+    capture_ipv6: bool = False,
+    capture_non_ip: bool = False,
+    status: str = "enable",
+    logtraffic: str | None = None,
+    sniffer_id: int | None = None,
+    vdom: str = "root",
+) -> dict[str, Any]:
+    """Create a firewall sniffer definition on a managed device.
+
+    This targets the FortiGate's own persistent ``firewall sniffer`` object
+    (device-DB, Configuration API firewall.json /firewall/sniffer) so the
+    capture actually runs on the device's own traffic -- not
+    FortiManager's separate, unrelated local diagnostic sniffer
+    (``/cli/global/system/sniffer``, a different object that happens to
+    share a name). Unlike FMG's local sniffer there is no packet-count cap
+    or start/stop action: the definition captures continuously while
+    ``status`` is "enable", same as any other persistent FortiOS config
+    object -- disable or delete it to stop.
+
+    Args:
+        device: Managed device name
+        interface: Interface name traffic sniffing takes place on
+        host: Hosts to filter for (e.g. "1.1.1.1", "2.2.2.0/24")
+        port: Ports to sniff (e.g. "80", "1-1024")
+        protocol: IANA protocol number as a string (e.g. "6" for TCP)
+        vlan: VLAN(s) to sniff
+        capture_ipv6: Include IPv6 packets (default: False)
+        capture_non_ip: Include non-IP packets (default: False)
+        status: "enable" or "disable" (default: "enable")
+        logtraffic: "all", "utm", or "disable" (optional)
+        sniffer_id: Explicit sniffer ID (0-9999); omit to let FortiOS
+            assign the next available one
+        vdom: VDOM the sniffer lives in (default "root")
+
+    Returns:
+        Creation result including the new sniffer id
+    """
+    client = get_fmg_client()
+    if not client:
+        return {"error": "FortiManager client not connected"}
+
+    try:
+        device = validate_device_name(device)
+        vdom = validate_object_name(vdom, "VDOM")
+        interface = validate_interface_name(interface)
+        if status not in {"enable", "disable"}:
+            raise ValidationError(f"status must be 'enable' or 'disable', got {status!r}")
+        if logtraffic is not None and logtraffic not in {"all", "utm", "disable"}:
+            raise ValidationError(
+                f"logtraffic must be 'all', 'utm', or 'disable', got {logtraffic!r}"
+            )
+        if sniffer_id is not None and not (0 <= sniffer_id <= 9999):
+            raise ValidationError(f"sniffer_id must be 0-9999, got {sniffer_id}")
+
+        data: dict[str, Any] = {
+            "interface": interface,
+            "status": status,
+            "ipv6": "enable" if capture_ipv6 else "disable",
+            "non-ip": "enable" if capture_non_ip else "disable",
+        }
+        if sniffer_id is not None:
+            data["id"] = sniffer_id
+        if host:
+            data["host"] = host
+        if port:
+            data["port"] = port
+        if protocol:
+            data["protocol"] = protocol
+        if vlan:
+            data["vlan"] = vlan
+        if logtraffic is not None:
+            data["logtraffic"] = logtraffic
+
+        result = await client.create_device_sniffer(device=device, vdom=vdom, data=data)
+        new_id = result.get("id") if isinstance(result, dict) else None
+        return {
+            "success": True,
+            "message": f"Sniffer {new_id} created on interface '{interface}' in device DB "
+            f"of '{device}'. Captures continuously while status=enable; push with "
+            "install_device_settings.",
+            "result": result,
+        }
+    except Exception as e:
+        logger.error(f"Sniffer create failed on {device}: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
+
+
+@mcp.tool()
+async def create_device_on_demand_sniffer(
+    device: str,
+    name: str,
+    interface: str,
+    max_packet_count: int = 4000,
+    hosts: list[str] | None = None,
+    ports: list[int] | None = None,
+    protocols: list[int] | None = None,
+    capture_non_ip: bool = False,
+    vdom: str = "root",
+) -> dict[str, Any]:
+    """Create a bounded on-demand packet sniffer on a managed device.
+
+    Distinct FortiOS object from create_device_sniffer's ``firewall
+    sniffer``: this one (``firewall on-demand-sniffer``) is name-keyed
+    rather than id-keyed, and bounded by ``max_packet_count`` rather than
+    running continuously -- closer to a one-shot capture job than a
+    standing diagnostic rule. Filters are lists (multiple hosts/ports/
+    protocols at once), not the single range-string form the persistent
+    sniffer uses.
+
+    How to actually trigger the capture and retrieve packets once this
+    definition exists is not part of FortiOS's Configuration API (this
+    tool only stages the definition, config-CRUD like every other tool in
+    this module) -- that would be a separate monitor-API or CLI mechanism,
+    out of scope here.
+
+    Args:
+        device: Managed device name
+        name: On-demand sniffer name
+        interface: Interface name traffic sniffing takes place on
+        max_packet_count: Maximum packets to capture (default: 4000)
+        hosts: IPv4/IPv6 hosts to filter for
+        ports: Ports to filter for (each 1-65535)
+        protocols: IANA protocol numbers to filter for (each 0-255)
+        capture_non_ip: Include non-IP packets (default: False)
+        vdom: VDOM the sniffer lives in (default "root")
+
+    Returns:
+        Creation result
+    """
+    client = get_fmg_client()
+    if not client:
+        return {"error": "FortiManager client not connected"}
+
+    try:
+        device = validate_device_name(device)
+        vdom = validate_object_name(vdom, "VDOM")
+        name = validate_object_name(name, "on-demand sniffer name")
+        interface = validate_interface_name(interface)
+        if max_packet_count <= 0:
+            raise ValidationError("max_packet_count must be a positive integer")
+        if ports:
+            for p in ports:
+                if not (1 <= p <= 65535):
+                    raise ValidationError(f"port must be 1-65535, got {p}")
+        if protocols:
+            for proto in protocols:
+                if not (0 <= proto <= 255):
+                    raise ValidationError(f"protocol must be 0-255, got {proto}")
+
+        data: dict[str, Any] = {
+            "name": name,
+            "interface": interface,
+            "max-packet-count": max_packet_count,
+            "non-ip-packet": "enable" if capture_non_ip else "disable",
+        }
+        if hosts:
+            data["hosts"] = hosts
+        if ports:
+            data["ports"] = ports
+        if protocols:
+            data["protocols"] = protocols
+
+        result = await client.create_device_on_demand_sniffer(device=device, vdom=vdom, data=data)
+        return {
+            "success": True,
+            "message": f"On-demand sniffer '{name}' created on interface '{interface}' in "
+            f"device DB of '{device}'. Push with install_device_settings.",
+            "result": result,
+        }
+    except Exception as e:
+        logger.error(f"On-demand sniffer create failed on {device}: {e}")
         msg, code = client_safe_error(e)
         return {"error": msg, "error_code": code}
 
