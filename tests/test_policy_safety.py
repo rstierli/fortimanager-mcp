@@ -985,6 +985,75 @@ class TestPartialUpdateGate:
         assert result["status"] == "error"
         mock_fmg_instance.update.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_a_stored_read_missing_only_the_action_key_is_still_gated(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The validity guard only requires ONE of the four scope keys to
+        be present, not specifically "action" -- a stored read carrying
+        srcaddr/dstaddr/service but genuinely no "action" key merged to
+        action=None, which check_policy_safety reads as "not supplied"
+        (not gated) rather than unreadable. Found by adversarial review:
+        a genuinely fully-open stored policy (all/all/ALL) sailed through
+        unscreened whenever its read happened to omit "action"."""
+        monkeypatch.setenv("FMG_POLICY_SAFETY", "strict")
+        get_settings.cache_clear()
+        mock_fmg_instance.get.return_value = (
+            0,
+            {"policyid": 7, "srcaddr": ["all"], "dstaddr": ["all"], "service": ["ALL"]},
+        )
+
+        try:
+            with patch.object(policy_tools, "get_fmg_client", return_value=mock_client):
+                result = await policy_tools.update_local_in_policy(
+                    adom="root",
+                    package="default",
+                    policyid=7,
+                    srcaddr=["all"],
+                    dstaddr=["all"],
+                    service=["ALL"],
+                )
+        finally:
+            get_settings.cache_clear()
+
+        assert result["status"] == "error"
+        mock_fmg_instance.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_disabled_safety_skips_the_stored_read_entirely(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """check_policy_safety already returns None immediately when the
+        gate is disabled, but only after this function had already fetched
+        the stored policy (and could raise on an unreadable one) -- an
+        operator who explicitly turned the gate off got an extra API call
+        and a possible hard failure from a gate that is supposed to allow
+        everything."""
+        monkeypatch.setenv("FMG_POLICY_SAFETY", "disabled")
+        get_settings.cache_clear()
+        mock_fmg_instance.get.side_effect = RuntimeError("stored read must not be attempted")
+        mock_fmg_instance.update.return_value = (0, {})
+
+        try:
+            with patch.object(policy_tools, "get_fmg_client", return_value=mock_client):
+                result = await policy_tools.update_local_in_policy(
+                    adom="root",
+                    package="default",
+                    policyid=7,
+                    srcaddr=["all"],
+                )
+        finally:
+            get_settings.cache_clear()
+
+        assert result["status"] == "success"
+        mock_fmg_instance.get.assert_not_called()
+
 
 class TestTheGateDoesNotBlockRemediation:
     """An update that names none of the gate's fields cannot change how

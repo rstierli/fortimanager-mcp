@@ -12,6 +12,7 @@ from typing import Any
 
 from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.server import get_fmg_client, mcp
+from fortimanager_mcp.utils.config import get_settings
 from fortimanager_mcp.utils.errors import ResourceNotFoundError, client_safe_error
 from fortimanager_mcp.utils.install_gate import package_revision, record_preview
 from fortimanager_mcp.utils.responses import error_response
@@ -454,7 +455,16 @@ async def _check_partial_update_safety(
     into the address lists the same way :func:`collect_scope_values`
     already does for a revert snapshot, via the same live-verified 0/1
     encoding :func:`resolve_negate_for_safety_check` already handles.
+
+    Skips the read entirely, gate included, when the deployment has the
+    gate off: ``check_policy_safety`` already does this internally, but
+    only after this function has fetched the stored policy and possibly
+    raised on an unreadable one -- an operator who explicitly disabled the
+    gate got an extra API call and a hard failure from a gate that is
+    supposed to allow everything.
     """
+    if get_settings().FMG_POLICY_SAFETY == "disabled":
+        return None
     if any(field is not None for field in (srcaddr, dstaddr, service, action)) and None in (
         srcaddr,
         dstaddr,
@@ -501,7 +511,17 @@ async def _check_partial_update_safety(
         if service_negate is None:
             service_negate = resolve_negate_for_safety_check(stored, "service-negate")
         if action is None:
-            action = stored.get("action")
+            # The validity guard above only requires ONE of the four scope
+            # keys to be present, not specifically "action" -- a stored
+            # read that has srcaddr/dstaddr/service but genuinely lacks an
+            # "action" key merges to None here, and check_policy_safety
+            # reads a None action as "not supplied" (not gated) rather
+            # than unreadable. There is no default to fall back on for a
+            # write that is happening regardless, so the absence has to be
+            # read the dangerous way, same as revert_firewall_policy's own
+            # handling of a snapshot with no "action" key at all.
+            raw_action = stored.get("action")
+            action = "accept" if raw_action is None else raw_action
 
     return check_policy_safety(
         srcaddr,
