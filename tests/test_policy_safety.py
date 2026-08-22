@@ -1,9 +1,11 @@
 """Tests for policy permissiveness safety validation."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from fortimanager_mcp.api.client import FortiManagerClient
+from fortimanager_mcp.tools import policy_tools
 from fortimanager_mcp.utils.config import get_settings
 from fortimanager_mcp.utils.validation import check_policy_permissiveness
 
@@ -376,24 +378,84 @@ class TestPolicyToolSafetyStrict:
         assert "blocked" in result["message"].lower()
 
     @pytest.mark.asyncio
-    async def test_update_policy_partial_fields_not_checked(self, monkeypatch):
-        """Partial update with only srcaddr should not trigger safety check."""
+    async def test_update_policy_partial_fields_are_checked_against_the_stored_policy(
+        self, monkeypatch
+    ):
+        """This used to assert that a partial update was NOT checked.
+
+        That was the gap upstream #71 reported: an update naming only
+        addresses skipped the gate entirely, so setting srcaddr=all on an
+        existing accept policy was written unscreened. The route is kept and
+        only the assertion flips, so the test still covers the same call.
+
+        The stored policy decides the answer, which is the point: narrow
+        here, so widening one field is not yet any-to-any and still writes.
+        """
         monkeypatch.setenv("FORTIMANAGER_HOST", "test.example.com")
         monkeypatch.setenv("FMG_POLICY_SAFETY", "strict")
+        get_settings.cache_clear()
 
         from fortimanager_mcp.tools.policy_tools import update_firewall_policy
 
-        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client") as mock_client:
-            mock_client.return_value = AsyncMock()
-            mock_client.return_value.update_firewall_policy = AsyncMock(return_value={})
-            result = await update_firewall_policy(
-                adom="root",
-                package="default",
-                policyid=10,
-                srcaddr=["all"],
-            )
+        try:
+            with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client") as mock_client:
+                mock_client.return_value = AsyncMock()
+                mock_client.return_value.get_firewall_policy = AsyncMock(
+                    return_value={
+                        "policyid": 10,
+                        "srcaddr": ["LAN"],
+                        "dstaddr": ["Server-Net"],
+                        "service": ["HTTPS"],
+                        "action": 1,
+                    }
+                )
+                mock_client.return_value.update_firewall_policy = AsyncMock(return_value={})
+                result = await update_firewall_policy(
+                    adom="root",
+                    package="default",
+                    policyid=10,
+                    srcaddr=["all"],
+                )
+        finally:
+            get_settings.cache_clear()
 
         assert result["status"] == "success"
+
+    @pytest.mark.asyncio
+    async def test_update_policy_partial_widening_of_an_accept_policy_is_blocked(self, monkeypatch):
+        """The other half of the same call: same shape, dangerous stored
+        policy, and now it refuses."""
+        monkeypatch.setenv("FORTIMANAGER_HOST", "test.example.com")
+        monkeypatch.setenv("FMG_POLICY_SAFETY", "strict")
+        get_settings.cache_clear()
+
+        from fortimanager_mcp.tools.policy_tools import update_firewall_policy
+
+        try:
+            with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client") as mock_client:
+                mock_client.return_value = AsyncMock()
+                mock_client.return_value.get_firewall_policy = AsyncMock(
+                    return_value={
+                        "policyid": 10,
+                        "srcaddr": ["all"],
+                        "dstaddr": ["all"],
+                        "service": ["ALL"],
+                        "action": 1,
+                    }
+                )
+                update_mock = AsyncMock(return_value={})
+                mock_client.return_value.update_firewall_policy = update_mock
+                result = await update_firewall_policy(
+                    adom="root",
+                    package="default",
+                    policyid=10,
+                    srcaddr=["all"],
+                )
+        finally:
+            get_settings.cache_clear()
+
+        assert result["status"] == "error"
+        update_mock.assert_not_awaited()
 
 
 class TestPolicyToolSafetyWarn:
@@ -682,3 +744,479 @@ class TestDigitLikeActionsDoNotCrashTheGate:
         result = check_policy_permissiveness(["all"], ["all"], ["ALL"], action)
         assert result is not None
         assert "fully open" in result
+
+
+class TestPartialUpdateGate:
+    """An update is gated against the policy as it will exist.
+
+    upstream #71: the three update tools required srcaddr, dstaddr and
+    action to arrive together and skipped the gate entirely otherwise, so an
+    update setting all/all/ALL on an existing accept policy was written
+    completely ungated whenever action was omitted.
+    """
+
+    @pytest.mark.asyncio
+    async def test_widening_an_accept_policy_without_naming_action_is_blocked(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("FMG_POLICY_SAFETY", "strict")
+        get_settings.cache_clear()
+        # FMG returns the enum as an int on a read; 1 is accept.
+        mock_fmg_instance.get.return_value = (0, {"policyid": 7, "action": 1})
+
+        try:
+            with patch.object(policy_tools, "get_fmg_client", return_value=mock_client):
+                result = await policy_tools.update_local_in_policy(
+                    adom="root",
+                    package="default",
+                    policyid=7,
+                    srcaddr=["all"],
+                    dstaddr=["all"],
+                    service=["ALL"],
+                )
+        finally:
+            get_settings.cache_clear()
+
+        assert result["status"] == "error"
+        mock_fmg_instance.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_widening_a_deny_policy_without_naming_action_still_writes(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Reading the stored action is what keeps this from over-blocking:
+        all/all on a deny policy is a lockdown, not a permissive rule, and
+        assuming accept would have refused it."""
+        monkeypatch.setenv("FMG_POLICY_SAFETY", "strict")
+        get_settings.cache_clear()
+        mock_fmg_instance.get.return_value = (0, {"policyid": 7, "action": 0})
+        mock_fmg_instance.update.return_value = (0, {})
+
+        try:
+            with patch.object(policy_tools, "get_fmg_client", return_value=mock_client):
+                result = await policy_tools.update_local_in_policy(
+                    adom="root",
+                    package="default",
+                    policyid=7,
+                    srcaddr=["all"],
+                    dstaddr=["all"],
+                    service=["ALL"],
+                )
+        finally:
+            get_settings.cache_clear()
+
+        assert result["status"] == "success"
+        mock_fmg_instance.update.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_firewall_policy_update_reads_the_stored_action_too(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("FMG_POLICY_SAFETY", "strict")
+        get_settings.cache_clear()
+        mock_fmg_instance.get.return_value = (0, {"policyid": 3, "action": "accept"})
+
+        try:
+            with patch.object(policy_tools, "get_fmg_client", return_value=mock_client):
+                result = await policy_tools.update_firewall_policy(
+                    adom="root",
+                    package="default",
+                    policyid=3,
+                    srcaddr=["all"],
+                    dstaddr=["all"],
+                    service=["ALL"],
+                )
+        finally:
+            get_settings.cache_clear()
+
+        assert result["status"] == "error"
+        mock_fmg_instance.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_complete_update_does_not_pay_for_the_extra_read(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The read only happens when something the gate needs is missing."""
+        monkeypatch.setenv("FMG_POLICY_SAFETY", "strict")
+        get_settings.cache_clear()
+        mock_fmg_instance.update.return_value = (0, {})
+
+        try:
+            with patch.object(policy_tools, "get_fmg_client", return_value=mock_client):
+                result = await policy_tools.update_local_in_policy(
+                    adom="root",
+                    package="default",
+                    policyid=7,
+                    srcaddr=["LAN"],
+                    dstaddr=["DMZ"],
+                    service=["HTTPS"],
+                    action="accept",
+                )
+        finally:
+            get_settings.cache_clear()
+
+        assert result["status"] == "success"
+        mock_fmg_instance.get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_stored_policy_stops_the_update(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """If the policy cannot be read the gate has nothing to judge, so the
+        update must not proceed on an unscreened guess."""
+        monkeypatch.setenv("FMG_POLICY_SAFETY", "strict")
+        get_settings.cache_clear()
+        mock_fmg_instance.get.side_effect = RuntimeError("read failed")
+
+        try:
+            with patch.object(policy_tools, "get_fmg_client", return_value=mock_client):
+                result = await policy_tools.update_local_in_policy(
+                    adom="root",
+                    package="default",
+                    policyid=7,
+                    srcaddr=["all"],
+                    dstaddr=["all"],
+                    service=["ALL"],
+                )
+        finally:
+            get_settings.cache_clear()
+
+        assert result["status"] == "error"
+        mock_fmg_instance.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stored_negate_is_merged_on_a_partial_update(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """srcaddr/dstaddr/service/action were merged from the stored
+        policy, but srcaddr_negate/dstaddr_negate/service_negate were
+        passed through as whatever the caller sent -- unset reads as
+        False regardless of the real stored value. A stored
+        srcaddr-negate=1 (matches everything except the listed object,
+        effectively any-source) combined with a caller-widened dstaddr
+        computed as narrow+broad (safe) instead of broad+broad."""
+        monkeypatch.setenv("FMG_POLICY_SAFETY", "strict")
+        get_settings.cache_clear()
+        mock_fmg_instance.get.return_value = (
+            0,
+            {
+                "policyid": 7,
+                "srcaddr": ["Some-Object"],
+                "srcaddr-negate": 1,
+                "dstaddr": ["OldDst"],
+                "service": ["OldSvc"],
+                "action": 1,
+            },
+        )
+
+        try:
+            with patch.object(policy_tools, "get_fmg_client", return_value=mock_client):
+                result = await policy_tools.update_local_in_policy(
+                    adom="root",
+                    package="default",
+                    policyid=7,
+                    dstaddr=["all"],
+                )
+        finally:
+            get_settings.cache_clear()
+
+        assert result["status"] == "error"
+        mock_fmg_instance.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stored_negate_is_merged_even_when_its_own_address_is_explicit(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The address and its negate flag are independent fields on the
+        wire: a caller re-stating srcaddr explicitly without also
+        re-stating srcaddr_negate leaves the *stored* negate in effect
+        after the write (partial merge), so it must still be read off the
+        stored policy even though srcaddr itself was not None. A fetch is
+        already happening here because action is left unset -- this pins
+        that the negate merge is not nested under "and srcaddr was also
+        None"."""
+        monkeypatch.setenv("FMG_POLICY_SAFETY", "strict")
+        get_settings.cache_clear()
+        mock_fmg_instance.get.return_value = (
+            0,
+            {
+                "policyid": 7,
+                "srcaddr": ["Some-Object"],
+                "srcaddr-negate": 1,
+                "dstaddr": ["OldDst"],
+                "service": ["OldSvc"],
+                "action": 1,
+            },
+        )
+
+        try:
+            with patch.object(policy_tools, "get_fmg_client", return_value=mock_client):
+                result = await policy_tools.update_local_in_policy(
+                    adom="root",
+                    package="default",
+                    policyid=7,
+                    srcaddr=["Some-Object"],
+                    dstaddr=["all"],
+                )
+        finally:
+            get_settings.cache_clear()
+
+        assert result["status"] == "error"
+        mock_fmg_instance.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_stored_read_missing_only_the_action_key_is_still_gated(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The validity guard only requires ONE of the four scope keys to
+        be present, not specifically "action" -- a stored read carrying
+        srcaddr/dstaddr/service but genuinely no "action" key merged to
+        action=None, which check_policy_safety reads as "not supplied"
+        (not gated) rather than unreadable. Found by adversarial review:
+        a genuinely fully-open stored policy (all/all/ALL) sailed through
+        unscreened whenever its read happened to omit "action"."""
+        monkeypatch.setenv("FMG_POLICY_SAFETY", "strict")
+        get_settings.cache_clear()
+        mock_fmg_instance.get.return_value = (
+            0,
+            {"policyid": 7, "srcaddr": ["all"], "dstaddr": ["all"], "service": ["ALL"]},
+        )
+
+        try:
+            with patch.object(policy_tools, "get_fmg_client", return_value=mock_client):
+                result = await policy_tools.update_local_in_policy(
+                    adom="root",
+                    package="default",
+                    policyid=7,
+                    srcaddr=["all"],
+                    dstaddr=["all"],
+                    service=["ALL"],
+                )
+        finally:
+            get_settings.cache_clear()
+
+        assert result["status"] == "error"
+        mock_fmg_instance.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_disabled_safety_skips_the_stored_read_entirely(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """check_policy_safety already returns None immediately when the
+        gate is disabled, but only after this function had already fetched
+        the stored policy (and could raise on an unreadable one) -- an
+        operator who explicitly turned the gate off got an extra API call
+        and a possible hard failure from a gate that is supposed to allow
+        everything."""
+        monkeypatch.setenv("FMG_POLICY_SAFETY", "disabled")
+        get_settings.cache_clear()
+        mock_fmg_instance.get.side_effect = RuntimeError("stored read must not be attempted")
+        mock_fmg_instance.update.return_value = (0, {})
+
+        try:
+            with patch.object(policy_tools, "get_fmg_client", return_value=mock_client):
+                result = await policy_tools.update_local_in_policy(
+                    adom="root",
+                    package="default",
+                    policyid=7,
+                    srcaddr=["all"],
+                )
+        finally:
+            get_settings.cache_clear()
+
+        assert result["status"] == "success"
+        mock_fmg_instance.get.assert_not_called()
+
+
+class TestTheGateDoesNotBlockRemediation:
+    """An update that names none of the gate's fields cannot change how
+    permissive the policy is.
+
+    Screening it anyway made strict mode refuse `status="disable"`,
+    `utm_status=True` and even a rename on an existing all/all/accept
+    policy, which is the gate blocking the two fastest ways to remediate
+    the exact policy it objects to. Found by adversarial review of the
+    first version of this change.
+    """
+
+    @staticmethod
+    def _wide_open_client() -> tuple[FortiManagerClient, MagicMock]:
+        client = FortiManagerClient(host="h", username="u", password="p")
+        instance = MagicMock()
+        instance.get.return_value = (
+            0,
+            {
+                "policyid": 5,
+                "srcaddr": ["all"],
+                "dstaddr": ["all"],
+                "service": ["ALL"],
+                "action": 1,
+            },
+        )
+        instance.update.return_value = (0, {})
+        client._fmg = instance
+        client._connected = True
+        return client, instance
+
+    @pytest.mark.parametrize(
+        ("label", "kwargs"),
+        [
+            ("disable", {"status": "disable"}),
+            ("attach UTM", {"utm_status": True, "av_profile": "default"}),
+            ("rename", {"name": "renamed"}),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_a_non_scope_update_is_not_blocked(
+        self, label: str, kwargs: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("FMG_POLICY_SAFETY", "strict")
+        get_settings.cache_clear()
+        client, instance = self._wide_open_client()
+
+        try:
+            with patch.object(policy_tools, "get_fmg_client", return_value=client):
+                result = await policy_tools.update_firewall_policy(
+                    adom="root", package="default", policyid=5, **kwargs
+                )
+        finally:
+            get_settings.cache_clear()
+
+        assert result["status"] == "success", label
+        assert instance.update.call_count == 1, label
+        # it also costs nothing: no field the gate needs was supplied,
+        # so there is no reason to read the stored policy
+        instance.get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_widening_is_still_blocked(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The guard must not become a way around the gate."""
+        monkeypatch.setenv("FMG_POLICY_SAFETY", "strict")
+        get_settings.cache_clear()
+        client, instance = self._wide_open_client()
+
+        try:
+            with patch.object(policy_tools, "get_fmg_client", return_value=client):
+                result = await policy_tools.update_firewall_policy(
+                    adom="root",
+                    package="default",
+                    policyid=5,
+                    srcaddr=["all"],
+                    dstaddr=["all"],
+                    service=["ALL"],
+                )
+        finally:
+            get_settings.cache_clear()
+
+        assert result["status"] == "error"
+        instance.update.assert_not_called()
+
+    @pytest.mark.parametrize("empty", [[], None, {}, {"status": "error"}])
+    @pytest.mark.asyncio
+    async def test_an_empty_stored_read_refuses_rather_than_passing(
+        self, empty: object, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Coercing a field-less read to {} fed the gate all-None, which
+        passes, so a widening update went through unscreened. That is the
+        fail-open this function's own docstring rules out."""
+        monkeypatch.setenv("FMG_POLICY_SAFETY", "strict")
+        get_settings.cache_clear()
+        client, instance = self._wide_open_client()
+        instance.get.return_value = (0, empty)
+
+        try:
+            with patch.object(policy_tools, "get_fmg_client", return_value=client):
+                result = await policy_tools.update_firewall_policy(
+                    adom="root",
+                    package="default",
+                    policyid=5,
+                    srcaddr=["all"],
+                    dstaddr=["all"],
+                    service=["ALL"],
+                )
+        finally:
+            get_settings.cache_clear()
+
+        assert result["status"] == "error"
+        instance.update.assert_not_called()
+
+
+class TestEmptyActionIsUnreadableNotAbsent:
+    """A supplied-but-empty action was read as "not accept", so the gate
+    let a fully open policy through.
+
+    Flagged during review of this PR as an unconfirmed edge case, on the
+    grounds that a real FMG response may never carry it. That is true of
+    the STORED-read path and beside the point: ``action`` is a caller
+    parameter on every create and update tool, so the shape is reachable
+    from the tool surface without FortiManager producing it at all.
+
+    Measured on ``dbc38fb``, strict mode, same all/all/ALL policy:
+
+        action="accept"  ->  blocked
+        action=""        ->  gate returned None, the write proceeded
+        action="  "      ->  gate returned None, the write proceeded
+
+    None still means "not supplied" and stays ungated, which is the
+    documented contract for a create that omits action to take FMG's
+    default. An empty string is not that: the caller named the field and
+    gave it no readable value, which is the same position as ``object()``
+    or ``True``, both of which already refuse.
+    """
+
+    @pytest.mark.parametrize("action", ["", "   ", "\t", "\n"])
+    def test_an_empty_action_refuses_on_a_fully_open_policy(self, action):
+        result = check_policy_permissiveness(["all"], ["all"], ["ALL"], action)
+        assert result is not None
+        assert "cannot read" in result
+
+    @pytest.mark.parametrize("action", ["", "   "])
+    def test_an_empty_action_refuses_even_when_narrow(self, action):
+        """Consistent with every other unreadable shape: the refusal is
+        about not being able to tell what the action is, so it does not
+        depend on the addresses looking broad. Deliberate, and it is a
+        behaviour change for a narrow policy sent with an empty action,
+        which is malformed input the tool should name rather than accept.
+        """
+        result = check_policy_permissiveness(["DMZ"], ["Web"], ["HTTP"], action)
+        assert result is not None
+        assert "cannot read" in result
+
+    def test_none_is_still_not_gated(self):
+        """The contract that must NOT change. A create or update that
+        omits action entirely takes FMG's default and stays ungated."""
+        assert check_policy_permissiveness(["all"], ["all"], ["ALL"], None) is None
+
+    def test_a_real_action_still_behaves(self):
+        """Both directions of the pre-existing behaviour, so the fix
+        cannot have turned the gate into a blanket refuser."""
+        assert check_policy_permissiveness(["all"], ["all"], ["ALL"], "deny") is None
+        blocked = check_policy_permissiveness(["all"], ["all"], ["ALL"], "accept")
+        assert blocked is not None and "fully open" in blocked

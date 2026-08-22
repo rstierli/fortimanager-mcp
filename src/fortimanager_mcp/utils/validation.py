@@ -1171,6 +1171,18 @@ def _normalize_policy_action(value: Any) -> Any:
         return "accept" if value == 1 else "deny"
     if isinstance(value, str):
         text = value.strip().lower()
+        if not text:
+            # Supplied but empty is NOT the same as absent. None means the
+            # caller omitted the field and FMG's default applies, which
+            # stays ungated by contract. An empty string means the caller
+            # named the field and gave it nothing readable, which is the
+            # same position as object() or True below. Before this, "" fell
+            # through to the `action_name != "accept"` branch and read as a
+            # non-accept action, so a fully open policy was not gated at
+            # all. Reachable from the tool surface without FortiManager
+            # producing it, since action is a caller parameter on every
+            # create and update path.
+            return _UNREADABLE
         if text.isdigit():
             # str.isdigit() is True for characters int() will not take:
             # superscripts and enclosed forms ("\u00b9", "\u2460") are
@@ -1348,6 +1360,75 @@ def check_policy_permissiveness(
         "Policy is overly permissive: srcaddr='all', dstaddr='all', "
         "action='accept'. This allows traffic from any source to any destination." + negate_note
     )
+
+
+def collect_scope_values(source: dict[str, Any], *keys: str) -> list[Any]:
+    """Collect every scope value ``source`` carries for one gate argument.
+
+    Shared by every caller that feeds the gate a policy read from
+    somewhere other than its own explicit arguments (a revert snapshot, a
+    partial-update merge): the gate used to be fed a narrow key
+    projection while the actual write forwarded the whole object, so scope
+    expressed in any other key was written unscreened (upstream #69).
+    ``srcaddr6``/``dstaddr6`` are the case that reaches a real FMG policy:
+    this repo's create/update tools never write them directly, but a
+    stored policy or a revert snapshot comes from FMG rather than from
+    this repo.
+
+    Values are concatenated rather than merged per key -- the gate only
+    asks whether anything in the field is "all", so a v6 any-to-any is as
+    broad as a v4 one and should read the same.
+
+    If NONE of ``keys`` appear in ``source`` at all, returns ``["all"]``
+    rather than ``[]``. A caller reaches for this helper specifically
+    because it cannot fully trust that absence means "not set" -- a
+    revert's write is a partial merge (FMG's ``update``, confirmed live:
+    fields absent from the payload leave the live object's existing value
+    untouched, not cleared), so a key missing from a hand-built or
+    truncated snapshot means the live policy's current, unknown value
+    survives. Reading that as "narrow" is exactly the silent-bypass shape
+    this function exists to close.
+    """
+    if not any(key in source for key in keys):
+        return ["all"]
+    collected: list[Any] = []
+    for key in keys:
+        value = source.get(key)
+        if value is None:
+            continue
+        collected.extend(value if isinstance(value, list | tuple) else [value])
+    return collected
+
+
+def resolve_negate_for_safety_check(source: dict[str, Any], *keys: str) -> bool:
+    """Resolve one gate negate argument from every ``*-negate`` key
+    ``source`` might carry it under.
+
+    A real FMG policy's negate fields are internal 0/1 integers (confirmed
+    via ``srcaddr-negate`` on a test policy created with
+    ``srcaddr_negate=True``), not the "enable"/"disable" string a caller
+    sends when writing a new policy. An int compared with ``== "enable"``
+    is always False -- negation on a read or reverted policy was invisible
+    to the gate regardless of its real value.
+
+    Takes every negate key the same way :func:`collect_scope_values` takes
+    every scope key: a v4/v6 pair (e.g. "srcaddr-negate",
+    "srcaddr6-negate") ORed together, not just the v4 one. Feeding the
+    gate merged srcaddr+srcaddr6 members while only ever reading
+    srcaddr-negate meant a v6-only negated scope -- effectively
+    any-source -- reached the gate as unnegated and narrow.
+    """
+
+    def _one(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, int):
+            return value == 1
+        if isinstance(value, str):
+            return value == "enable"
+        return False
+
+    return any(_one(source.get(key)) for key in keys)
 
 
 def check_policy_safety(
