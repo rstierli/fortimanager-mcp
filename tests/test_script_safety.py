@@ -410,6 +410,26 @@ class TestExecuteScriptOnDevicesListCoercion:
             {"name": "FGT-02", "vdom": "global"},
         ]
 
+    @pytest.mark.asyncio
+    async def test_an_empty_device_list_is_rejected(self, monkeypatch):
+        """Unlike its three sibling bulk-device tools, this one had no
+        `if not devices` guard: an empty list reached client.execute_script
+        with no `scope` key at all (the client only adds it `if scope:`),
+        submitting the script unscoped instead of refusing the call."""
+        monkeypatch.setenv("FORTIMANAGER_HOST", "test.example.com")
+        monkeypatch.setenv("FMG_SCRIPT_SAFETY", "disabled")
+
+        from fortimanager_mcp.tools.script_tools import execute_script_on_devices
+
+        client = AsyncMock()
+        client.execute_script = AsyncMock(return_value={"task": 1})
+
+        with patch("fortimanager_mcp.tools.script_tools.get_fmg_client", return_value=client):
+            result = await execute_script_on_devices(adom="root", script="safe", devices=[])
+
+        assert "error" in result
+        client.execute_script.assert_not_called()
+
 
 class TestScriptTypeSafety:
     """Tcl scripts assemble commands at runtime, defeating static screening.

@@ -494,6 +494,9 @@ async def execute_script_on_devices(
     if not client:
         return {"error": "FortiManager client not connected"}
 
+    if not devices:
+        return {"error": "No devices provided"}
+
     try:
         adom = validate_adom(adom)
         script = validate_object_name(script, "script")
