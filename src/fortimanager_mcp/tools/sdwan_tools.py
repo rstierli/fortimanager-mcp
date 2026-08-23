@@ -535,7 +535,15 @@ async def assign_sdwan_template_bulk(
         devices: List of devices [{"name": "dev1", "vdom": "root"}, ...]
 
     Returns:
-        Assignment result
+        dict: Assignment result with keys:
+            - success: True
+            - requested_count: Number of devices in the request. NOT a
+              count of assignments actually made: FortiManager reports no
+              per-device result for this scope-member ADD, and the client
+              raises on any non-zero code, so everything reaching this
+              line is a code 0 that says nothing about individual devices
+              (same shape as #78's device-group bulk tools).
+            - result: Raw client result
     """
     client = get_fmg_client()
     if not client:
@@ -547,7 +555,13 @@ async def assign_sdwan_template_bulk(
         result = await client.assign_sdwan_template(adom=adom, template=template, scope=devices)
         return {
             "success": True,
-            "message": f"SD-WAN template '{template}' assigned to {len(devices)} devices",
+            "requested_count": len(devices),
+            "message": (
+                f"Requested assignment of SD-WAN template '{template}' to "
+                f"{len(devices)} device(s). FortiManager does not report "
+                "per-device results, so this does not confirm the assignments "
+                "were made."
+            ),
             "result": result,
         }
     except Exception as e:
