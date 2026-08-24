@@ -20,6 +20,7 @@ from fortimanager_mcp.utils.validation import (
     ValidationError,
     coerce_device_name_list,
     validate_adom,
+    validate_device_dict_list,
     validate_device_name,
     validate_object_name,
 )
@@ -536,6 +537,9 @@ async def add_devices_bulk(
         >>> result = await add_devices_bulk("root", devices)
     """
     try:
+        # Shape first: a dict or a str is truthy, so the emptiness check
+        # below cannot see either of them (#86).
+        devices = validate_device_dict_list(devices)
         if not devices:
             return {"status": "error", "message": "No devices provided"}
 
