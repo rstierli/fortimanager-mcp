@@ -58,7 +58,9 @@ from fortimanager_mcp.utils.errors import client_safe_error
 from fortimanager_mcp.utils.validation import (
     ValidationError,
     check_policy_safety,
+    collect_scope_values,
     redact_config_text_secrets,
+    resolve_negate_for_safety_check,
     validate_adom,
     validate_device_name,
     validate_package_name,
@@ -135,73 +137,6 @@ def _prepare_policy_snapshot(config: str | dict[str, Any]) -> dict[str, Any]:
     if "policyid" not in snapshot:
         raise ValidationError("config must include 'policyid' (which policy this snapshot reverts)")
     return snapshot
-
-
-def _snapshot_scope(snapshot: dict[str, Any], *keys: str) -> list[Any]:
-    """Collect every scope value a snapshot carries for one gate argument.
-
-    The gate used to be fed a four-key projection of the snapshot while
-    ``client.revert_firewall_policy_snapshot`` forwards the whole dict, so
-    scope expressed in any other key was written unscreened (upstream #69).
-    ``srcaddr6``/``dstaddr6`` are the case that reaches a real FMG policy:
-    this repo's create path never writes them, but a revert snapshot comes
-    from FMG rather than from this repo.
-
-    Values are concatenated rather than merged per key -- the gate only
-    asks whether anything in the field is "all", so a v6 any-to-any is as
-    broad as a v4 one and should read the same.
-
-    If NONE of ``keys`` appear in the snapshot at all, returns ``["all"]``
-    rather than ``[]``. The revert write is a partial merge (FMG's
-    ``update``, confirmed live: fields absent from the payload leave the
-    live object's existing value untouched, not cleared), so a key missing
-    from the snapshot means the live policy's current -- unknown -- value
-    survives. Reading that as "narrow" is exactly the silent-bypass shape
-    this function exists to close: a hand-built or truncated snapshot that
-    simply omits ``srcaddr`` would otherwise sail through the gate no
-    matter how broad the live policy's actual scope already is.
-    """
-    if not any(key in snapshot for key in keys):
-        return ["all"]
-    collected: list[Any] = []
-    for key in keys:
-        value = snapshot.get(key)
-        if value is None:
-            continue
-        collected.extend(value if isinstance(value, list | tuple) else [value])
-    return collected
-
-
-def _snapshot_negate_for_safety_check(snapshot: dict[str, Any], *keys: str) -> bool:
-    """Resolve one gate negate argument from every ``*-negate`` key a
-    snapshot might carry it under.
-
-    Same live-verified encoding gap as action above: a real snapshot's
-    negate fields are FMG's internal 0/1 integers (confirmed via
-    srcaddr-negate on a test policy created with srcaddr_negate=True),
-    not the "enable"/"disable" string a caller sends when writing a new
-    policy. An int was previously compared with `== "enable"`, which is
-    always False -- negation on a reverted policy was invisible to the
-    gate regardless of its real value.
-
-    Takes every negate key the same way _snapshot_scope takes every scope
-    key: a v4/v6 pair (e.g. "srcaddr-negate", "srcaddr6-negate") ORed
-    together, not just the v4 one. Feeding _snapshot_scope the merged
-    srcaddr+srcaddr6 members while only ever reading srcaddr-negate meant
-    a v6-only negated scope -- effectively any-source -- reached the gate
-    as unnegated and narrow.
-    """
-
-    def _one(value: Any) -> bool:
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, int):
-            return value == 1
-        if isinstance(value, str):
-            return value == "enable"
-        return False
-
-    return any(_one(snapshot.get(key)) for key in keys)
 
 
 async def _run_cache_diff(
@@ -836,17 +771,17 @@ async def revert_firewall_policy(
         # absence has to be read the dangerous way (upstream #69).
         raw_action = snapshot.get("action")
         safety_result = check_policy_safety(
-            _snapshot_scope(snapshot, "srcaddr", "srcaddr6"),
-            _snapshot_scope(snapshot, "dstaddr", "dstaddr6"),
-            _snapshot_scope(snapshot, "service"),
+            collect_scope_values(snapshot, "srcaddr", "srcaddr6"),
+            collect_scope_values(snapshot, "dstaddr", "dstaddr6"),
+            collect_scope_values(snapshot, "service"),
             "accept" if raw_action is None else raw_action,
-            srcaddr_negate=_snapshot_negate_for_safety_check(
+            srcaddr_negate=resolve_negate_for_safety_check(
                 snapshot, "srcaddr-negate", "srcaddr6-negate"
             ),
-            dstaddr_negate=_snapshot_negate_for_safety_check(
+            dstaddr_negate=resolve_negate_for_safety_check(
                 snapshot, "dstaddr-negate", "dstaddr6-negate"
             ),
-            service_negate=_snapshot_negate_for_safety_check(snapshot, "service-negate"),
+            service_negate=resolve_negate_for_safety_check(snapshot, "service-negate"),
         )
         if safety_result:
             if safety_result.get("status") == "error":
