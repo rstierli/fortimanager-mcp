@@ -32,6 +32,7 @@ from fortimanager_mcp.utils.validation import (
     validate_adom,
     validate_device_name,
     validate_package_name,
+    validate_task_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -402,6 +403,7 @@ async def get_task(
         >>> print(f"Progress: {result['task'].get('percent', 0)}%")
     """
     try:
+        task_id = validate_task_id(task_id)
         client = _get_client()
         task = await client.get_task(task_id)
 
@@ -453,6 +455,7 @@ async def wait_for_task(
     import asyncio
 
     try:
+        task_id = validate_task_id(task_id)
         client = _get_client()
         # Deadline-bound the whole wait and each poll (bundle C of #11): a
         # huge timeout must not park the request for hours, a poll_interval

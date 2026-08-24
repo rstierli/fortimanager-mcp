@@ -156,3 +156,40 @@ class TestWorkspaceTools:
             result = await system_tools.unlock_adom(adom="root")
 
         assert result["status"] == "success"
+
+
+class TestTaskIdGuards:
+    """get_task and wait_for_task interpolate task_id into /task/task/{id}.
+
+    upstream #71 named delete_task, but these two reach the same URL through
+    the client and have the same dynamic-mode gap: the int annotation is
+    enforced in full mode only.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad", ["../../sys/status", 1.5, True, None, -3])
+    async def test_get_task_refuses_a_bad_id(
+        self, bad: object, mock_client_configured: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        from fortimanager_mcp.tools import system_tools
+
+        with patch.object(system_tools, "get_fmg_client", return_value=mock_client_configured):
+            result = await system_tools.get_task(bad)
+
+        assert result["status"] == "error"
+        assert result["error_code"] == "validation_error"
+        mock_fmg_instance.get.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad", ["../../sys/status", 1.5, True, None, -3])
+    async def test_wait_for_task_refuses_a_bad_id(
+        self, bad: object, mock_client_configured: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        from fortimanager_mcp.tools import system_tools
+
+        with patch.object(system_tools, "get_fmg_client", return_value=mock_client_configured):
+            result = await system_tools.wait_for_task(bad, timeout=1, poll_interval=1)
+
+        assert result["status"] == "error"
+        assert result["error_code"] == "validation_error"
+        mock_fmg_instance.get.assert_not_called()

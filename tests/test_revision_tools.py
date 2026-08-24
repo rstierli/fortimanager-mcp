@@ -1020,6 +1020,15 @@ class TestValidateRevision:
             revision_tools._validate_revision(-1)
         assert revision_tools._validate_revision(-1, allow_latest=True) == -1
 
+    def test_rejects_bool(self) -> None:
+        """bool is a subclass of int, so True would otherwise pass
+        isinstance(revision, int) and 1 < revision is False, silently
+        reverting to revision 1 on a destructive revert call instead of
+        being refused -- the same gap validate_task_id/validate_policy_id
+        close elsewhere."""
+        with pytest.raises(revision_tools.ValidationError):
+            revision_tools._validate_revision(True)
+
 
 class TestPreparePolicySnapshot:
     def test_parses_json_string(self) -> None:
