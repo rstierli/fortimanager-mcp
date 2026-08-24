@@ -1488,8 +1488,48 @@ def _redact_preview(value: Any) -> Any:
     if isinstance(value, dict):
         return {k: _redact_preview(v) for k, v in value.items()}
     if isinstance(value, list):
-        return [_redact_preview(v) for v in value]
+        return _redact_preview_list(value)
     return value
+
+
+def _redact_preview_list(value: list[Any]) -> list[Any]:
+    """Redact a list, treating each run of strings as one block of CLI.
+
+    redact_config_text_secrets handles a quoted value spanning several
+    lines by consuming continuation lines until the quote closes. That
+    tracking lives inside one string, so redacting each element on its own
+    matched only the line carrying the directive and let every later line
+    of the same secret through verbatim (upstream #85).
+
+    Joining a run and redacting it as one text gives those lines the same
+    treatment they get when the preview arrives as a single string. The
+    result is SHORTER than the input when a secret spanned elements,
+    because the redactor drops the continuation lines rather than keeping
+    them partially: that is the same fail-closed trade the single-string
+    path already makes, and the lines it drops carry only secret content.
+
+    Only CONTIGUOUS runs are joined. A non-string element belongs to a
+    different part of the envelope, so an unterminated quote must not
+    reach across it and eat the far side.
+    """
+    out: list[Any] = []
+    run: list[str] = []
+
+    def flush() -> None:
+        if not run:
+            return
+        redacted = redact_config_text_secrets("\n".join(run))
+        out.extend(redacted.split("\n") if redacted else [])
+        run.clear()
+
+    for item in value:
+        if isinstance(item, str):
+            run.append(item)
+            continue
+        flush()
+        out.append(_redact_preview(item))
+    flush()
+    return out
 
 
 @mcp.tool()
