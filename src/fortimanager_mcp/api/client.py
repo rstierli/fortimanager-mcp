@@ -6,6 +6,7 @@ Based on FNDN FortiManager 7.6.5 API specifications.
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 from pyFMG.fortimgr import FortiManager
@@ -87,6 +88,7 @@ class FortiManagerClient:
         username: str | None = None,
         password: str | None = None,
         verify_ssl: bool = True,
+        ca_bundle: str | None = None,
         timeout: int = 30,
         max_retries: int = 3,
     ) -> None:
@@ -96,6 +98,16 @@ class FortiManagerClient:
         self.username = username
         self.password = password
         self.verify_ssl = verify_ssl
+        # Fail at construction rather than at the first call. A path that does
+        # not exist would otherwise surface as an OSError deep in requests, and
+        # a typo'd one must never quietly fall back to the system trust store,
+        # which would verify against the wrong root and look like success.
+        if ca_bundle and not Path(ca_bundle).is_file():
+            raise ValueError(
+                f"CA bundle not found: {ca_bundle!r}. FORTIMANAGER_CA_BUNDLE must "
+                "point at a readable PEM file."
+            )
+        self.ca_bundle = ca_bundle
         self.timeout = timeout
         self.max_retries = max_retries
 
@@ -129,9 +141,24 @@ class FortiManagerClient:
             username=settings.FORTIMANAGER_USERNAME or None,
             password=settings.FORTIMANAGER_PASSWORD or None,
             verify_ssl=settings.FORTIMANAGER_VERIFY_SSL,
+            ca_bundle=settings.FORTIMANAGER_CA_BUNDLE or None,
             timeout=settings.FORTIMANAGER_TIMEOUT,
             max_retries=settings.FORTIMANAGER_MAX_RETRIES,
         )
+
+    def resolve_verify(self) -> bool | str:
+        """What to hand ``requests`` as ``verify=``.
+
+        ``requests`` takes a bool or a CA-bundle path, and pyfmg stores the
+        value and forwards it unchanged, so a path needs no pyfmg change.
+
+        Disabled verification wins over a configured bundle: an explicit
+        ``FORTIMANAGER_VERIFY_SSL=false`` must never be silently upgraded by
+        the presence of an unrelated setting.
+        """
+        if not self.verify_ssl:
+            return False
+        return self.ca_bundle or True
 
     async def connect(self) -> None:
         """Establish connection and authenticate."""
@@ -142,15 +169,34 @@ class FortiManagerClient:
         if not self.verify_ssl:
             # Visible nudge: FORTIMANAGER_VERIFY_SSL=false silently drops TLS
             # verification, exposing the API token and every config push / script
-            # output to anyone in the connection path. Prefer importing the FMG
-            # CA cert into the system trust store and leaving verify on.
+            # output to anyone in the connection path.
+            #
+            # This message used to end "prefer importing the FortiManager CA into
+            # the system trust store and setting FORTIMANAGER_VERIFY_SSL=true".
+            # That does not work against a stock appliance and cost an operator
+            # an outage (#89). A factory FortiManager certificate is self-signed
+            # with the SERIAL as CN and carries no subjectAltName, so with the
+            # appliance's own certificate trusted as the CA bundle a request by
+            # IP still fails CERTIFICATE_VERIFY_FAILED: IP address mismatch.
+            # Trust is not the failing check; there is nothing to match against.
             logger.warning(
                 "FORTIMANAGER_VERIFY_SSL=false: TLS certificate verification is "
                 "DISABLED for %s. API token and all configuration data are "
-                "exposed to anyone able to intercept this connection. Prefer "
-                "importing the FortiManager CA into the system trust store and "
-                "setting FORTIMANAGER_VERIFY_SSL=true.",
+                "exposed to anyone able to intercept this connection. Note that "
+                "trusting the appliance CA is NOT sufficient on its own: a "
+                "factory FortiManager certificate is self-signed with the serial "
+                "as CN and carries no subjectAltName, so verification still "
+                "fails on an address mismatch. To enable verification, install a "
+                "certificate on the appliance that names the address you connect "
+                "to, then set FORTIMANAGER_CA_BUNDLE to its issuing CA and "
+                "FORTIMANAGER_VERIFY_SSL=true.",
                 self.host,
+            )
+        elif self.ca_bundle:
+            logger.info(
+                "TLS verification enabled for %s against CA bundle %s",
+                self.host,
+                self.ca_bundle,
             )
 
         logger.info("Connecting to FortiManager")
@@ -162,7 +208,7 @@ class FortiManagerClient:
                     apikey=self.api_token,
                     debug=False,
                     use_ssl=True,
-                    verify_ssl=self.verify_ssl,
+                    verify_ssl=self.resolve_verify(),
                     timeout=self.timeout,
                     check_adom_workspace=False,
                 )
@@ -173,7 +219,7 @@ class FortiManagerClient:
                     self.password,
                     debug=False,
                     use_ssl=True,
-                    verify_ssl=self.verify_ssl,
+                    verify_ssl=self.resolve_verify(),
                     timeout=self.timeout,
                 )
             else:
