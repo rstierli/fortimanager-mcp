@@ -50,6 +50,7 @@ from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.errors import client_safe_error
 from fortimanager_mcp.utils.validation import (
     ValidationError,
+    obj_base,
     validate_adom,
     validate_object_name,
 )
@@ -106,9 +107,7 @@ def _obj_path(adom: str, object_type: str) -> str:
     _where_used_obj_ref, which had the special case, now share this.
     """
     path = _object_type_path(object_type)
-    if adom.lower() == "global":
-        return f"global/obj/{path}"
-    return f"adom/{adom}/obj/{path}"
+    return f"{obj_base(adom)}/obj/{path}"
 
 
 def _where_used_obj_ref(adom: str, object_type: str) -> str:
