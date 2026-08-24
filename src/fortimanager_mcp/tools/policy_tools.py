@@ -21,6 +21,7 @@ from fortimanager_mcp.utils.validation import (
     ValidationError,
     check_policy_safety,
     collect_scope_values,
+    redact_config_text_secrets,
     resolve_negate_for_safety_check,
     validate_adom,
     validate_move_position,
@@ -1463,6 +1464,34 @@ async def preview_install(
         return {"status": "error", "message": msg, "error_code": code}
 
 
+def _redact_preview(value: Any) -> Any:
+    """Run the CLI-text redactor over every string in a preview result.
+
+    An install preview is the pending device config rendered as FortiOS CLI,
+    so it carries "set psksecret ...", "set password ..." and the rest in
+    clear, exactly like the revision content get_device_revision already
+    redacts. This tool returned it raw (upstream #71).
+
+    Walks the structure instead of reaching for a known key: the endpoint's
+    envelope is not pinned anywhere in this repo, and redacting only the key
+    we happen to expect would leak the moment FortiManager nests it
+    differently. redact_config_text_secrets only rewrites lines that match
+    "set <secret-directive>", so running it over an unrelated string is a
+    no-op rather than damage.
+
+    Not measured against a preview that actually contains a credential --
+    that needs a pending change carrying one, which is why the finding was
+    filed unmeasured. The redactor itself is pinned by its own tests.
+    """
+    if isinstance(value, str):
+        return redact_config_text_secrets(value)
+    if isinstance(value, dict):
+        return {k: _redact_preview(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact_preview(v) for v in value]
+    return value
+
+
 @mcp.tool()
 async def get_preview_result(
     adom: str,
@@ -1491,7 +1520,7 @@ async def get_preview_result(
 
         return {
             "status": "success",
-            "preview": result,
+            "preview": _redact_preview(result),
         }
     except Exception as e:
         logger.error(f"Failed to get preview result: {e}")

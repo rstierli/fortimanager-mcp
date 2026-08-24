@@ -94,16 +94,30 @@ def _object_type_path(object_type: str) -> str:
     return path
 
 
+def _obj_path(adom: str, object_type: str) -> str:
+    """Build the object-database path for an ADOM, Global included.
+
+    The Global ADOM is not addressed as an ADOM named "global": it has its
+    own branch of the tree. Live-verified against a lab FortiManager --
+    ``/pm/config/global/obj/firewall/address`` returns objects, while
+    ``/pm/config/adom/global/obj/firewall/address`` is refused with
+    "Invalid url". find_duplicate_objects built the second form and so
+    could never work against Global (upstream #71); it and
+    _where_used_obj_ref, which had the special case, now share this.
+    """
+    path = _object_type_path(object_type)
+    if adom.lower() == "global":
+        return f"global/obj/{path}"
+    return f"adom/{adom}/obj/{path}"
+
+
 def _where_used_obj_ref(adom: str, object_type: str) -> str:
     """Build the "obj" value for /cache/search/where/used/start.
 
     See the module docstring for why the per-ADOM form is derived rather
     than lifted verbatim from a worked example.
     """
-    path = _object_type_path(object_type)
-    if adom.lower() == "global":
-        return f"global/obj/{path}"
-    return f"adom/{adom}/obj/{path}"
+    return _obj_path(adom, object_type)
 
 
 @mcp.tool()
@@ -243,7 +257,10 @@ async def find_duplicate_objects(
     """
     try:
         adom = validate_adom(adom)
-        path = _object_type_path(object_type)
+        # Built before the client is fetched: it validates object_type, and
+        # doing that after _get_client() masks a bad type behind
+        # "client not initialized" (caught by test_invalid_object_type).
+        obj_path = _obj_path(adom, object_type)
         client = _get_client()
 
         params: dict[str, Any] = {
@@ -254,7 +271,7 @@ async def find_duplicate_objects(
         if fields:
             params["fields"] = fields
 
-        objects = await client.get(f"/pm/config/adom/{adom}/obj/{path}", **params)
+        objects = await client.get(f"/pm/config/{obj_path}", **params)
         if not isinstance(objects, list):
             objects = [objects] if objects else []
 

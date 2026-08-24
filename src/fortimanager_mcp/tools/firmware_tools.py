@@ -387,14 +387,32 @@ async def upgrade_device_firmware(
         )
 
         task_id = result.get("taskid", result.get("task")) if isinstance(result, dict) else None
-        return {
+        response: dict[str, Any] = {
             "status": "success",
             "device": device,
             "target_version": target_version,
             "task_id": task_id,
-            "message": f"Firmware upgrade to {target_version} started for '{device}', "
-            f"task ID: {task_id}",
         }
+        if task_id is None:
+            # An upgrade reboots the device. Reporting "started ..., task ID:
+            # None" reads as a clean start while leaving the caller nothing to
+            # poll, so say plainly that tracking is unavailable rather than
+            # formatting None into the happy-path sentence (upstream #71).
+            response["tracking"] = "unavailable"
+            response["warning"] = (
+                "FortiManager returned no task ID for this upgrade, so it cannot be "
+                "tracked with get_task or wait_for_task. Confirm the outcome on the "
+                "device itself before assuming it succeeded."
+            )
+            response["message"] = (
+                f"Firmware upgrade to {target_version} was accepted for '{device}', "
+                "but FortiManager returned no task ID to track it with."
+            )
+        else:
+            response["message"] = (
+                f"Firmware upgrade to {target_version} started for '{device}', task ID: {task_id}"
+            )
+        return response
     except TaskSlotsExhausted as e:
         return error_response(
             error="task_slots_exhausted",

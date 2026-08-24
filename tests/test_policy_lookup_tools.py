@@ -247,3 +247,24 @@ class TestProxyResultsHelper:
 
     def test_unwraps_documented_envelope(self) -> None:
         assert policy_lookup_tools._proxy_results(MOCK_NO_MATCH) == {"success": False}
+
+
+class TestProtocolAllowlist:
+    """upstream #71: the allowlist stopped at ICMP/TCP/UDP and refused GRE,
+    ESP, AH and SCTP, which a firewall policy can match on just as well. A
+    VPN transit policy is exactly the kind of rule an operator wants to
+    test."""
+
+    @pytest.mark.parametrize(
+        ("protocol", "name"), [(47, "GRE"), (50, "ESP"), (51, "AH"), (132, "SCTP")]
+    )
+    def test_the_protocols_that_used_to_be_refused_are_known(self, protocol, name):
+        assert policy_lookup_tools._KNOWN_PROTOCOLS[protocol] == name
+
+    @pytest.mark.parametrize("protocol", [1, 6, 17])
+    def test_the_original_three_still_work(self, protocol):
+        assert protocol in policy_lookup_tools._KNOWN_PROTOCOLS
+
+    def test_an_unassigned_protocol_is_still_refused(self):
+        """Still an allowlist, not an open field."""
+        assert 253 not in policy_lookup_tools._KNOWN_PROTOCOLS

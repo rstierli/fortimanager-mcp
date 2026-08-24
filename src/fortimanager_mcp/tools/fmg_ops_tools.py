@@ -72,7 +72,11 @@ from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_settings
 from fortimanager_mcp.utils.errors import client_safe_error
 from fortimanager_mcp.utils.task_guard import TaskSlotsExhausted, mark_task_done, spawn_guarded
-from fortimanager_mcp.utils.validation import ValidationError, validate_interface_name
+from fortimanager_mcp.utils.validation import (
+    ValidationError,
+    validate_interface_name,
+    validate_task_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -232,6 +236,12 @@ async def trigger_fmg_backup(
             ),
         }
     except TaskSlotsExhausted as e:
+        # Deliberately still hand-rolled rather than error_response(): that
+        # helper emits "error" while every other error path in this file, and
+        # 257 across tools/, emits "error_code". Switching only this site
+        # would make trigger_fmg_backup answer with two different key names
+        # depending on which branch failed. Unifying the two envelopes is a
+        # real, breaking change and not a tidy-up to smuggle in (upstream #71).
         return {"status": "error", "message": str(e), "error_code": "task_slots_exhausted"}
     except Exception as e:
         logger.error(f"Failed to trigger FortiManager backup: {e}")
@@ -629,6 +639,7 @@ async def delete_task(task_id: int) -> dict[str, Any]:
         >>> result = await delete_task(11111)
     """
     try:
+        task_id = validate_task_id(task_id)
         client = _get_client()
         await client.delete(f"/task/task/{task_id}")
         # Release the task_guard slot (if any) this task was holding -- a

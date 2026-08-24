@@ -18,6 +18,7 @@ from fortimanager_mcp.utils.responses import (
 )
 from fortimanager_mcp.utils.validation import (
     ValidationError,
+    coerce_device_name_list,
     validate_adom,
     validate_device_name,
     validate_object_name,
@@ -602,7 +603,7 @@ async def delete_devices_bulk(
             return {"status": "error", "message": "No devices provided"}
 
         adom = validate_adom(adom)
-        devices = [validate_device_name(d) for d in devices]
+        devices = [validate_device_name(d) for d in coerce_device_name_list(devices)]
         client = _get_client()
 
         # Convert device names to the expected format

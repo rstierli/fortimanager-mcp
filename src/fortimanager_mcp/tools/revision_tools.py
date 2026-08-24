@@ -98,7 +98,11 @@ def _validate_revision(revision: int, *, allow_latest: bool = False) -> int:
     Raises:
         ValidationError: If revision is not a valid revision number
     """
-    if not isinstance(revision, int):
+    # bool is refused explicitly: it is a subclass of int, so True would
+    # otherwise sail through and revert to revision 1 (same gap
+    # validate_task_id/validate_policy_id close elsewhere -- this
+    # revision-revert path is destructive and had no guard at all).
+    if isinstance(revision, bool) or not isinstance(revision, int):
         raise ValidationError(f"revision must be an integer, got {revision!r}")
     if allow_latest and revision == -1:
         return revision
