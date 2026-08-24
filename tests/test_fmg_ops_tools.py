@@ -536,3 +536,71 @@ class TestDeleteTask:
 
 async def _fake_task(task_id: int) -> dict[str, Any]:
     return {"task": task_id}
+
+
+class TestCaptureIdValidation:
+    """The three packet-capture tools interpolated ``capture_id`` straight
+    into the payload with no validation at all (#83).
+
+    Weaker than even the pre-#74 ``validate_policy_id``, and reachable the
+    same way every gap in that round was: the dynamic dispatcher passes
+    ``parameters`` as ``dict[str, Any]``, so the ``int`` annotation
+    enforces nothing. ``bool`` matters specifically because it is a
+    subclass of int, so ``True`` would address capture 1.
+
+    ``get_packet_capture_status`` takes ``capture_id: int | None``, where
+    None means "all captures" and must stay valid.
+    """
+
+    @pytest.mark.parametrize("tool", ["start_packet_capture", "stop_packet_capture"])
+    @pytest.mark.parametrize("bad", [True, False, "1", 1.5, [1], {"id": 1}, -1])
+    @pytest.mark.asyncio
+    async def test_a_bad_capture_id_is_refused(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        tool: str,
+        bad: object,
+    ) -> None:
+        """The appliance call is mocked to SUCCEED, so the only thing that
+        can produce an error here is the guard. Without that the test
+        passes on an unset mock and proves nothing."""
+        mock_fmg_instance.execute.return_value = (0, {})
+        with patch.object(fmg_ops_tools, "get_fmg_client", return_value=mock_client):
+            result = await getattr(fmg_ops_tools, tool)(bad)
+        assert result["status"] == "error"
+        assert result.get("error_code") == "validation_error"
+        mock_fmg_instance.execute.assert_not_called()
+
+    @pytest.mark.parametrize("bad", [True, "1", 1.5, -1])
+    @pytest.mark.asyncio
+    async def test_status_refuses_a_bad_capture_id(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock, bad: object
+    ) -> None:
+        mock_fmg_instance.execute.return_value = (0, [])
+        with patch.object(fmg_ops_tools, "get_fmg_client", return_value=mock_client):
+            result = await fmg_ops_tools.get_packet_capture_status(bad)
+        assert result["status"] == "error"
+        assert result.get("error_code") == "validation_error"
+
+    @pytest.mark.asyncio
+    async def test_status_still_accepts_none_for_all_captures(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """The contract that must not move: None means every capture."""
+        mock_fmg_instance.execute.return_value = (0, [])
+        with patch.object(fmg_ops_tools, "get_fmg_client", return_value=mock_client):
+            result = await fmg_ops_tools.get_packet_capture_status(None)
+        assert result["status"] == "success"
+
+    @pytest.mark.asyncio
+    async def test_a_real_capture_id_still_reaches_the_appliance(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """The other direction, so the guard cannot become a blanket
+        refuser."""
+        mock_fmg_instance.execute.return_value = (0, {})
+        with patch.object(fmg_ops_tools, "get_fmg_client", return_value=mock_client):
+            result = await fmg_ops_tools.start_packet_capture(7)
+        assert result["status"] == "success"
+        assert mock_fmg_instance.execute.call_args.kwargs["data"]["id"] == 7
