@@ -522,7 +522,9 @@ async def add_devices_bulk(
     Returns:
         dict: Bulk add result with keys:
             - status: "success" or "error"
-            - added_count: Number of devices added
+            - requested_count: Number of devices in the request. NOT a
+              count of devices actually added: the add runs as a task,
+              so per-device results only exist once it completes.
             - task_id: Task ID if run as background task
             - message: Error message if failed
 
@@ -558,12 +560,21 @@ async def add_devices_bulk(
             {k: v for k, v in d.items() if k not in DEVICE_CREDENTIAL_KEYS} for d in devices
         ]
 
+        # The add is a TASK: its per-device results do not exist yet at
+        # this point, so len() is the request size and nothing more.
+        # Reporting it as "added" claimed an outcome the appliance had
+        # not reached (#78 on the group tools, same class). task_id is
+        # the channel that carries the real answer.
+        task_id = result.get("taskid")
         return {
             "status": "success",
-            "added_count": len(devices_safe),
+            "requested_count": len(devices_safe),
             "devices": devices_safe,
-            "task_id": result.get("taskid"),
-            "message": f"Added {len(devices_safe)} devices",
+            "task_id": task_id,
+            "message": (
+                f"Submitted {len(devices_safe)} device(s) for add as task {task_id}. "
+                "Poll the task for per-device results."
+            ),
         }
     except Exception as e:
         logger.error(f"Failed to add devices in bulk: {e}")
@@ -591,7 +602,9 @@ async def delete_devices_bulk(
     Returns:
         dict: Bulk delete result with keys:
             - status: "success" or "error"
-            - deleted_count: Number of devices deleted
+            - requested_count: Number of devices in the request. NOT a
+              count of devices actually deleted: the delete runs as a
+              task, so per-device results only exist once it completes.
             - task_id: Task ID if run as background task
             - message: Error message if failed
 
@@ -615,11 +628,18 @@ async def delete_devices_bulk(
             flags=flags,
         )
 
+        # Same as add_devices_bulk above: this is a task submission, not
+        # a completed delete, so the only honest number is how many were
+        # asked for.
+        task_id = result.get("taskid")
         return {
             "status": "success",
-            "deleted_count": len(devices),
-            "task_id": result.get("taskid"),
-            "message": f"Deleted {len(devices)} devices",
+            "requested_count": len(devices),
+            "task_id": task_id,
+            "message": (
+                f"Submitted {len(devices)} device(s) for deletion as task {task_id}. "
+                "Poll the task for per-device results."
+            ),
         }
     except Exception as e:
         logger.error(f"Failed to delete devices in bulk: {e}")

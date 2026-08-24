@@ -338,7 +338,11 @@ async def add_devices_to_group_bulk(
     Returns:
         dict: Add result with keys:
             - status: "success" or "error"
-            - added_count: Number of devices added
+            - requested_count: Number of devices in the request. NOT a
+              count of memberships actually changed: FortiManager
+              reports no per-member result, so a device that does not
+              exist or is already a member is indistinguishable from
+              one that was added.
             - message: Status or error message
 
     Example:
@@ -359,10 +363,19 @@ async def add_devices_to_group_bulk(
         members = [{"name": d, "vdom": vdom} for d in devices]
         await client.add_group_members(adom=adom, group=group, members=members)
 
+        # No outcome count: FortiManager reports nothing per member, and
+        # the client raises on any non-zero code, so everything reaching
+        # this line is a code 0 that says nothing about individual
+        # devices. Reporting len(devices) as "added" made a claim the
+        # appliance never made (#78). Only the request size is a fact.
         return {
             "status": "success",
-            "added_count": len(devices),
-            "message": f"Added {len(devices)} device(s) to group {group}",
+            "requested_count": len(devices),
+            "message": (
+                f"Requested add of {len(devices)} device(s) to group {group}. "
+                "FortiManager does not report per-member results, so this does "
+                "not confirm the memberships changed."
+            ),
         }
     except Exception as e:
         logger.error(f"Failed to bulk add devices to group {group}: {e}")
@@ -388,7 +401,11 @@ async def remove_devices_from_group_bulk(
     Returns:
         dict: Remove result with keys:
             - status: "success" or "error"
-            - removed_count: Number of devices removed
+            - requested_count: Number of devices in the request. NOT a
+              count of memberships actually changed: FortiManager's
+              DELETE on a non-member is a lenient no-op that still
+              reports success, so a device that was never in the group
+              is indistinguishable from one that was removed.
             - message: Status or error message
 
     Example:
@@ -409,10 +426,19 @@ async def remove_devices_from_group_bulk(
         members = [{"name": d, "vdom": vdom} for d in devices]
         await client.remove_group_members(adom=adom, group=group, members=members)
 
+        # Same as the add side, and measured on this one: FMG's DELETE on
+        # a non-member is a lenient no-op that still returns code 0, so
+        # removing a device that was never in the group reported
+        # removed_count 1 (#78).
         return {
             "status": "success",
-            "removed_count": len(devices),
-            "message": f"Removed {len(devices)} device(s) from group {group}",
+            "requested_count": len(devices),
+            "message": (
+                f"Requested removal of {len(devices)} device(s) from group {group}. "
+                "FortiManager does not report per-member results, and a removal "
+                "of a non-member succeeds silently, so this does not confirm the "
+                "memberships changed."
+            ),
         }
     except Exception as e:
         logger.error(f"Failed to bulk remove devices from group {group}: {e}")
