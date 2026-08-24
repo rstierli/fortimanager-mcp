@@ -56,6 +56,10 @@ _KNOWN_PROTOCOLS = {
     132: "SCTP",
 }
 
+#: The one member of the set above this tool cannot express a destination
+#: for: dest and sourceip are IPv4-only and there is no IPv6 field.
+_ICMPV6 = 58
+
 
 def _get_client() -> FortiManagerClient:
     """Get the FortiManager client instance."""
@@ -179,6 +183,21 @@ async def policy_lookup(
             raise ValidationError(
                 f"Invalid protocol '{protocol}'. Must be one of "
                 f"{sorted(_KNOWN_PROTOCOLS)} ({', '.join(_KNOWN_PROTOCOLS.values())})."
+            )
+        if protocol == _ICMPV6:
+            # dest and sourceip are IPv4-only and this tool has no IPv6
+            # field, so an ICMPv6 lookup can only ever be sent with an
+            # address family that contradicts it. Refused rather than
+            # warned: the appliance would answer, but not the question the
+            # caller asked, and a caveat attached to wrong results is
+            # worse than no results (upstream #84). #71 admitted 58 to
+            # this set on purpose; this narrows that one member without
+            # touching the rest.
+            raise ValidationError(
+                "protocol 58 (ICMPv6) cannot be looked up: dest and sourceip "
+                "are IPv4-only and this tool has no IPv6 address field, so the "
+                "query would carry a destination of the wrong address family. "
+                "Use protocol 1 (ICMP) for an IPv4 lookup."
             )
         if srcintf is not None:
             srcintf = validate_interface_name(srcintf)
