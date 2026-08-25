@@ -11,7 +11,7 @@ dependencies = [
     # 2.0 removed mcp.server.fastmcp (our whole API), so a floating pin breaks
     # every fresh install; stay on 1.x until a deliberate migration. The 1.28.1
     # floor clears PYSEC-2026-3483.
-    "mcp>=1.28.1,<2",
+    "mcp>=2.0.0",  # ported to the MCPServer API in #92; 1.x lacks mcp.server.mcpserver
     "ff3>=1.0.3",
     "pydantic>=2.0.0",
     # Security floors: pinning mcp to 1.x holds back its transitive resolution,

@@ -1,6 +1,6 @@
 """The tool boundary: outputs masked, token arguments refused.
 
-These tests drive real FastMCP registration rather than calling wrapped
+These tests drive real MCPServer registration rather than calling wrapped
 functions directly. A bare function is not a valid stand-in for a
 registered tool in this repo, and a stub is exactly what hid a middleware
 bug once before.
@@ -13,7 +13,7 @@ import sys
 from typing import Any
 
 import pytest
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from fortimanager_mcp.masking.fpe_engine import FPEEngine
 from fortimanager_mcp.masking.wrapper import install_masking
@@ -28,16 +28,26 @@ def engine() -> FPEEngine:
 
 
 @pytest.fixture()
-def masked_server(monkeypatch: pytest.MonkeyPatch) -> FastMCP:
+def masked_server(monkeypatch: pytest.MonkeyPatch) -> MCPServer:
     monkeypatch.setenv("FMG_MASKING_KEY", KEY)
     monkeypatch.setenv("FORTIMANAGER_HOST", "test-fmg.example.com")
-    mcp = FastMCP("test-masking")
+    mcp = MCPServer("test-masking")
     install_masking(mcp)
     return mcp
 
 
 def payload(result: Any) -> Any:
-    """Pull the structured payload out of a FastMCP call_tool result."""
+    """Pull the structured payload out of an MCPServer call_tool result.
+
+    mcp 2.x returns a ``CallToolResult`` where 1.x returned a
+    ``(content, structured)`` tuple, so the structured half is now an
+    attribute rather than an element.
+    """
+    structured = getattr(result, "structured_content", None)
+    if structured is not None:
+        result = structured
+    elif hasattr(result, "content"):
+        result = result.content
     if isinstance(result, tuple):
         result = result[1]
     if isinstance(result, dict):
@@ -50,7 +60,7 @@ def payload(result: Any) -> Any:
 class TestOutboundMasking:
     @pytest.mark.asyncio
     async def test_output_is_masked_through_real_registration(
-        self, masked_server: FastMCP, engine: FPEEngine
+        self, masked_server: MCPServer, engine: FPEEngine
     ) -> None:
         @masked_server.tool()
         async def get_thing(name: str) -> dict[str, str]:
@@ -63,7 +73,7 @@ class TestOutboundMasking:
         assert engine.unseal_serial(out["sn"]) == "FGVM020000123456"
 
     @pytest.mark.asyncio
-    async def test_inner_tool_call_is_masked_once(self, masked_server: FastMCP) -> None:
+    async def test_inner_tool_call_is_masked_once(self, masked_server: MCPServer) -> None:
         """Double masking would break every token's round trip."""
 
         @masked_server.tool()
@@ -82,7 +92,7 @@ class TestOutboundMasking:
 
 class TestInboundGuard:
     @pytest.fixture(autouse=True)
-    def _tool(self, masked_server: FastMCP, body_saw: dict[str, Any]) -> None:
+    def _tool(self, masked_server: MCPServer, body_saw: dict[str, Any]) -> None:
         @masked_server.tool()
         async def create_thing(
             name: str, subnet: str = "", comment: str = "", options: dict[str, Any] | None = None
@@ -97,7 +107,7 @@ class TestInboundGuard:
 
     @pytest.mark.asyncio
     async def test_token_argument_is_refused(
-        self, masked_server: FastMCP, engine: FPEEngine, body_saw: dict[str, Any]
+        self, masked_server: MCPServer, engine: FPEEngine, body_saw: dict[str, Any]
     ) -> None:
         token = engine.mask_ip_token("192.0.2.19")
 
@@ -108,7 +118,7 @@ class TestInboundGuard:
 
     @pytest.mark.asyncio
     async def test_token_embedded_in_free_text_is_refused(
-        self, masked_server: FastMCP, engine: FPEEngine
+        self, masked_server: MCPServer, engine: FPEEngine
     ) -> None:
         """A token pasted into a comment would be written verbatim as config."""
         token = engine.mask_ip_token("192.0.2.19")
@@ -123,7 +133,7 @@ class TestInboundGuard:
 
     @pytest.mark.asyncio
     async def test_token_nested_in_a_dict_argument_is_refused(
-        self, masked_server: FastMCP, engine: FPEEngine
+        self, masked_server: MCPServer, engine: FPEEngine
     ) -> None:
         """The dynamic dispatcher passes caller-supplied parameter mappings."""
         token = engine.seal_serial("FGVM020000123456")
@@ -137,7 +147,9 @@ class TestInboundGuard:
         assert out["error"] == "masking_token_in_input"
 
     @pytest.mark.asyncio
-    async def test_domain_token_is_refused(self, masked_server: FastMCP, engine: FPEEngine) -> None:
+    async def test_domain_token_is_refused(
+        self, masked_server: MCPServer, engine: FPEEngine
+    ) -> None:
         """Domain tokens carry a suffix marker, not a prefix one."""
         token = engine.mask_domain("mail.example.com")
 
@@ -149,7 +161,7 @@ class TestInboundGuard:
 
     @pytest.mark.asyncio
     async def test_literal_values_reach_the_body_untouched(
-        self, masked_server: FastMCP, body_saw: dict[str, Any]
+        self, masked_server: MCPServer, body_saw: dict[str, Any]
     ) -> None:
         """An operator typing a real address must not be second-guessed.
 
@@ -170,7 +182,7 @@ class TestInboundGuard:
 
     @pytest.mark.asyncio
     async def test_refusal_message_carries_no_token(
-        self, masked_server: FastMCP, engine: FPEEngine
+        self, masked_server: MCPServer, engine: FPEEngine
     ) -> None:
         token = engine.mask_ip_token("192.0.2.19")
 
@@ -181,10 +193,10 @@ class TestInboundGuard:
 
 class TestPositionalCalls:
     def test_sync_tool_guards_positional_arguments(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """FastMCP passes keywords today; the wrapper is callable either way."""
+        """MCPServer passes keywords today; the wrapper is callable either way."""
         monkeypatch.setenv("FMG_MASKING_KEY", KEY)
         monkeypatch.setenv("FORTIMANAGER_HOST", "test-fmg.example.com")
-        mcp = FastMCP("test-positional")
+        mcp = MCPServer("test-positional")
         install_masking(mcp)
         seen: list[str] = []
 

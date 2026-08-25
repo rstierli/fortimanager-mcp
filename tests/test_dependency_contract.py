@@ -1,9 +1,9 @@
 """The dependency floors that keep the server importable.
 
-mcp 2.0 removed ``mcp.server.fastmcp``, which is the API this whole
-server is built on. With a floating ``mcp>=1.0.0`` the resolver picks
-2.x on any fresh install and the server stops importing entirely, so the
-pin is load-bearing rather than housekeeping.
+mcp 2.0 removed ``mcp.server.fastmcp`` and replaced it with
+``mcp.server.mcpserver``. The server is now built on the 2.x API, so the
+floor is load-bearing in the other direction: 1.x lacks the module this
+server imports, and the removed ``<2`` ceiling must stay removed.
 """
 
 import tomllib
@@ -22,23 +22,29 @@ def _requirement(prefix: str) -> str:
     raise AssertionError(f"{prefix} is not declared in pyproject dependencies")
 
 
-def test_fastmcp_is_importable() -> None:
-    """The smoke test that mcp 2.x fails."""
-    from mcp.server.fastmcp import FastMCP
+def test_mcpserver_is_importable() -> None:
+    """The smoke test that mcp 1.x fails."""
+    from mcp.server.mcpserver import MCPServer
 
-    assert FastMCP is not None
+    assert MCPServer is not None
 
 
-def test_installed_mcp_is_1x() -> None:
+def test_installed_mcp_is_2x() -> None:
     assert mcp.__name__ == "mcp"
     from importlib.metadata import version
 
-    assert version("mcp").startswith("1."), "mcp 2.x removed mcp.server.fastmcp"
+    assert version("mcp").startswith("2."), "mcp 1.x lacks mcp.server.mcpserver"
 
 
-def test_mcp_pin_excludes_2x() -> None:
-    """Guards the pin itself: loosening it reintroduces the breakage."""
-    assert "<2" in _requirement("mcp")
+def test_mcp_floor_is_2x_and_unceilinged() -> None:
+    """Guards the floor itself: dropping back to 1.x stops the import.
+
+    2.0.0 is also above the ``>=1.28.1`` security floor the old pin
+    carried for PYSEC-2026-3483, so nothing regresses by lifting it.
+    """
+    requirement = _requirement("mcp")
+    assert "<2" not in requirement
+    assert requirement == "mcp>=2.0.0"
 
 
 def test_security_floors_are_declared() -> None:
