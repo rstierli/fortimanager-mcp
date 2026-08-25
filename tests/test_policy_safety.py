@@ -1220,3 +1220,67 @@ class TestEmptyActionIsUnreadableNotAbsent:
         assert check_policy_permissiveness(["all"], ["all"], ["ALL"], "deny") is None
         blocked = check_policy_permissiveness(["all"], ["all"], ["ALL"], "accept")
         assert blocked is not None and "fully open" in blocked
+
+
+class TestPreviewRedactionAcrossListElements:
+    """``_redact_preview`` redacted each string leaf independently, but the
+    redactor's multi-line quote tracking only works within one string (#85).
+
+    ``redact_config_text_secrets`` handles a quoted value that spans lines
+    by consuming continuation lines until the quote closes. Given the same
+    block split across separate list elements, only the first element ever
+    matched the directive regex and every later element went out verbatim.
+
+    The envelope shape is still unverified against a live appliance, which
+    is why the finding was filed rather than fixed. This closes it for the
+    shape it describes without claiming the appliance sends it: if the
+    preview never arrives as a list of lines, the change is a no-op.
+
+    Contiguous runs of strings are joined and redacted as one text, so a
+    non-string element cannot be spanned across.
+    """
+
+    PEM_LINES = [
+        'set private-key "-----BEGIN RSA PRIVATE KEY-----',
+        "SECRETBODYLINEONE",
+        "SECRETBODYLINETWO",
+        '-----END RSA PRIVATE KEY-----"',
+        "set hostname fw01",
+    ]
+
+    def test_a_secret_split_across_elements_does_not_leak(self) -> None:
+        out = policy_tools._redact_preview({"lines": list(self.PEM_LINES)})
+        rendered = str(out)
+        assert "SECRETBODYLINEONE" not in rendered
+        assert "SECRETBODYLINETWO" not in rendered
+        assert "BEGIN RSA PRIVATE KEY" not in rendered
+
+    def test_the_non_secret_line_after_the_block_survives(self) -> None:
+        """Fail-closed must not mean fail-everything: the redactor drops
+        the secret's continuation lines, and nothing after them."""
+        out = policy_tools._redact_preview({"lines": list(self.PEM_LINES)})
+        assert "set hostname fw01" in str(out)
+
+    def test_a_single_string_is_unchanged_in_behaviour(self) -> None:
+        """The path that already worked. Same content as one string with
+        newlines, same outcome."""
+        out = policy_tools._redact_preview({"cli": "\n".join(self.PEM_LINES)})
+        assert "SECRETBODYLINEONE" not in str(out)
+        assert "set hostname fw01" in str(out)
+
+    def test_a_run_of_strings_is_not_joined_across_a_non_string(self) -> None:
+        """An unterminated quote in one run must not consume elements on
+        the far side of a dict, which belongs to a different part of the
+        envelope entirely."""
+        out = policy_tools._redact_preview(
+            ['set psksecret "unterminated', {"other": "branch"}, "set hostname fw02"]
+        )
+        assert out[1] == {"other": "branch"}
+        assert "set hostname fw02" in str(out[2:])
+
+    def test_shapes_with_nothing_to_redact_pass_through(self) -> None:
+        assert policy_tools._redact_preview([]) == []
+        assert policy_tools._redact_preview([1, 2, None]) == [1, 2, None]
+        assert policy_tools._redact_preview({"a": {"b": []}}) == {"a": {"b": []}}
+        plain = ["set hostname fw01", "set ip 192.0.2.1"]
+        assert policy_tools._redact_preview(plain) == plain

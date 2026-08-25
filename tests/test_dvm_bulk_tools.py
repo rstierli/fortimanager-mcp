@@ -119,3 +119,72 @@ class TestBulkDeviceOpsDoNotFabricateCounts:
             assert "task 44" in result["message"]
         assert not deleted["message"].startswith("Deleted")
         assert not added["message"].startswith("Added")
+
+
+class TestAddDevicesBulkShapeCoercion:
+    """``add_devices_bulk`` takes ``list[dict]`` and checked neither (#86).
+
+    Its three sibling bulk-device tools got ``coerce_device_name_list`` in
+    PR #74, which rejects a dict explicitly and turns a bare string into a
+    one-element list. This one takes dicts rather than names, so it could
+    not share that helper and got nothing instead.
+
+    Measured before the fix, both wrong shapes reaching the same opaque
+    place:
+
+        devices={"name": "FGT-01"}  ->  'str' object is not a mapping
+                                        error_code internal_error
+        devices="FGT-01"            ->  'str' object is not a mapping
+
+    A dict is truthy and iterates its KEYS, and a string is truthy and
+    iterates its CHARACTERS, so ``if not devices`` catches neither. Both
+    reach ``{**device, ...}`` and raise a TypeError swallowed by the
+    generic handler, instead of the ValidationError the equivalent mistake
+    gets one module over.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "devices",
+        [
+            {"name": "FGT-01"},
+            "FGT-01",
+            [{"name": "FGT-01"}, "FGT-02"],
+            [None],
+            [["FGT-01"]],
+        ],
+    )
+    async def test_a_wrong_shape_is_refused_clearly(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock, devices: object
+    ) -> None:
+        mock_fmg_instance.execute.return_value = (0, {"taskid": 1})
+        with patch.object(dvm_tools, "get_fmg_client", return_value=mock_client):
+            result = await dvm_tools.add_devices_bulk("root", devices)  # type: ignore[arg-type]
+
+        assert result["status"] == "error"
+        assert result.get("error_code") == "validation_error"
+        mock_fmg_instance.execute.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_the_documented_shape_still_works(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """The regression guard, so the check cannot become a refuser."""
+        mock_fmg_instance.execute.return_value = (0, {"taskid": 42})
+        with patch.object(dvm_tools, "get_fmg_client", return_value=mock_client):
+            result = await dvm_tools.add_devices_bulk(
+                "root", [{"name": "FGT-01", "ip": "192.0.2.1"}]
+            )
+        assert result["status"] == "success"
+        assert result["requested_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_an_empty_list_is_still_its_own_message(
+        self, mock_client: FortiManagerClient
+    ) -> None:
+        """Unchanged: empty is a different mistake from wrong-shaped and
+        keeps its own wording."""
+        with patch.object(dvm_tools, "get_fmg_client", return_value=mock_client):
+            result = await dvm_tools.add_devices_bulk("root", [])
+        assert result["status"] == "error"
+        assert "No devices provided" in result["message"]

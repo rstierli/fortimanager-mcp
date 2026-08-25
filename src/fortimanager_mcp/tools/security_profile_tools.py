@@ -6,10 +6,10 @@ definitions pm.config.antivirus.profile, pm.config.webfilter.profile,
 pm.config.dnsfilter.profile, pm.config.application.list).
 
 Provides CRUD operations for ADOM-scoped security-profile objects:
-- Antivirus profiles         (/pm/config/adom/{adom}/obj/antivirus/profile)
-- Web filter profiles        (/pm/config/adom/{adom}/obj/webfilter/profile)
-- DNS filter profiles        (/pm/config/adom/{adom}/obj/dnsfilter/profile)
-- Application control lists  (/pm/config/adom/{adom}/obj/application/list)
+- Antivirus profiles         (/pm/config/{base}/obj/antivirus/profile)
+- Web filter profiles        (/pm/config/{base}/obj/webfilter/profile)
+- DNS filter profiles        (/pm/config/{base}/obj/dnsfilter/profile)
+- Application control lists  (/pm/config/{base}/obj/application/list)
 
 These are pure ADOM object-store CRUD -- the same shape as the address and
 service object tools in object_tools.py. No device DB path is touched and
@@ -32,15 +32,19 @@ from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_default_adom
 from fortimanager_mcp.utils.errors import client_safe_error
-from fortimanager_mcp.utils.validation import validate_adom, validate_object_name
+from fortimanager_mcp.utils.validation import (
+    obj_base,
+    validate_adom,
+    validate_object_name,
+)
 
 logger = logging.getLogger(__name__)
 
 # Base ADOM object-store URLs (FNDN cdb-obj80.json).
-_ANTIVIRUS_PROFILE_URL = "/pm/config/adom/{adom}/obj/antivirus/profile"
-_WEBFILTER_PROFILE_URL = "/pm/config/adom/{adom}/obj/webfilter/profile"
-_DNSFILTER_PROFILE_URL = "/pm/config/adom/{adom}/obj/dnsfilter/profile"
-_APPLICATION_LIST_URL = "/pm/config/adom/{adom}/obj/application/list"
+_ANTIVIRUS_PROFILE_URL = "/pm/config/{base}/obj/antivirus/profile"
+_WEBFILTER_PROFILE_URL = "/pm/config/{base}/obj/webfilter/profile"
+_DNSFILTER_PROFILE_URL = "/pm/config/{base}/obj/dnsfilter/profile"
+_APPLICATION_LIST_URL = "/pm/config/{base}/obj/application/list"
 
 
 def _get_client() -> FortiManagerClient:
@@ -66,7 +70,7 @@ async def _list_objects(
     if name_filter:
         params["filter"] = [["name", "contain", name_filter]]
 
-    result = await client.get(base_url.format(adom=adom), **params)
+    result = await client.get(base_url.format(base=obj_base(adom)), **params)
     return result if isinstance(result, list) else [result] if result else []
 
 
@@ -135,7 +139,7 @@ async def get_antivirus_profile(
         adom = validate_adom(adom)
         name = validate_object_name(name, "antivirus profile")
         client = _get_client()
-        profile = await client.get(f"{_ANTIVIRUS_PROFILE_URL.format(adom=adom)}/{name}")
+        profile = await client.get(f"{_ANTIVIRUS_PROFILE_URL.format(base=obj_base(adom))}/{name}")
 
         return {
             "status": "success",
@@ -196,7 +200,7 @@ async def create_antivirus_profile(
         if av_virus_log:
             profile["av-virus-log"] = av_virus_log
 
-        await client.add(_ANTIVIRUS_PROFILE_URL.format(adom=adom), data=profile)
+        await client.add(_ANTIVIRUS_PROFILE_URL.format(base=obj_base(adom)), data=profile)
 
         return {
             "status": "success",
@@ -254,7 +258,7 @@ async def update_antivirus_profile(
         if not data:
             return {"status": "error", "message": "No update parameters provided"}
 
-        await client.update(f"{_ANTIVIRUS_PROFILE_URL.format(adom=adom)}/{name}", **data)
+        await client.update(f"{_ANTIVIRUS_PROFILE_URL.format(base=obj_base(adom))}/{name}", **data)
 
         return {
             "status": "success",
@@ -288,7 +292,7 @@ async def delete_antivirus_profile(
         adom = validate_adom(adom)
         name = validate_object_name(name, "antivirus profile")
         client = _get_client()
-        await client.delete(f"{_ANTIVIRUS_PROFILE_URL.format(adom=adom)}/{name}")
+        await client.delete(f"{_ANTIVIRUS_PROFILE_URL.format(base=obj_base(adom))}/{name}")
 
         return {
             "status": "success",
@@ -365,7 +369,7 @@ async def get_webfilter_profile(
         adom = validate_adom(adom)
         name = validate_object_name(name, "web filter profile")
         client = _get_client()
-        profile = await client.get(f"{_WEBFILTER_PROFILE_URL.format(adom=adom)}/{name}")
+        profile = await client.get(f"{_WEBFILTER_PROFILE_URL.format(base=obj_base(adom))}/{name}")
 
         return {
             "status": "success",
@@ -427,7 +431,7 @@ async def create_webfilter_profile(
         if web_content_log:
             profile["web-content-log"] = web_content_log
 
-        await client.add(_WEBFILTER_PROFILE_URL.format(adom=adom), data=profile)
+        await client.add(_WEBFILTER_PROFILE_URL.format(base=obj_base(adom)), data=profile)
 
         return {
             "status": "success",
@@ -486,7 +490,7 @@ async def update_webfilter_profile(
         if not data:
             return {"status": "error", "message": "No update parameters provided"}
 
-        await client.update(f"{_WEBFILTER_PROFILE_URL.format(adom=adom)}/{name}", **data)
+        await client.update(f"{_WEBFILTER_PROFILE_URL.format(base=obj_base(adom))}/{name}", **data)
 
         return {
             "status": "success",
@@ -520,7 +524,7 @@ async def delete_webfilter_profile(
         adom = validate_adom(adom)
         name = validate_object_name(name, "web filter profile")
         client = _get_client()
-        await client.delete(f"{_WEBFILTER_PROFILE_URL.format(adom=adom)}/{name}")
+        await client.delete(f"{_WEBFILTER_PROFILE_URL.format(base=obj_base(adom))}/{name}")
 
         return {
             "status": "success",
@@ -597,7 +601,7 @@ async def get_dnsfilter_profile(
         adom = validate_adom(adom)
         name = validate_object_name(name, "DNS filter profile")
         client = _get_client()
-        profile = await client.get(f"{_DNSFILTER_PROFILE_URL.format(adom=adom)}/{name}")
+        profile = await client.get(f"{_DNSFILTER_PROFILE_URL.format(base=obj_base(adom))}/{name}")
 
         return {
             "status": "success",
@@ -660,7 +664,7 @@ async def create_dnsfilter_profile(
         if safe_search:
             profile["safe-search"] = safe_search
 
-        await client.add(_DNSFILTER_PROFILE_URL.format(adom=adom), data=profile)
+        await client.add(_DNSFILTER_PROFILE_URL.format(base=obj_base(adom)), data=profile)
 
         return {
             "status": "success",
@@ -720,7 +724,7 @@ async def update_dnsfilter_profile(
         if not data:
             return {"status": "error", "message": "No update parameters provided"}
 
-        await client.update(f"{_DNSFILTER_PROFILE_URL.format(adom=adom)}/{name}", **data)
+        await client.update(f"{_DNSFILTER_PROFILE_URL.format(base=obj_base(adom))}/{name}", **data)
 
         return {
             "status": "success",
@@ -754,7 +758,7 @@ async def delete_dnsfilter_profile(
         adom = validate_adom(adom)
         name = validate_object_name(name, "DNS filter profile")
         client = _get_client()
-        await client.delete(f"{_DNSFILTER_PROFILE_URL.format(adom=adom)}/{name}")
+        await client.delete(f"{_DNSFILTER_PROFILE_URL.format(base=obj_base(adom))}/{name}")
 
         return {
             "status": "success",
@@ -831,7 +835,7 @@ async def get_application_list(
         adom = validate_adom(adom)
         name = validate_object_name(name, "application list")
         client = _get_client()
-        app_list = await client.get(f"{_APPLICATION_LIST_URL.format(adom=adom)}/{name}")
+        app_list = await client.get(f"{_APPLICATION_LIST_URL.format(base=obj_base(adom))}/{name}")
 
         return {
             "status": "success",
@@ -894,7 +898,7 @@ async def create_application_list(
         if other_application_action:
             app_list["other-application-action"] = other_application_action
 
-        await client.add(_APPLICATION_LIST_URL.format(adom=adom), data=app_list)
+        await client.add(_APPLICATION_LIST_URL.format(base=obj_base(adom)), data=app_list)
 
         return {
             "status": "success",
@@ -954,7 +958,7 @@ async def update_application_list(
         if not data:
             return {"status": "error", "message": "No update parameters provided"}
 
-        await client.update(f"{_APPLICATION_LIST_URL.format(adom=adom)}/{name}", **data)
+        await client.update(f"{_APPLICATION_LIST_URL.format(base=obj_base(adom))}/{name}", **data)
 
         return {
             "status": "success",
@@ -988,7 +992,7 @@ async def delete_application_list(
         adom = validate_adom(adom)
         name = validate_object_name(name, "application list")
         client = _get_client()
-        await client.delete(f"{_APPLICATION_LIST_URL.format(adom=adom)}/{name}")
+        await client.delete(f"{_APPLICATION_LIST_URL.format(base=obj_base(adom))}/{name}")
 
         return {
             "status": "success",

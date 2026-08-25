@@ -74,6 +74,7 @@ from fortimanager_mcp.utils.errors import client_safe_error
 from fortimanager_mcp.utils.task_guard import TaskSlotsExhausted, mark_task_done, spawn_guarded
 from fortimanager_mcp.utils.validation import (
     ValidationError,
+    validate_capture_id,
     validate_interface_name,
     validate_task_id,
 )
@@ -488,6 +489,9 @@ async def start_packet_capture(capture_id: int) -> dict[str, Any]:
         >>> result = await start_packet_capture(1)
     """
     try:
+        # Validated before the client is fetched, so a bad id reports
+        # itself rather than being masked by "client not initialized".
+        capture_id = validate_capture_id(capture_id)
         client = _get_client()
         await client.execute(
             "/cli/global/system/sniffer",
@@ -519,6 +523,9 @@ async def stop_packet_capture(capture_id: int) -> dict[str, Any]:
         >>> result = await stop_packet_capture(1)
     """
     try:
+        # Validated before the client is fetched, so a bad id reports
+        # itself rather than being masked by "client not initialized".
+        capture_id = validate_capture_id(capture_id)
         client = _get_client()
         await client.execute(
             "/cli/global/system/sniffer",
@@ -558,6 +565,10 @@ async def get_packet_capture_status(capture_id: int | None = None) -> dict[str, 
         >>> print(result["captures"][0]["running"])  # 1 if still running
     """
     try:
+        # None means "every capture" and stays valid; anything else
+        # is an id and takes the same guard as start/stop.
+        if capture_id is not None:
+            capture_id = validate_capture_id(capture_id)
         client = _get_client()
         result = await client.execute(
             "/cli/global/system/sniffer",

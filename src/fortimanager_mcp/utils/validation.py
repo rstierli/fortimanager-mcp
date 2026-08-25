@@ -419,6 +419,53 @@ def validate_device_name(device: str) -> str:
     return device
 
 
+def validate_device_dict_list(devices: Any) -> list[dict[str, Any]]:
+    """Check a bulk device-ADD argument really is a list of dicts.
+
+    The sibling bulk tools take a list of NAMES and got
+    coerce_device_name_list in upstream #71. This one takes a list of
+    device dicts, so it could not share that helper and ended up with no
+    check at all (upstream #86).
+
+    ``if not devices`` catches neither wrong shape: a dict is truthy and
+    iterates its KEYS, a string is truthy and iterates its CHARACTERS.
+    Both then reach ``{**device, ...}`` and raise a TypeError the generic
+    handler reports as an internal error, which tells the caller nothing
+    about what they got wrong.
+
+    Refused rather than coerced, unlike the name-list helper: a bare name
+    has one unambiguous reading as a one-element list, but a device dict
+    needs at least a name and there is nothing to infer the rest from.
+    """
+    if isinstance(devices, dict | str) or not isinstance(devices, list):
+        raise ValidationError(
+            f"devices must be a list of device dicts, not {type(devices).__name__}"
+        )
+    for index, device in enumerate(devices):
+        if not isinstance(device, dict):
+            raise ValidationError(
+                f"devices[{index}] must be a device dict, not {type(device).__name__}"
+            )
+    return devices
+
+
+def obj_base(adom: str) -> str:
+    """The object-database path segment for an ADOM, Global included.
+
+    The Global ADOM is not addressed as an ADOM named "global": it has its
+    own branch of the tree. Live-verified against a lab FortiManager --
+    ``/pm/config/global/obj/firewall/address`` returns objects, while
+    ``/pm/config/adom/global/obj/firewall/address`` is refused with
+    "Invalid url".
+
+    Shared rather than reimplemented: object_usage_tools had this branch,
+    security_profile_tools hardcoded ``adom/{adom}`` and so could never
+    reach Global on any of its twenty call sites (upstream #82). A second
+    private copy of this rule is how the first one stayed unnoticed.
+    """
+    return "global" if adom.lower() == "global" else f"adom/{adom}"
+
+
 def coerce_device_name_list(devices: list[str] | str) -> list[str]:
     """Coerce a devices argument to a list before it is iterated.
 
@@ -915,6 +962,39 @@ def validate_policy_id(policyid: int) -> int:
         raise ValidationError("Policy ID must be non-negative")
 
     return policyid
+
+
+def _validate_int_id(value: Any, label: str) -> int:
+    """Shared non-negative-integer guard for the appliance's numeric ids.
+
+    ``bool`` is refused explicitly: it is a subclass of int, so ``True``
+    would otherwise sail through and address id 1. That gap has now been
+    found three separate times, in validate_task_id, validate_policy_id
+    and _validate_revision, each in a different module, which is why the
+    rule lives in one place rather than being written a fourth time
+    (upstream #83).
+    """
+    if value is None:
+        raise ValidationError(f"{label} cannot be None")
+
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValidationError(f"{label} must be an integer, got {type(value).__name__}")
+
+    if value < 0:
+        raise ValidationError(f"{label} must be non-negative")
+
+    return value
+
+
+def validate_capture_id(capture_id: int) -> int:
+    """Validate a packet-capture definition id.
+
+    The three capture tools interpolated this straight into the payload
+    with no validation at all, weaker than any sibling id, and reachable
+    the same way: dynamic mode passes ``parameters`` as ``dict[str, Any]``
+    so the ``int`` annotation enforces nothing (upstream #83).
+    """
+    return _validate_int_id(capture_id, "Capture ID")
 
 
 def validate_task_id(task_id: int) -> int:

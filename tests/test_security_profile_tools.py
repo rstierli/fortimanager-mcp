@@ -649,3 +649,89 @@ class TestInputValidationRejection:
 
         assert result["status"] == "error"
         mock_fmg_instance.update.assert_not_called()
+
+
+class TestGlobalAdomUrlShape:
+    """The Global ADOM has its own branch of the tree, not an ADOM named
+    "global".
+
+    ``object_usage_tools._obj_path`` records the live evidence:
+    ``/pm/config/global/obj/firewall/address`` returns objects while
+    ``/pm/config/adom/global/obj/firewall/address`` is refused with
+    "Invalid url". PR #74 fixed that shape there; these four profile URL
+    templates hardcode ``adom/{adom}`` and never got the branch (#82).
+
+    The live evidence is for ``firewall/address``. These paths share the
+    same URL grammar but were not themselves exercised against an
+    appliance, so this is the grammar inferred, not the endpoint measured.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("tool", "tail"),
+        [
+            ("list_antivirus_profiles", "antivirus/profile"),
+            ("list_webfilter_profiles", "webfilter/profile"),
+            ("list_dnsfilter_profiles", "dnsfilter/profile"),
+            ("list_application_lists", "application/list"),
+        ],
+    )
+    async def test_global_uses_its_own_branch(
+        self, mock_client: MagicMock, mock_fmg_instance: MagicMock, tool: str, tail: str
+    ) -> None:
+        mock_fmg_instance.get.return_value = (0, [])
+        with patch(
+            "fortimanager_mcp.tools.security_profile_tools.get_fmg_client",
+            return_value=mock_client,
+        ):
+            await getattr(security_profile_tools, tool)(adom="global")
+
+        url = mock_fmg_instance.get.call_args.args[0]
+        assert url == f"/pm/config/global/obj/{tail}"
+        assert "adom/global" not in url
+
+    @pytest.mark.asyncio
+    async def test_global_is_matched_case_insensitively(
+        self, mock_client: MagicMock, mock_fmg_instance: MagicMock
+    ) -> None:
+        """_obj_path lowercases before comparing, so this must too."""
+        mock_fmg_instance.get.return_value = (0, [])
+        with patch(
+            "fortimanager_mcp.tools.security_profile_tools.get_fmg_client",
+            return_value=mock_client,
+        ):
+            await security_profile_tools.list_antivirus_profiles(adom="Global")
+        assert mock_fmg_instance.get.call_args.args[0] == "/pm/config/global/obj/antivirus/profile"
+
+    @pytest.mark.asyncio
+    async def test_an_ordinary_adom_is_unchanged(
+        self, mock_client: MagicMock, mock_fmg_instance: MagicMock
+    ) -> None:
+        """The regression guard: every non-Global ADOM keeps the shape it
+        has always had."""
+        mock_fmg_instance.get.return_value = (0, [])
+        with patch(
+            "fortimanager_mcp.tools.security_profile_tools.get_fmg_client",
+            return_value=mock_client,
+        ):
+            await security_profile_tools.list_antivirus_profiles(adom="root")
+        assert (
+            mock_fmg_instance.get.call_args.args[0] == "/pm/config/adom/root/obj/antivirus/profile"
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_single_object_paths_branch_too(
+        self, mock_client: MagicMock, mock_fmg_instance: MagicMock
+    ) -> None:
+        """The finding is in the shared constant, so every tool built on it
+        is affected, not just the list tools the issue names."""
+        mock_fmg_instance.get.return_value = (0, {"name": "default"})
+        with patch(
+            "fortimanager_mcp.tools.security_profile_tools.get_fmg_client",
+            return_value=mock_client,
+        ):
+            await security_profile_tools.get_antivirus_profile(adom="global", name="default")
+        assert (
+            mock_fmg_instance.get.call_args.args[0]
+            == "/pm/config/global/obj/antivirus/profile/default"
+        )

@@ -1,9 +1,10 @@
 """Tests for policy_lookup_tools module."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.tools import policy_lookup_tools
 
 # Proxy envelope shape as documented in the How-To Guide's "How to do a
@@ -268,3 +269,62 @@ class TestProtocolAllowlist:
     def test_an_unassigned_protocol_is_still_refused(self):
         """Still an allowlist, not an open field."""
         assert 253 not in policy_lookup_tools._KNOWN_PROTOCOLS
+
+
+class TestIcmpV6IsUnanswerable:
+    """ICMPv6 with an IPv4-only destination is not a risky query, it is an
+    impossible one (#84).
+
+    PR #74 widened ``_KNOWN_PROTOCOLS`` to admit 58 because refusing the
+    non-port protocols blocked legitimate lookups. But ``dest`` and
+    ``sourceip`` are validated as IPv4 and there is no IPv6 field on this
+    tool, so a protocol-58 lookup can only ever be sent with an address
+    family that contradicts it. The appliance answers something; it just
+    cannot be the answer to the question asked.
+
+    Refused rather than warned, because a warning would hand back results
+    for a query the caller did not make.
+    """
+
+    @pytest.mark.asyncio
+    async def test_icmpv6_with_an_ipv4_destination_is_refused(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        mock_fmg_instance.execute.return_value = (0, {})
+        with patch.object(policy_lookup_tools, "get_fmg_client", return_value=mock_client):
+            result = await policy_lookup_tools.policy_lookup(
+                adom="root", device="FGT-01", dest="203.0.113.9", protocol=58
+            )
+        assert result["status"] == "error"
+        assert result.get("error_code") == "validation_error"
+        assert "ICMPv6" in result["message"]
+        mock_fmg_instance.execute.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("protocol", [1, 6, 17, 47, 50, 51, 132])
+    async def test_every_other_known_protocol_still_works(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        protocol: int,
+    ) -> None:
+        """The regression guard. #74 widened this set on purpose and this
+        fix must narrow exactly one member of it, not undo that work."""
+        mock_fmg_instance.execute.return_value = (0, {})
+        with patch.object(policy_lookup_tools, "get_fmg_client", return_value=mock_client):
+            result = await policy_lookup_tools.policy_lookup(
+                adom="root", device="FGT-01", dest="203.0.113.9", protocol=protocol
+            )
+        assert result["status"] != "error" or result.get("error_code") != "validation_error"
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_protocol_still_reports_the_protocol_list(
+        self, mock_client: FortiManagerClient
+    ) -> None:
+        """The pre-existing message must not be replaced by the new one."""
+        with patch.object(policy_lookup_tools, "get_fmg_client", return_value=mock_client):
+            result = await policy_lookup_tools.policy_lookup(
+                adom="root", device="FGT-01", dest="203.0.113.9", protocol=99
+            )
+        assert result["status"] == "error"
+        assert "Invalid protocol" in result["message"]
