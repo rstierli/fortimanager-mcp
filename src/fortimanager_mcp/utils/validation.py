@@ -11,7 +11,7 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from fortimanager_mcp.utils.config import get_settings
 
@@ -446,7 +446,7 @@ def validate_device_dict_list(devices: Any) -> list[dict[str, Any]]:
             raise ValidationError(
                 f"devices[{index}] must be a device dict, not {type(device).__name__}"
             )
-    return devices
+    return cast(list[dict[str, Any]], devices)
 
 
 def obj_base(adom: str) -> str:
@@ -983,7 +983,7 @@ def _validate_int_id(value: Any, label: str) -> int:
     if value < 0:
         raise ValidationError(f"{label} must be non-negative")
 
-    return value
+    return cast(int, value)
 
 
 def validate_capture_id(capture_id: int) -> int:
