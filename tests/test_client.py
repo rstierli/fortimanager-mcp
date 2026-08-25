@@ -1365,3 +1365,99 @@ class TestRunFmgCallCancellation:
         with pytest.raises(OSError, match="connection reset"):
             await client._run_fmg_call(failing_call)
         assert not client._request_lock.locked()
+
+
+class TestCaBundleAndVerifyGuidance:
+    """`FORTIMANAGER_CA_BUNDLE` and the warning that points at it (#89).
+
+    The warning this replaces told the operator to import the FortiManager CA
+    into the system trust store and set ``FORTIMANAGER_VERIFY_SSL=true``.
+    Measured against a stock appliance, that does not work: the certificate is
+    self-signed with the serial as CN and carries **no** subjectAltName, so with
+    the appliance's own certificate trusted as the CA bundle a request by IP
+    still fails ``CERTIFICATE_VERIFY_FAILED: IP address mismatch``. Trust was
+    never the failing check. An operator following the old advice takes an
+    outage and learns to ignore the warning.
+    """
+
+    def test_ca_bundle_path_reaches_the_transport(self, tmp_path: Any) -> None:
+        """A CA bundle path must be handed to pyfmg verbatim.
+
+        ``requests`` accepts either a bool or a path for ``verify=``, and pyfmg
+        stores the value and forwards it unchanged, so a path needs no pyfmg
+        change. This asserts we do not coerce it to a bool on the way past.
+        """
+        bundle = tmp_path / "corp-ca.pem"
+        bundle.write_text("-----BEGIN CERTIFICATE-----\n")
+
+        client = FortiManagerClient(
+            host="test-fmg.example.com", api_token="t", verify_ssl=True, ca_bundle=str(bundle)
+        )
+
+        assert client.resolve_verify() == str(bundle)
+
+    def test_verify_disabled_beats_a_ca_bundle(self, tmp_path: Any) -> None:
+        """Explicitly disabled verification wins, and is not silently re-enabled."""
+        bundle = tmp_path / "corp-ca.pem"
+        bundle.write_text("-----BEGIN CERTIFICATE-----\n")
+
+        client = FortiManagerClient(
+            host="test-fmg.example.com", api_token="t", verify_ssl=False, ca_bundle=str(bundle)
+        )
+
+        assert client.resolve_verify() is False
+
+    def test_no_bundle_keeps_the_system_trust_store(self) -> None:
+        client = FortiManagerClient(host="test-fmg.example.com", api_token="t", verify_ssl=True)
+        assert client.resolve_verify() is True
+
+    def test_a_missing_bundle_fails_closed(self) -> None:
+        """A path that does not exist must refuse at construction.
+
+        Passing it through would hand ``requests`` a bad path and fail at the
+        first call instead of at startup; worse, a typo'd path that happened to
+        be falsy-adjacent would silently fall back to the system store and
+        verify against the wrong trust root.
+        """
+        with pytest.raises(ValueError, match="CA bundle"):
+            FortiManagerClient(
+                host="test-fmg.example.com",
+                api_token="t",
+                verify_ssl=True,
+                ca_bundle="/nonexistent/corp-ca.pem",
+            )
+
+    @pytest.mark.asyncio
+    async def test_the_warning_does_not_promise_the_trust_store_is_enough(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The remediation sentence must name the real blocker.
+
+        Pinning the correction rather than the exact wording: it must stop
+        telling the operator that importing the CA is sufficient, and must say
+        a certificate naming the address is required.
+        """
+        stub = MagicMock()
+        stub.login.return_value = (0, {"status": {"code": 0, "message": "OK"}})
+        stub.get.return_value = (0, {"status": {"code": 0}})
+        monkeypatch.setattr("fortimanager_mcp.api.client.FortiManager", lambda *a, **kw: stub)
+        monkeypatch.setattr(FortiManagerClient, "_detect_version", lambda self: None)
+
+        client = FortiManagerClient(host="test-fmg.example.com", api_token="t", verify_ssl=False)
+
+        caplog.clear()
+        with caplog.at_level("WARNING", logger="fortimanager_mcp.api.client"):
+            await client.connect()
+
+        blob = " ".join(r.getMessage() for r in caplog.records if r.levelname == "WARNING")
+
+        # The diagnosis stays.
+        assert "FORTIMANAGER_VERIFY_SSL=false" in blob
+        # The false promise goes.
+        assert "importing the FortiManager CA into the system trust store and" not in blob
+        # The real blocker is named.
+        assert "subjectAltName" in blob or "SAN" in blob
+        # And the setting that makes true reachable is named.
+        assert "FORTIMANAGER_CA_BUNDLE" in blob
