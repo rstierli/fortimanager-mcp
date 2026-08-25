@@ -983,7 +983,12 @@ def _validate_int_id(value: Any, label: str) -> int:
     if value < 0:
         raise ValidationError(f"{label} must be non-negative")
 
-    return cast(int, value)
+    # An annotated local rather than cast() or a bare return: mypy 1.x does
+    # not narrow a bare Any parameter for the return type (no-any-return),
+    # and mypy 2.x narrows it well enough that cast() trips
+    # warn_redundant_casts. The annotation satisfies both.
+    checked: int = value
+    return checked
 
 
 def validate_capture_id(capture_id: int) -> int:
