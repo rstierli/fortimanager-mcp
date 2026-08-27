@@ -14,7 +14,7 @@ from fortimanager_mcp import server
 
 
 class _ToolCollector:
-    """Minimal stand-in for FastMCP that captures registered tool functions."""
+    """Minimal stand-in for MCPServer that captures registered tool functions."""
 
     def __init__(self) -> None:
         self.fns: dict[str, Any] = {}

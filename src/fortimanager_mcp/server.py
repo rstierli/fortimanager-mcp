@@ -1,6 +1,6 @@
 """Main MCP server implementation for FortiManager.
 
-Uses FastMCP pattern for tool registration.
+Uses the MCPServer decorator pattern for tool registration.
 Supports two modes:
 - full: All 232 tools loaded (default)
 - dynamic: Only discovery tools loaded (~90% context reduction)
@@ -11,7 +11,7 @@ import json
 import logging
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 
 from fortimanager_mcp.api.client import FortiManagerClient
@@ -44,19 +44,23 @@ if settings.MCP_ALLOWED_HOSTS:
         allowed_hosts=settings.MCP_ALLOWED_HOSTS,
     )
 
-# Create FastMCP server.
+# Create the MCP server.
 #
 # Lifecycle ownership of the process-global ``_fmg_client`` is deliberately
 # held by exactly one path: ``run_http``'s ``app_lifespan`` in HTTP mode and
-# ``run_stdio`` in stdio mode. We do NOT pass a FastMCP ``lifespan`` here.
-# FastMCP runs its ``lifespan`` per request/session in stateless-HTTP-style
+# ``run_stdio`` in stdio mode. We do NOT pass a ``lifespan`` here. The server
+# runs its ``lifespan`` per request/session in stateless-HTTP-style
 # transports, which would connect-then-disconnect the shared client around
 # every call and drop the session out from under concurrent requests.
-mcp = FastMCP(
+#
+# ``stateless_http`` and ``transport_security`` are NOT constructor arguments
+# on mcp 2.x -- they moved to the transport layer, so they are passed to
+# ``streamable_http_app()`` in ``run_http`` instead. Both still have to be
+# set: dropping them here without setting them there would silently make the
+# HTTP deployment stateful and unbound by the allowed-hosts list.
+mcp = MCPServer(
     "fortimanager-mcp",
     dependencies=["pyfmg", "pydantic-settings"],
-    stateless_http=settings.MCP_STATELESS_HTTP,
-    transport_security=_transport_security,
 )
 
 if settings.MASKING_ENABLED:
@@ -88,7 +92,7 @@ async def health_check() -> str:
 
 
 # Dynamic mode: lightweight discovery tools
-def register_dynamic_tools(mcp_server: FastMCP) -> None:
+def register_dynamic_tools(mcp_server: MCPServer) -> None:
     """Register discovery tools for dynamic mode only."""
 
     @mcp_server.tool()
@@ -1021,7 +1025,7 @@ def run_stdio() -> None:
     """Run MCP server in stdio mode for Claude Desktop / LM Studio.
 
     Owns the FortiManager-client lifecycle for the server's full lifetime
-    (single-owner pattern — see the note next to ``mcp = FastMCP(...)``).
+    (single-owner pattern — see the note next to ``mcp = MCPServer(...)``).
     Connects once at startup; disconnects once at shutdown. A connection
     failure logs a warning and yields anyway so the server still starts and
     its tools can report ``fortimanager_connected: False`` cleanly.
@@ -1277,7 +1281,15 @@ def run_http() -> None:
     app = Starlette(
         routes=[
             Route("/health", health_endpoint, methods=["GET"]),
-            Mount("/", app=mcp.streamable_http_app()),
+            # stateless_http/transport_security live here on mcp 2.x; see
+            # the MCPServer construction above.
+            Mount(
+                "/",
+                app=mcp.streamable_http_app(
+                    stateless_http=settings.MCP_STATELESS_HTTP,
+                    transport_security=_transport_security,
+                ),
+            ),
         ],
         lifespan=app_lifespan,
         # Auth first so unauthenticated callers are rejected on headers alone,

@@ -2,7 +2,7 @@
 
 There is no central tool-registration hook to use (tool modules
 self-register with module-level ``@mcp.tool()`` at import time), so
-``install_masking`` patches ``mcp.tool`` on the shared FastMCP instance
+``install_masking`` patches ``mcp.tool`` on the shared MCPServer instance
 BEFORE the tool modules are imported. Every tool registered afterwards is
 wrapped.
 

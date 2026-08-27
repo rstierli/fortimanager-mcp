@@ -8,15 +8,18 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    # 2.0 removed mcp.server.fastmcp (our whole API), so a floating pin breaks
-    # every fresh install; stay on 1.x until a deliberate migration. The 1.28.1
-    # floor clears PYSEC-2026-3483.
-    "mcp>=1.28.1,<2",
+    # Ported to the MCPServer API in #92. 1.x has no mcp.server.mcpserver, so
+    # this floor is a hard import requirement rather than a preference, and it
+    # sits above the old >=1.28.1 floor that cleared PYSEC-2026-3483.
+    "mcp>=2.0.0",
     "ff3>=1.0.3",
     "pydantic>=2.0.0",
-    # Security floors: pinning mcp to 1.x holds back its transitive resolution,
-    # which otherwise lands on pydantic-settings 2.14.1 (GHSA-4xgf-cpjx-pc3j)
-    # and starlette 1.3.0 (PYSEC-2026-249). Both are patched in the floors below.
+    # Security floors, declared here because nothing upstream raises them to
+    # the patched releases. Measured against mcp 2.1.1: mcp does not depend on
+    # pydantic-settings at all, and the tightest starlette constraint in the
+    # tree is sse-starlette 3.4.8's >=0.49.1 (mcp itself asks >=0.27, or
+    # >=0.48.0 on 3.14+). pydantic-settings 2.14.2 fixes GHSA-4xgf-cpjx-pc3j
+    # and starlette 1.3.1 fixes PYSEC-2026-249. Do not drop these as redundant.
     "pydantic-settings>=2.14.2",
     "httpx>=0.27.0",
     "starlette>=1.3.1",
