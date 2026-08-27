@@ -48,11 +48,13 @@ def test_mcp_floor_is_2x_and_unceilinged() -> None:
 
 
 def test_security_floors_are_declared() -> None:
-    """Holding mcp at 1.x holds its transitive deps back onto known CVEs.
+    """Nothing upstream raises these to the patched releases.
 
-    pydantic-settings 2.14.2 fixes GHSA-4xgf-cpjx-pc3j and starlette
-    1.3.1 fixes PYSEC-2026-249, so both floors have to be stated here
-    rather than inherited.
+    Measured against mcp 2.1.1: mcp does not depend on
+    pydantic-settings at all, and the tightest starlette constraint in
+    the tree is ``sse-starlette`` 3.4.8's ``>=0.49.1`` (mcp itself asks
+    ``>=0.27``, or ``>=0.48.0`` on 3.14+). pydantic-settings 2.14.2
+    fixes GHSA-4xgf-cpjx-pc3j and starlette 1.3.1 fixes PYSEC-2026-249.
     """
     assert _requirement("pydantic-settings") == "pydantic-settings>=2.14.2"
     assert _requirement("starlette") == "starlette>=1.3.1"
