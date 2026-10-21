@@ -140,6 +140,84 @@ class TestGetDeviceInterfaceConfig:
         assert "error" in result
 
 
+class TestInterfaceConfigStripsCredentials:
+    """Every ``format=password`` field on ``system interface`` is removed.
+
+    The values are placeholders, not real ``ENC`` blobs. What matters is
+    that the key is gone, at the top level and nested.
+    """
+
+    @staticmethod
+    def _with_secrets() -> list[dict]:
+        return [
+            {
+                **MOCK_INTERFACES[0],
+                "password": "ENC placeholder-pppoe",
+                "eap-password": "ENC placeholder-eap",
+                "pptp-password": "ENC placeholder-pptp",
+                "wifi-key": "ENC placeholder-wifi-key",
+                "wifi-passphrase": "ENC placeholder-wifi-psk",
+                "l2tp-client-settings": {"user": "l2tp-user", "password": "ENC placeholder-l2tp"},
+                "wifi-networks": [
+                    {
+                        "id": 1,
+                        "wifi-ssid": "example-ssid",
+                        "wifi-key": "ENC placeholder-net-key",
+                        "wifi-passphrase": "ENC placeholder-net-psk",
+                        "wifi-private-key-password": "ENC placeholder-net-pk",
+                    }
+                ],
+                # Non-secret fields that sit next to the secrets.
+                "eap-identity": "supplicant-user",
+                "pptp-user": "pptp-user",
+                "username": "pppoe-user",
+            },
+            MOCK_INTERFACES[1],
+        ]
+
+    @pytest.mark.asyncio
+    async def test_secret_fields_are_stripped_at_every_depth(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        mock_fmg_instance.get.return_value = (0, self._with_secrets())
+        with patch.object(dvm_tools, "get_fmg_client", return_value=mock_client):
+            result = await dvm_tools.get_device_interface_config(device="FGT-01")
+
+        assert "placeholder" not in repr(result)
+        port1 = result["interfaces"][0]
+        for key in dvm_tools._INTERFACE_SECRET_FIELDS:
+            assert key not in port1
+        assert port1["l2tp-client-settings"] == {"user": "l2tp-user"}
+        assert port1["wifi-networks"] == [{"id": 1, "wifi-ssid": "example-ssid"}]
+
+    @pytest.mark.asyncio
+    async def test_non_secret_fields_survive(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        mock_fmg_instance.get.return_value = (0, self._with_secrets())
+        with patch.object(dvm_tools, "get_fmg_client", return_value=mock_client):
+            result = await dvm_tools.get_device_interface_config(device="FGT-01")
+
+        port1 = result["interfaces"][0]
+        assert port1["eap-identity"] == "supplicant-user"
+        assert port1["pptp-user"] == "pptp-user"
+        assert port1["username"] == "pppoe-user"
+        assert result["interfaces"][1] == MOCK_INTERFACES[1]
+        assert result["interface_count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_single_dict_response_is_stripped(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        # A name-filtered GET can come back as one object rather than a list.
+        mock_fmg_instance.get.return_value = (0, self._with_secrets()[0])
+        with patch.object(dvm_tools, "get_fmg_client", return_value=mock_client):
+            result = await dvm_tools.get_device_interface_config(device="FGT-01", name="port1")
+
+        assert "placeholder" not in repr(result)
+        assert result["interfaces"]["name"] == "port1"
+
+
 class TestSummarizeInterfacesRobustness:
     def test_list_input(self) -> None:
         summary = dvm_tools._summarize_interfaces(MOCK_INTERFACES)

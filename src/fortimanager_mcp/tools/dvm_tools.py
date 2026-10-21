@@ -883,6 +883,48 @@ def _summarize_interfaces(data: Any) -> list[dict[str, Any]]:
     return summary
 
 
+#: Fields FMG stores as ``format=password`` on ``system interface``, taken
+#: from the bundled cdb-device swagger for 7.0 through 8.0 (the set is the
+#: same in each, minus ``eap-password`` on 7.0 and ``wifi-private-key-password``
+#: before 7.4). ``password`` (PPPoE), ``eap-password`` (802.1X supplicant),
+#: ``pptp-password`` and ``wifi-key``/``wifi-passphrase`` sit at the top
+#: level; ``password`` also appears inside ``l2tp-client-settings``, and
+#: ``wifi-key``/``wifi-passphrase``/``wifi-private-key-password`` inside each
+#: ``wifi-networks`` entry, which is why the strip has to recurse. These are
+#: not limited to interfaces actually using PPPoE/PPTP/802.1X: a live 7.6.7
+#: read of the 35 interfaces on FGT-MCP-TEST-01 returned ``password``,
+#: ``eap-password`` and ``pptp-password`` with 71 ``ENC``-prefixed values
+#: between them, on ordinary ports.
+_INTERFACE_SECRET_FIELDS = frozenset(
+    {
+        "password",
+        "eap-password",
+        "pptp-password",
+        "wifi-key",
+        "wifi-passphrase",
+        "wifi-private-key-password",
+    }
+)
+
+
+def _strip_secret_fields(result: Any, secret_fields: frozenset[str]) -> Any:
+    """Strip named credential fields from anything FMG echoes back.
+
+    Recurses through dict values and list items at any depth -- see the
+    identical helper in device_config_tools.py for why a shallow strip is
+    not safe here either.
+    """
+    if isinstance(result, dict):
+        return {
+            k: _strip_secret_fields(v, secret_fields)
+            for k, v in result.items()
+            if k not in secret_fields
+        }
+    if isinstance(result, list):
+        return [_strip_secret_fields(item, secret_fields) for item in result]
+    return result
+
+
 @mcp.tool()
 async def get_device_interface_config(
     device: str | None = None,
@@ -906,7 +948,8 @@ async def get_device_interface_config(
     Returns:
         dict with keys:
             - device
-            - interfaces: raw device-DB interface config (list or dict)
+            - interfaces: raw device-DB interface config (list or dict),
+              credential fields stripped -- see _INTERFACE_SECRET_FIELDS
             - summary: condensed per-interface list (name/alias/vlanid/ip/...)
             - interface_count: number of summarized interfaces
             - error / error_code: on failure
@@ -926,10 +969,13 @@ async def get_device_interface_config(
         device = validate_device_name(device)
         if name is not None:
             name = validate_object_name(name, "interface")
-        interfaces = await client.get_device_interface_config(
-            device=device,
-            vlanids=vlanids,
-            name=name,
+        interfaces = _strip_secret_fields(
+            await client.get_device_interface_config(
+                device=device,
+                vlanids=vlanids,
+                name=name,
+            ),
+            _INTERFACE_SECRET_FIELDS,
         )
         summary = _summarize_interfaces(interfaces)
         return {
