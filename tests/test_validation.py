@@ -313,43 +313,135 @@ class TestRedactConfigTextSecrets:
 #: edit rather than a silent one.
 EXPECTED_CONFIG_TEXT_SECRET_DIRECTIVES = frozenset(
     {
+        "access-token",
+        "acme-eab-key-hmac",
+        "alicloud-access-key-secret",
+        "apcfg-auto-cert-est-http-password",
+        "apcfg-auto-cert-scep-password",
+        "apcfg-mesh-passwd",
         "api-key",
+        "auth-key",
+        "auth-password",
+        "auth-password-l1",
+        "auth-password-l2",
         "auth-pwd",
         "auth-pwd-alt",
+        "auth-string",
+        "authentication-key",
         "authkey",
         "authpasswd",
+        "aws-api-key",
+        "azure-api-key",
+        "bmr-hostname",
+        "captive-portal-macauth-radius-secret",
+        "captive-portal-radius-secret",
         "certificate-password",
         "client-secret",
+        "cloud-authentication-access-key",
         "community",
+        "cups-api-key",
+        "ddns-key",
+        "ddns-password",
+        "dp-secret",
+        "eab-key-hmac",
+        "eap-password",
+        "enc-key",
         "enckey",
+        "est-http-password",
+        "est-srp-password",
+        "fixed-key",
+        "fortipresence-secret",
         "group-authentication-secret",
+        "group-password",
+        "history0",
+        "history1",
+        "history10",
+        "history11",
+        "history12",
+        "history13",
+        "history14",
+        "history15",
+        "history16",
+        "history17",
+        "history18",
+        "history19",
+        "history2",
+        "history3",
+        "history4",
+        "history5",
+        "history6",
+        "history7",
+        "history8",
+        "history9",
+        "http-password",
+        "inter-controller-key",
         "key",
+        "key-passwd",
         "key-string",
+        "keyid-password",
+        "ldap-password",
         "login-passwd",
+        "login-password",
         "logon-password",
+        "md5-key",
+        "mfa-password",
+        "n-mhae-key",
+        "old-password",
+        "openai-api-key",
+        "openai-api-key-part2",
         "passphrase",
         "passwd",
+        "passwd-value",
+        "passwd1",
+        "passwd2",
+        "passwd3",
         "password",
         "password2",
         "password3",
         "password4",
         "password5",
+        "pmk",
         "ppk-secret",
+        "pptp-password",
         "preshared-key",
         "priv-pwd",
+        "private-data-encryption-key",
         "private-key",
+        "proxy-password",
+        "psk",
         "psksecret",
         "psksecret-remote",
         "radius-secret",
+        "rest-password",
         "rsso-secret",
         "sae-password",
+        "sam-cwp-password",
+        "sam-password",
+        "sam-private-key-password",
+        "scep-password",
         "secondary-key",
         "secondary-secret",
         "secret",
         "secret-key",
+        "server-key",
+        "sim-pin",
+        "sim1-pin",
+        "sim1-pin-code",
+        "sim2-pin",
+        "sim2-pin-code",
+        "ssh-hostkey-password",
+        "ssh-hsk-password",
         "sso-password",
+        "store-passphrase",
+        "tc-api-key",
         "tertiary-key",
         "tertiary-secret",
+        "uploadpass",
+        "vcenter-password",
+        "wan-port-auth-password",
+        "wifi-key",
+        "wifi-passphrase",
+        "wifi-private-key-password",
     }
 )
 
@@ -383,6 +475,9 @@ class TestConfigTextSecretDirectiveCoverage:
 
     @pytest.mark.parametrize("directive", sorted(EXPECTED_CONFIG_TEXT_SECRET_DIRECTIVES))
     def test_each_pinned_directive_redacts(self, directive):
+        # An ENC value is also caught by the value-shape fallback, so this
+        # case would pass with the name gone from the set. The unencoded
+        # case below is the one that holds the name list itself.
         text = f"    set {directive} ENC SECRETVALUE==\n"
         result = redact_config_text_secrets(text)
         assert "SECRETVALUE" not in result
@@ -409,15 +504,94 @@ class TestConfigTextSecretDirectiveCoverage:
     def test_each_pinned_directive_redacts_an_unencoded_value(self, directive):
         """Not every secret in a config export is ENC-wrapped.
 
-        The case above uses an "ENC ..." value for all 37, so a matcher
+        The case above uses an "ENC ..." value for every entry, so a matcher
         narrowed to only that shape would pass it while leaving every
         plaintext value in clear. A community string or a WEP key is
-        written bare.
+        written bare. Since the ENC fallback, this is also the only case
+        that fails when a name is dropped from the set.
         """
         text = f"    set {directive} PlainTextSecret\n"
         result = redact_config_text_secrets(text)
         assert "PlainTextSecret" not in result
         assert f"set {directive} ***REDACTED***" in result
+
+
+class TestConfigTextSecretsFromLiveExport:
+    """The three directives a live 7.6 device revision still leaked.
+
+    Structure as exported; values are placeholders. Before the schema-wide
+    name set and the ENC fallback, get_device_revision returned all three
+    in clear while redacting the other 211 ENC values in the same export.
+    """
+
+    EXPORT = (
+        "config system admin\n"
+        '    edit "admin"\n'
+        "        set old-password ENC SH2PlaceholderAdminHash\n"
+        '        set accprofile "super_admin"\n'
+        "    next\n"
+        "end\n"
+        "config system sdn-connector\n"
+        '    edit "vc01"\n'
+        "        set type vmware\n"
+        "        set key-passwd ENC PlaceholderSdnKeyPasswd==\n"
+        "    next\n"
+        "end\n"
+        "config system csf\n"
+        "    set status enable\n"
+        "    set fixed-key ENC PlaceholderCsfFixedKey==\n"
+        "end\n"
+    )
+
+    def test_all_three_are_redacted(self):
+        result = redact_config_text_secrets(self.EXPORT)
+        assert "Placeholder" not in result
+        assert "ENC " not in result
+        for directive in ("old-password", "key-passwd", "fixed-key"):
+            assert f"set {directive} ***REDACTED***" in result
+
+    def test_surrounding_config_is_kept(self):
+        result = redact_config_text_secrets(self.EXPORT)
+        assert 'set accprofile "super_admin"' in result
+        assert "set type vmware" in result
+        assert "set status enable" in result
+        assert result.count("\n") == self.EXPORT.count("\n")
+
+
+class TestConfigTextEncFallback:
+    """Any ENC-valued directive is redacted, named in the set or not."""
+
+    def test_unknown_directive_with_enc_value_is_redacted(self):
+        text = "    set some-future-secret ENC FutureSecretBlob==\n"
+        result = redact_config_text_secrets(text)
+        assert "FutureSecretBlob" not in result
+        assert "set some-future-secret ***REDACTED***" in result
+
+    def test_quoted_enc_value_is_redacted(self):
+        text = '    set some-future-secret "ENC QuotedBlob=="\n'
+        result = redact_config_text_secrets(text)
+        assert "QuotedBlob" not in result
+
+    def test_unknown_directive_without_enc_is_untouched(self):
+        text = "    set some-future-setting plainvalue\n"
+        assert redact_config_text_secrets(text) == text
+
+    def test_value_merely_starting_with_enc_letters_is_untouched(self):
+        """The fallback needs "ENC" followed by whitespace, not a prefix."""
+        text = '    set comments "ENCRYPTED backups only"\n    set alias ENCLAVE\n'
+        assert redact_config_text_secrets(text) == text
+
+    def test_enc_inside_a_value_is_untouched(self):
+        text = '    set comments "rotate the ENC key monthly"\n'
+        assert redact_config_text_secrets(text) == text
+
+    def test_sim_pin_flag_is_over_redacted_by_design(self):
+        """sim1-pin is a secret on system modems but a plain enable/disable
+        string under extender-controller. The matcher has no notion of the
+        enclosing config block, so the flag is masked too -- the same
+        trade-off already made for "key"."""
+        text = "    set sim1-pin enable\n"
+        assert redact_config_text_secrets(text) == "    set sim1-pin ***REDACTED***\n"
 
 
 # =============================================================================

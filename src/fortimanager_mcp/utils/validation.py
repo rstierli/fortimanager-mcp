@@ -171,6 +171,110 @@ CONFIG_TEXT_SECRET_DIRECTIVES = {
     "key-string",
     "logon-password",
     "sso-password",
+    # Every remaining format=password leaf name in the bundled cdb-device
+    # swagger for FortiGate 7.0 through 8.0. The set above was built from
+    # reported leaks and covered 31 of the 123; get_device_revision on a
+    # live 7.6 FortiGate still returned old-password (system admin),
+    # key-passwd (system sdn-connector) and fixed-key (system csf) in
+    # clear. Taken from the schema wholesale rather than added as found, so
+    # the set no longer depends on which features a test device happens to
+    # use. Two of these are not secret everywhere: sim1-pin/sim2-pin are
+    # plain strings under extender-controller (the PIN there is
+    # sim1-pin-code), and are over-redacted on the same terms as "key"
+    # above. bmr-hostname and history0..history19 look odd but are typed
+    # password in the schema, so they are included as typed.
+    "access-token",
+    "acme-eab-key-hmac",
+    "alicloud-access-key-secret",
+    "apcfg-auto-cert-est-http-password",
+    "apcfg-auto-cert-scep-password",
+    "apcfg-mesh-passwd",
+    "auth-key",
+    "auth-password",
+    "auth-password-l1",
+    "auth-password-l2",
+    "auth-string",
+    "authentication-key",
+    "aws-api-key",
+    "azure-api-key",
+    "bmr-hostname",
+    "captive-portal-macauth-radius-secret",
+    "captive-portal-radius-secret",
+    "cloud-authentication-access-key",
+    "cups-api-key",
+    "ddns-key",
+    "ddns-password",
+    "dp-secret",
+    "eab-key-hmac",
+    "eap-password",
+    "enc-key",
+    "est-http-password",
+    "est-srp-password",
+    "fixed-key",
+    "fortipresence-secret",
+    "group-password",
+    "history0",
+    "history1",
+    "history10",
+    "history11",
+    "history12",
+    "history13",
+    "history14",
+    "history15",
+    "history16",
+    "history17",
+    "history18",
+    "history19",
+    "history2",
+    "history3",
+    "history4",
+    "history5",
+    "history6",
+    "history7",
+    "history8",
+    "history9",
+    "http-password",
+    "inter-controller-key",
+    "key-passwd",
+    "keyid-password",
+    "ldap-password",
+    "login-password",
+    "md5-key",
+    "mfa-password",
+    "n-mhae-key",
+    "old-password",
+    "openai-api-key",
+    "openai-api-key-part2",
+    "passwd-value",
+    "passwd1",
+    "passwd2",
+    "passwd3",
+    "pmk",
+    "pptp-password",
+    "private-data-encryption-key",
+    "proxy-password",
+    "psk",
+    "rest-password",
+    "sam-cwp-password",
+    "sam-password",
+    "sam-private-key-password",
+    "scep-password",
+    "server-key",
+    "sim-pin",
+    "sim1-pin",
+    "sim1-pin-code",
+    "sim2-pin",
+    "sim2-pin-code",
+    "ssh-hostkey-password",
+    "ssh-hsk-password",
+    "store-passphrase",
+    "tc-api-key",
+    "uploadpass",
+    "vcenter-password",
+    "wan-port-auth-password",
+    "wifi-key",
+    "wifi-passphrase",
+    "wifi-private-key-password",
 }
 
 _CONFIG_TEXT_SECRET_LINE = re.compile(
@@ -178,6 +282,16 @@ _CONFIG_TEXT_SECRET_LINE = re.compile(
     + "|".join(re.escape(d) for d in CONFIG_TEXT_SECRET_DIRECTIVES)
     + r")\s+)(?P<rest>.*)$"
 )
+
+# Any directive whose value FortiOS wrote out as an ENC blob, whatever it is
+# called. ENC is how FortiOS writes a stored secret (reversibly, under a
+# fixed key unless private-data-encryption is set -- Fortinet FG-IR-19-007),
+# and on the live 7.6 export that motivated this all 214 ENC values sat on
+# password-typed fields. This catches a field a future FortiOS adds before
+# the name list above learns it. Not a substitute for the list: a secret
+# that is not ENC-encoded (a "set key" typed into a CLI script, a PEM
+# private key) is only recognised by name.
+_CONFIG_TEXT_ENC_LINE = re.compile(r'^(?P<prefix>\s*set\s+\S+\s+)(?P<rest>"?ENC\s.*)$')
 
 
 def _has_unescaped_quote(text: str) -> bool:
@@ -212,7 +326,8 @@ def redact_config_text_secrets(text: str) -> str:
     dict-key-driven sanitize_for_logging above cannot see inside it.
     Replaces the value portion of each matching "set <directive> ..." line
     with MASK_VALUE, keeping the directive name visible so it's still clear
-    what was masked and where.
+    what was masked and where. A line matches if its directive is in
+    CONFIG_TEXT_SECRET_DIRECTIVES or its value is an ENC blob.
 
     Line-scoped, not a single MULTILINE regex: a quoted value (e.g.
     ``set private-key "-----BEGIN ... KEY-----``) can legitimately span
@@ -229,7 +344,7 @@ def redact_config_text_secrets(text: str) -> str:
     i = 0
     while i < len(lines):
         line = lines[i]
-        match = _CONFIG_TEXT_SECRET_LINE.match(line)
+        match = _CONFIG_TEXT_SECRET_LINE.match(line) or _CONFIG_TEXT_ENC_LINE.match(line)
         if not match:
             out.append(line)
             i += 1
