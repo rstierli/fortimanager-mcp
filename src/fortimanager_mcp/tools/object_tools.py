@@ -16,6 +16,8 @@ from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_default_adom
 from fortimanager_mcp.utils.errors import client_safe_error
 from fortimanager_mcp.utils.validation import (
+    and_filters,
+    substring_filter,
     validate_adom,
     validate_fqdn,
     validate_ipv4_address,
@@ -145,13 +147,13 @@ async def list_addresses(
 
         filters = []
         if name_filter:
-            filters.append(["name", "contain", name_filter])
+            filters.append(substring_filter("name", name_filter))
         if type_filter:
             filters.append(["type", "==", type_filter])
 
         addresses = await client.list_addresses(
             adom=adom,
-            filter=filters if filters else None,
+            filter=and_filters(filters),
         )
 
         return {
@@ -583,11 +585,11 @@ async def list_address_groups(
 
         filters = []
         if name_filter:
-            filters.append(["name", "contain", name_filter])
+            filters.append(substring_filter("name", name_filter))
 
         groups = await client.list_address_groups(
             adom=adom,
-            filter=filters if filters else None,
+            filter=and_filters(filters),
         )
 
         return {
@@ -803,13 +805,13 @@ async def list_services(
 
         filters = []
         if name_filter:
-            filters.append(["name", "contain", name_filter])
+            filters.append(substring_filter("name", name_filter))
         if protocol_filter:
             filters.append(["protocol", "==", protocol_filter])
 
         services = await client.list_services(
             adom=adom,
-            filter=filters if filters else None,
+            filter=and_filters(filters),
         )
 
         return {
@@ -1133,11 +1135,11 @@ async def list_service_groups(
 
         filters = []
         if name_filter:
-            filters.append(["name", "contain", name_filter])
+            filters.append(substring_filter("name", name_filter))
 
         groups = await client.list_service_groups(
             adom=adom,
-            filter=filters if filters else None,
+            filter=and_filters(filters),
         )
 
         return {
@@ -1355,7 +1357,7 @@ async def search_objects(
         adom = validate_adom(adom)
         client = _get_client()
 
-        filter_list = [["name", "contain", search_term]]
+        filter_list = [substring_filter("name", search_term)]
 
         # Search all object types in parallel
         addresses = await client.list_addresses(adom, filter=filter_list)

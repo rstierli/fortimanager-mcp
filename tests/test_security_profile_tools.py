@@ -61,7 +61,7 @@ class TestAntivirusProfileTools:
 
         assert result["status"] == "success"
         kwargs = mock_fmg_instance.get.call_args.kwargs
-        assert kwargs["filter"] == [["name", "contain", "strict"]]
+        assert kwargs["filter"] == [["name", "like", "%strict%"]]
 
     @pytest.mark.asyncio
     async def test_get_antivirus_profile_success(

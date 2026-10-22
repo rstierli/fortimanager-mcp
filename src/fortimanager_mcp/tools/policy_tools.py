@@ -19,10 +19,12 @@ from fortimanager_mcp.utils.responses import error_response
 from fortimanager_mcp.utils.task_guard import TaskSlotsExhausted, spawn_guarded
 from fortimanager_mcp.utils.validation import (
     ValidationError,
+    and_filters,
     check_policy_safety,
     collect_scope_values,
     redact_config_text_secrets,
     resolve_negate_for_safety_check,
+    substring_filter,
     validate_adom,
     validate_move_position,
     validate_package_name,
@@ -1152,7 +1154,7 @@ async def search_firewall_policies(
         # Build filter list
         filters = []
         if name_filter:
-            filters.append(["name", "contain", name_filter])
+            filters.append(substring_filter("name", name_filter))
         if srcaddr_filter:
             filters.append(["srcaddr", "contain", srcaddr_filter])
         if dstaddr_filter:
@@ -1167,7 +1169,7 @@ async def search_firewall_policies(
         policies = await client.list_firewall_policies(
             adom=adom,
             pkg=package,
-            filter=filters if filters else None,
+            filter=and_filters(filters),
         )
 
         return {

@@ -18,7 +18,9 @@ from fortimanager_mcp.utils.responses import (
 )
 from fortimanager_mcp.utils.validation import (
     ValidationError,
+    and_filters,
     coerce_device_name_list,
+    substring_filter,
     validate_adom,
     validate_device_dict_list,
     validate_device_name,
@@ -48,6 +50,25 @@ DEV_STATUS = {
     4: "installed",
     5: "aborted",
 }
+
+
+def _os_version_filters(version: str) -> list[list[Any]]:
+    """Exact-match dvmdb filters for a "major[.minor[.patch]]" OS version.
+
+    dvmdb stores the version split across three integer fields, ``os_ver``
+    (7), ``mr`` (4) and ``patch`` (12), so no single field holds "7.4". The
+    previous ``["os_ver", "contain", "7.4"]`` could never match; measured on
+    FortiManager 7.6.7, neither ``contain`` nor ``like`` matches an integer
+    field at all, while ``os_ver == 7`` with ``mr == 4`` returns the 7.4
+    fleet.
+    """
+    parts = version.strip().lower().removeprefix("v").split(".")
+    if not 1 <= len(parts) <= 3 or not all(p.isdigit() for p in parts):
+        raise ValidationError(
+            f"Invalid os_version_filter '{version}'. Expected major[.minor[.patch]], e.g. '7.4'."
+        )
+    fields = ("os_ver", "mr", "patch")
+    return [[field, "==", int(part)] for field, part in zip(fields, parts, strict=False)]
 
 
 def _decode_status(device: dict[str, Any]) -> dict[str, Any]:
@@ -185,7 +206,8 @@ async def search_devices(
         adom: ADOM name (default: from DEFAULT_ADOM env var, or "root")
         name_filter: Filter by device name (partial match)
         platform_filter: Filter by platform type (e.g., "FortiGate-VM")
-        os_version_filter: Filter by OS version (e.g., "7.4")
+        os_version_filter: Filter by OS version as major[.minor[.patch]]
+            (e.g., "7", "7.4" or "7.4.12"; a leading "v" is accepted)
         connection_status: Filter by status ("up" or "down")
 
     Returns:
@@ -213,11 +235,11 @@ async def search_devices(
         # Build filter list (heterogeneous: values can be str or int)
         filters: list[list[Any]] = []
         if name_filter:
-            filters.append(["name", "contain", name_filter])
+            filters.append(substring_filter("name", name_filter))
         if platform_filter:
-            filters.append(["platform_str", "contain", platform_filter])
+            filters.append(substring_filter("platform_str", platform_filter))
         if os_version_filter:
-            filters.append(["os_ver", "contain", os_version_filter])
+            filters.extend(_os_version_filters(os_version_filter))
         if connection_status:
             # Reject typos/unexpected values instead of silently treating any
             # non-"up" string as "down".
@@ -230,7 +252,7 @@ async def search_devices(
 
         devices = await client.list_devices(
             adom=adom,
-            filter=filters if filters else None,
+            filter=and_filters(filters),
         )
 
         # Decode status values

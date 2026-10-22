@@ -24,6 +24,8 @@ from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_default_adom
 from fortimanager_mcp.utils.errors import ValidationError, client_safe_error
 from fortimanager_mcp.utils.validation import (
+    and_filters,
+    substring_filter,
     validate_adom,
     validate_object_name,
     validate_status,
@@ -105,11 +107,11 @@ async def list_ips_sensors(
 
         filters = []
         if name_filter:
-            filters.append(["name", "contain", name_filter])
+            filters.append(substring_filter("name", name_filter))
 
         sensors = await client.list_ips_sensors(
             adom=adom,
-            filter=filters if filters else None,
+            filter=and_filters(filters),
         )
 
         return {
@@ -579,11 +581,11 @@ async def list_ssl_ssh_profiles(
 
         filters = []
         if name_filter:
-            filters.append(["name", "contain", name_filter])
+            filters.append(substring_filter("name", name_filter))
 
         profiles = await client.list_ssl_ssh_profiles(
             adom=adom,
-            filter=filters if filters else None,
+            filter=and_filters(filters),
         )
 
         return {
@@ -935,11 +937,11 @@ async def list_dlp_profiles(
 
         filters = []
         if name_filter:
-            filters.append(["name", "contain", name_filter])
+            filters.append(substring_filter("name", name_filter))
 
         profiles = await client.list_dlp_profiles(
             adom=adom,
-            filter=filters if filters else None,
+            filter=and_filters(filters),
         )
 
         return {
@@ -1183,11 +1185,11 @@ async def list_waf_profiles(
 
         filters = []
         if name_filter:
-            filters.append(["name", "contain", name_filter])
+            filters.append(substring_filter("name", name_filter))
 
         profiles = await client.list_waf_profiles(
             adom=adom,
-            filter=filters if filters else None,
+            filter=and_filters(filters),
         )
 
         return {

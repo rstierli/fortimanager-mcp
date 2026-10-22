@@ -466,6 +466,49 @@ def obj_base(adom: str) -> str:
     return "global" if adom.lower() == "global" else f"adom/{adom}"
 
 
+def substring_filter(field: str, term: str) -> list[Any]:
+    """A case-insensitive "field contains term" filter for a scalar string field.
+
+    Substring matching is ``like`` with ``%`` wildcards. The ``contain``
+    spelling is accepted by FortiManager 7.6.7 but compares a scalar string
+    field whole, so ``["name", "contain", "Veeam"]`` matches only an object
+    named exactly ``Veeam`` and returns nothing for ``Veeam Ports``. Measured
+    live on 7.6.7: ``contain`` returned 0 service groups for "Veeam", 0
+    address groups for "RAS-VPN" and only ``HTTP`` for "HTTP", where ``like``
+    returned 10, 3 and 5. ``like`` also ignores case.
+
+    Inside ``like``, ``%`` and ``_`` are wildcards and a backslash escapes
+    them (live: ``%TCP_8%`` also matched ``TCP-892``, ``%TCP\\_8%`` did not),
+    so all three are escaped and the term is matched literally.
+
+    Not for multi-value fields such as a policy's ``srcaddr``: there
+    ``contain`` is list membership, which is a different question.
+    """
+    escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return [field, "like", f"%{escaped}%"]
+
+
+def and_filters(conditions: list[list[Any]]) -> list[Any] | None:
+    """Join filter conditions so that a row must match all of them.
+
+    A bare list of conditions is an OR, not an AND. Measured live on
+    FortiManager 7.6.7: ``[["name", "like", "%oob%"], ["type", "==", "fqdn"]]``
+    returned all 482 FQDN addresses plus the name matches, and
+    ``[["os_ver", "==", 7], ["mr", "==", 6]]`` returned a 7.4 fleet. The
+    compound form ``[c1, "&&", c2]`` (already used by the client's
+    ``get_device_interface_config``) returns the intersection.
+
+    Returns None for no conditions, so the result can go straight into an
+    optional ``filter`` argument.
+    """
+    if not conditions:
+        return None
+    joined: list[Any] = [conditions[0]]
+    for condition in conditions[1:]:
+        joined.extend(["&&", condition])
+    return joined
+
+
 def coerce_device_name_list(devices: list[str] | str) -> list[str]:
     """Coerce a devices argument to a list before it is iterated.
 

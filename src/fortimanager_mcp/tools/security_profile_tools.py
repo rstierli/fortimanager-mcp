@@ -34,6 +34,7 @@ from fortimanager_mcp.utils.config import get_default_adom
 from fortimanager_mcp.utils.errors import client_safe_error
 from fortimanager_mcp.utils.validation import (
     obj_base,
+    substring_filter,
     validate_adom,
     validate_object_name,
 )
@@ -68,7 +69,7 @@ async def _list_objects(
     """
     params: dict[str, Any] = {}
     if name_filter:
-        params["filter"] = [["name", "contain", name_filter]]
+        params["filter"] = [substring_filter("name", name_filter)]
 
     result = await client.get(base_url.format(base=obj_base(adom)), **params)
     return result if isinstance(result, list) else [result] if result else []
