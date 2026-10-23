@@ -15,6 +15,7 @@ from fortimanager_mcp.utils.errors import client_safe_error
 from fortimanager_mcp.utils.responses import error_response
 from fortimanager_mcp.utils.task_guard import TaskSlotsExhausted, spawn_guarded
 from fortimanager_mcp.utils.validation import (
+    and_filters,
     coerce_device_name_list,
     validate_adom,
     validate_device_name,
@@ -194,12 +195,10 @@ async def list_scripts(
         if target:
             filter_conditions.append(["target", "==", target])
 
-        filter_param = filter_conditions if filter_conditions else None
-
         scripts = await client.list_scripts(
             adom=adom,
             fields=["name", "type", "target", "desc", "content", "modification_time"],
-            filter=filter_param,
+            filter=and_filters(filter_conditions),
         )
 
         # Limit results

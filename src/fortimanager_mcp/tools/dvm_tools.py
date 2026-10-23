@@ -61,9 +61,13 @@ def _os_version_filters(version: str) -> list[list[Any]]:
     FortiManager 7.6.7, neither ``contain`` nor ``like`` matches an integer
     field at all, while ``os_ver == 7`` with ``mr == 4`` returns the 7.4
     fleet.
+
+    ``str.isdigit`` alone is not enough: it is true for a superscript two,
+    which ``int()`` then rejects, and for Arabic-Indic digits, which it reads
+    as Western ones, so a part must be ASCII as well.
     """
     parts = version.strip().lower().removeprefix("v").split(".")
-    if not 1 <= len(parts) <= 3 or not all(p.isdigit() for p in parts):
+    if not 1 <= len(parts) <= 3 or not all(p.isascii() and p.isdigit() for p in parts):
         raise ValidationError(
             f"Invalid os_version_filter '{version}'. Expected major[.minor[.patch]], e.g. '7.4'."
         )

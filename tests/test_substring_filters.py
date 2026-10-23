@@ -19,6 +19,7 @@ from fortimanager_mcp.tools import (
     dvm_tools,
     object_tools,
     policy_tools,
+    script_tools,
     security_profile_advanced_tools,
     security_profile_tools,
 )
@@ -213,6 +214,39 @@ class TestCombinedFiltersAreAnded:
             [["name", "like", "%VPN%"], "&&", ["action", "==", "deny"]]
         ]
 
+    @pytest.mark.asyncio
+    async def test_list_scripts_type_and_target(
+        self, mock_client: MagicMock, mock_fmg_instance: MagicMock
+    ) -> None:
+        """The legacy /dvmdb script endpoint (before 7.6) takes the target string as-is."""
+        mock_client._fmg_version = (7, 4, 8)
+        mock_fmg_instance.get.return_value = (0, [])
+
+        with patch.object(script_tools, "get_fmg_client", return_value=mock_client):
+            result = await script_tools.list_scripts(
+                adom="root", script_type="cli", target="remote_device"
+            )
+
+        assert "error" not in result, result
+        assert _sent_filters(mock_fmg_instance) == [
+            [["type", "==", "cli"], "&&", ["target", "==", "remote_device"]]
+        ]
+
+    @pytest.mark.asyncio
+    async def test_list_scripts_target_is_still_mapped_inside_the_join(
+        self, mock_client: MagicMock, mock_fmg_instance: MagicMock
+    ) -> None:
+        """FMG 7.6+ stores target as an int; the mapping must reach into the "&&" form."""
+        mock_client._fmg_version = (7, 6, 5)
+        mock_fmg_instance.get.return_value = (0, [])
+
+        with patch.object(script_tools, "get_fmg_client", return_value=mock_client):
+            await script_tools.list_scripts(adom="root", script_type="cli", target="remote_device")
+
+        assert _sent_filters(mock_fmg_instance) == [
+            [["type", "==", "cli"], "&&", ["target", "==", 1]]
+        ]
+
 
 class TestSearchDevicesOsVersion:
     @pytest.mark.asyncio
@@ -252,6 +286,20 @@ class TestSearchDevicesOsVersion:
             result = await dvm_tools.search_devices(adom="root", os_version_filter=version or " ")
 
         assert result["status"] == "error"
+        mock_fmg_instance.get.assert_not_called()
+
+    @pytest.mark.asyncio
+    # Superscript two, and Arabic-Indic seven and four.
+    @pytest.mark.parametrize("version", ["²", "7.²", "٧.٤"])
+    async def test_non_ascii_digits_are_refused_by_the_validator(
+        self, version: str, mock_client: MagicMock, mock_fmg_instance: MagicMock
+    ) -> None:
+        """``str.isdigit`` accepts these, so they reached ``int()`` or were read as 7.4."""
+        with patch.object(dvm_tools, "get_fmg_client", return_value=mock_client):
+            result = await dvm_tools.search_devices(adom="root", os_version_filter=version)
+
+        assert result["status"] == "error"
+        assert "Invalid os_version_filter" in result["message"]
         mock_fmg_instance.get.assert_not_called()
 
 
