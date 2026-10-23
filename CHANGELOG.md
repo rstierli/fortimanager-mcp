@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The server reports its version in the MCP handshake (#101).** `MCPServer` defaults `version` to an empty string and the server never passed one, so every client received `serverInfo.version == ""` on `initialize` and could not tell which release it was connected to. The constructor now takes `fortimanager_mcp.__version__`, and a test drives a real `initialize` through the in-memory client and asserts the name and version the client sees. The parameter exists from mcp 2.0.0 on, so the dependency floor is unchanged.
+
 ## [1.12.0] - 2026-10-23
 
 ### Security

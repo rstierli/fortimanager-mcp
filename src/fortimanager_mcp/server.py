@@ -14,6 +14,7 @@ from typing import Any
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 
+from fortimanager_mcp import __version__
 from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.utils.adom_locks import release_held_locks
 from fortimanager_mcp.utils.config import get_settings
@@ -60,6 +61,7 @@ if settings.MCP_ALLOWED_HOSTS:
 # HTTP deployment stateful and unbound by the allowed-hosts list.
 mcp = MCPServer(
     "fortimanager-mcp",
+    version=__version__,
     dependencies=["pyfmg", "pydantic-settings"],
 )
 
