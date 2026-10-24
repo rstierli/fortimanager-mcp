@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The server reports its version in the MCP handshake (#101).** `MCPServer` defaults `version` to an empty string and the server never passed one, so every client received `serverInfo.version == ""` on `initialize` and could not tell which release it was connected to. The constructor now takes `fortimanager_mcp.__version__`, and a test drives a real `initialize` through the in-memory client and asserts the name and version the client sees. The parameter exists from mcp 2.0.0 on, so the dependency floor is unchanged.
 
+### Tests
+
+- **A live integration test that goes through the MCP protocol (#102).** Every other live test calls tool functions directly, so nothing in the repo exercised the handshake, tool registration or the serialized output a client receives; the 1.12.0 release gate covered that with ad-hoc scripts kept outside the repo. `tests/integration/test_mcp_protocol.py` now spawns the server over stdio, the way Claude Desktop and Claude Code run it, and checks the handshake (name and version) and the tool list in both tool modes; 22 read-only calls in full mode and the same calls through `execute_fortimanager_tool` in dynamic mode; and a leak sweep that calls every `list_`/`get_`/`search_` tool fillable from an ADOM and device and fails on any `ENC` value or credential key in what the client receives. Two blind spots in the scripts are closed: an error reported as `status: "error"` with an `error_code` counted as success, and in dynamic mode a tool's error nested under the dispatcher's `result` was missed. `LEAK_SWEEP_TARGETS` adds devices to the sweep. Run against FortiManager 7.6.7: 5 passed, and the sweep is clean on all three lab devices.
+
 ## [1.12.0] - 2026-10-23
 
 ### Security
