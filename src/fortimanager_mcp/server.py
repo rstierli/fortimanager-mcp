@@ -6,6 +6,8 @@ Supports two modes:
 - dynamic: Only discovery tools loaded (~90% context reduction)
 """
 
+import asyncio
+import contextlib
 import hmac
 import json
 import logging
@@ -1023,43 +1025,70 @@ def main() -> None:
         run_http()
 
 
+async def _connect_in_background(client: FortiManagerClient) -> None:
+    """Make the startup connect attempt without holding up the transport.
+
+    Awaiting it before serving made ``initialize`` wait out the whole connect
+    timeout when FortiManager was unreachable: 30 s by default, which is also
+    Claude Code's MCP connect timeout, so the server showed as failed. A
+    failure here only logs. The client keeps trying on each tool call
+    (``ensure_connected``), so tools work once FortiManager is reachable.
+    """
+    try:
+        await client.ensure_connected()
+        logger.info("FortiManager connection established")
+    except Exception as e:
+        logger.warning(
+            f"FortiManager connection failed: {e}. Tools retry the connection on their next call."
+        )
+
+
+def _start_fmg_client() -> "asyncio.Task[None] | None":
+    """Create the global client and start connecting it in the background.
+
+    Returns the connect task, for :func:`_stop_fmg_client` to cancel.
+    """
+    global _fmg_client
+
+    if not settings.FORTIMANAGER_HOST:
+        logger.warning(
+            "FORTIMANAGER_HOST not configured. Set environment variables or .env file to connect."
+        )
+        _fmg_client = None
+        return None
+
+    logger.info("Initializing FortiManager connection")
+    _fmg_client = FortiManagerClient.from_settings(settings, connect_on_demand=True)
+    return asyncio.create_task(_connect_in_background(_fmg_client))
+
+
+async def _stop_fmg_client(connect_task: "asyncio.Task[None] | None") -> None:
+    """Cancel a pending connect, release held ADOM locks, disconnect."""
+    if connect_task is not None:
+        connect_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await connect_task
+    logger.info("Closing FortiManager connection")
+    if _fmg_client:
+        await release_held_locks(_fmg_client)
+        await _fmg_client.disconnect()
+
+
 def run_stdio() -> None:
     """Run MCP server in stdio mode for Claude Desktop / LM Studio.
 
     Owns the FortiManager-client lifecycle for the server's full lifetime
     (single-owner pattern — see the note next to ``mcp = MCPServer(...)``).
-    Connects once at startup; disconnects once at shutdown. A connection
-    failure logs a warning and yields anyway so the server still starts and
-    its tools can report ``fortimanager_connected: False`` cleanly.
+    Starts serving at once and connects in the background; disconnects once
+    at shutdown.
     """
-    import asyncio
 
     async def stdio_main() -> None:
-        global _fmg_client
-
-        if settings.FORTIMANAGER_HOST:
-            logger.info("Initializing FortiManager connection")
-            _fmg_client = FortiManagerClient.from_settings(settings)
-            try:
-                await _fmg_client.connect()
-                logger.info("FortiManager connection established")
-            except Exception as e:
-                logger.warning(f"FortiManager connection failed: {e}. Server will still start.")
-                _fmg_client = None
-        else:
-            logger.warning(
-                "FORTIMANAGER_HOST not configured. "
-                "Set environment variables or .env file to connect."
-            )
-            _fmg_client = None
-
+        connect_task = _start_fmg_client()
         try:
             await mcp.run_stdio_async()
         finally:
-            logger.info("Closing FortiManager connection")
-            if _fmg_client:
-                await release_held_locks(_fmg_client)
-                await _fmg_client.disconnect()
+            await _stop_fmg_client(connect_task)
 
     asyncio.run(stdio_main())
 
@@ -1254,30 +1283,11 @@ def run_http() -> None:
     async def app_lifespan(app: Starlette) -> AsyncIterator[None]:
         """Ensure MCP session manager and FortiManager client start."""
         async with mcp.session_manager.run():
-            global _fmg_client
-
-            if settings.FORTIMANAGER_HOST:
-                logger.info("Initializing FortiManager connection")
-                _fmg_client = FortiManagerClient.from_settings(settings)
-                try:
-                    await _fmg_client.connect()
-                    logger.info("FortiManager connection established")
-                except Exception as e:
-                    logger.warning(f"FortiManager connection failed: {e}. Server will still start.")
-                    _fmg_client = None
-            else:
-                logger.warning(
-                    "FORTIMANAGER_HOST not configured. Set environment variables or .env file to connect."
-                )
-                _fmg_client = None
-
+            connect_task = _start_fmg_client()
             try:
                 yield
             finally:
-                logger.info("Closing FortiManager connection")
-                if _fmg_client:
-                    await release_held_locks(_fmg_client)
-                    await _fmg_client.disconnect()
+                await _stop_fmg_client(connect_task)
 
     # Create Starlette app with health route, MCP mount, and auth middleware
     app = Starlette(

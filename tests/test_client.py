@@ -136,9 +136,10 @@ class TestVerifySSLWarning:
 
 
 class TestEnsureConnectedReconnectOnce:
-    """`ensure_connected()` is the async revive-on-idle entry point tools call
-    before issuing requests. Reconnect is serialized via `_force_reconnect()`
-    so concurrent dropped-session callers don't race.
+    """`ensure_connected()` connects a client that is not connected; with
+    `connect_on_demand` (the server's client) every request runs it first.
+    Reconnect is serialized via `_force_reconnect()` so concurrent
+    dropped-session callers don't race.
     """
 
     @pytest.mark.asyncio
@@ -172,6 +173,96 @@ class TestEnsureConnectedReconnectOnce:
         await mock_client_disconnected.ensure_connected()
         assert mock_client_disconnected.is_connected
         assert calls == ["connect"]
+
+    @pytest.mark.asyncio
+    async def test_concurrent_callers_share_one_failed_attempt(
+        self,
+        mock_client_disconnected: FortiManagerClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Callers queued behind a failed connect get its error instead of
+        each waiting out another connect timeout of their own."""
+        import asyncio
+
+        calls: list[str] = []
+
+        async def fake_connect(self_: FortiManagerClient) -> None:
+            calls.append("connect")
+            await asyncio.sleep(0)
+            raise ConnectionError("Failed to connect to FortiManager: timed out")
+
+        monkeypatch.setattr(FortiManagerClient, "connect", fake_connect)
+        results = await asyncio.gather(
+            mock_client_disconnected.ensure_connected(),
+            mock_client_disconnected.ensure_connected(),
+            mock_client_disconnected.ensure_connected(),
+            return_exceptions=True,
+        )
+        assert calls == ["connect"]
+        assert all(isinstance(r, ConnectionError) for r in results)
+
+    @pytest.mark.asyncio
+    async def test_call_after_a_failed_attempt_tries_again(
+        self,
+        mock_client_disconnected: FortiManagerClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A failed attempt is not cached: the next call connects anew, so
+        the client recovers once FortiManager is reachable."""
+        calls: list[str] = []
+
+        async def fake_connect(self_: FortiManagerClient) -> None:
+            calls.append("connect")
+            if len(calls) == 1:
+                raise ConnectionError("Failed to connect to FortiManager: timed out")
+            self_._connected = True
+            self_._fmg = MagicMock()
+            self_._ever_connected = True
+
+        monkeypatch.setattr(FortiManagerClient, "connect", fake_connect)
+        with pytest.raises(ConnectionError):
+            await mock_client_disconnected.ensure_connected()
+        await mock_client_disconnected.ensure_connected()
+        assert mock_client_disconnected.is_connected
+        assert calls == ["connect", "connect"]
+
+    @pytest.mark.asyncio
+    async def test_caller_behind_a_cancelled_attempt_connects_itself(
+        self,
+        mock_client_disconnected: FortiManagerClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A cancelled attempt has no outcome to share, not even an older
+        failure: the caller waiting behind it makes its own attempt."""
+        import asyncio
+
+        calls: list[str] = []
+        started = asyncio.Event()
+
+        async def fake_connect(self_: FortiManagerClient) -> None:
+            calls.append("connect")
+            if len(calls) == 1:
+                raise ConnectionError("Failed to connect to FortiManager: timed out")
+            if len(calls) == 2:
+                started.set()
+                await asyncio.Event().wait()  # hangs until cancelled
+            self_._connected = True
+            self_._fmg = MagicMock()
+            self_._ever_connected = True
+
+        monkeypatch.setattr(FortiManagerClient, "connect", fake_connect)
+        with pytest.raises(ConnectionError):
+            await mock_client_disconnected.ensure_connected()
+
+        first = asyncio.create_task(mock_client_disconnected.ensure_connected())
+        await started.wait()
+        second = asyncio.create_task(mock_client_disconnected.ensure_connected())
+        await asyncio.sleep(0)
+        first.cancel()
+        await second
+        assert first.cancelled()
+        assert mock_client_disconnected.is_connected
+        assert calls == ["connect", "connect", "connect"]
 
     def test_is_transient_error_oserror(self, mock_client: FortiManagerClient) -> None:
         """OSError (network problems) is transient."""
@@ -441,6 +532,75 @@ class TestExecuteResilient:
         # surfaced (no second reconnect).
         assert reconnects == ["reconnect"]
         assert len(attempts) == 2
+
+    @pytest.mark.asyncio
+    async def test_never_connected_client_does_not_connect_by_default(
+        self,
+        mock_client_disconnected: FortiManagerClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Without connect_on_demand a direct API call on a never-connected
+        client still raises "Not connected" instead of logging in."""
+        calls: list[str] = []
+
+        async def fake_connect(self_: FortiManagerClient) -> None:
+            calls.append("connect")
+
+        async def _factory() -> None:
+            mock_client_disconnected._ensure_connected()
+
+        monkeypatch.setattr(FortiManagerClient, "connect", fake_connect)
+        with pytest.raises(ConnectionError, match="Not connected"):
+            await mock_client_disconnected._execute_resilient(_factory)
+        assert calls == []
+
+    @pytest.mark.asyncio
+    async def test_connect_on_demand_connects_a_never_connected_client_first(
+        self,
+        mock_client_disconnected: FortiManagerClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The server's client, whose startup connect failed, connects on its
+        next call instead of answering "Not connected" until a restart."""
+        mock_client_disconnected.connect_on_demand = True
+        calls: list[str] = []
+
+        async def fake_connect(self_: FortiManagerClient) -> None:
+            calls.append("connect")
+            self_._connected = True
+            self_._fmg = MagicMock()
+            self_._ever_connected = True
+
+        async def _factory() -> str:
+            calls.append("call")
+            return "ok"
+
+        monkeypatch.setattr(FortiManagerClient, "connect", fake_connect)
+        assert await mock_client_disconnected._execute_resilient(_factory) == "ok"
+        assert calls == ["connect", "call"]
+
+    @pytest.mark.asyncio
+    async def test_failed_connect_on_demand_skips_the_request(
+        self,
+        mock_client_disconnected: FortiManagerClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """One connect attempt per call; the request itself never runs."""
+        mock_client_disconnected.connect_on_demand = True
+        calls: list[str] = []
+
+        async def fake_connect(self_: FortiManagerClient) -> None:
+            calls.append("connect")
+            raise ConnectionError("Failed to connect to FortiManager: timed out")
+
+        async def _factory() -> str:
+            calls.append("call")
+            return "ok"
+
+        monkeypatch.setattr(FortiManagerClient, "connect", fake_connect)
+        with pytest.raises(ConnectionError):
+            await mock_client_disconnected._execute_resilient(_factory)
+        assert calls == ["connect"]
 
 
 class TestClientOperations:
