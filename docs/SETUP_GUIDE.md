@@ -101,7 +101,7 @@ FORTIMANAGER_VERIFY_SSL=true
 # Logging
 LOG_LEVEL=INFO
 
-# Tool mode: "full" (all 101 tools) or "dynamic" (discovery only)
+# Tool mode: "full" (all 232 tools) or "dynamic" (discovery only)
 FMG_TOOL_MODE=full
 ```
 
@@ -358,17 +358,27 @@ asyncio.run(client.disconnect())
 
 ## Available Tools
 
-The MCP server provides **101 tools** across 7 categories:
+The MCP server provides **232 tools** across 17 categories, plus `health_check`. The README's "Available Tools" section is the full, per-tool reference.
 
 | Category | Tools | Description |
 |----------|-------|-------------|
-| System | 17 | Status, ADOMs, devices, tasks, packages, workspace |
-| Device Management | 12 | Add/delete devices, VDOMs, groups, status |
-| Policy | 14 | Firewall policies, packages, install, preview |
-| Objects | 24 | Addresses, services, groups, search |
+| System | 17 | Status, HA, ADOMs, devices, tasks, packages, workspace |
+| Device Management | 14 | Add/delete devices, VDOMs, status, interfaces |
+| Device Configuration | 21 | Interfaces, DHCP servers, FortiAP VAPs and WTPs, sniffers |
+| Policy | 25 | Firewall and local-in policies, packages, install, preview |
+| Objects | 25 | Addresses, services, groups, search |
 | Scripts | 12 | CLI scripts, execution, logs |
-| Templates | 15 | Provisioning, system templates, groups |
-| SD-WAN | 7 | SD-WAN templates, assignment |
+| Templates | 15 | Provisioning, system templates, CLI template groups |
+| SD-WAN | 10 | SD-WAN templates, assignment, monitoring |
+| Security Profiles | 20 | Antivirus, application control, DNS filter, web filter |
+| Security Profiles (Advanced) | 23 | IPS, DLP, SSL/SSH inspection, WAF |
+| VPN | 14 | IPsec phase 1 and 2 interfaces, SSL VPN settings and portals |
+| Revision History | 11 | ADOM, device and policy revisions, diff, revert |
+| FortiManager Operations | 9 | Packet capture, backup and restore, license, tasks |
+| Device Groups | 8 | Group membership and nesting |
+| Firmware | 5 | Available images, upgrade path and report, upgrade |
+| Object Usage | 2 | Where an object is used, duplicate objects |
+| Policy Lookup | 1 | Which policy matches a given flow |
 
 ### Key Policy Tools
 
