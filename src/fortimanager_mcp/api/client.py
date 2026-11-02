@@ -313,8 +313,10 @@ class FortiManagerClient:
         """Detect and cache FortiManager version.
 
         Returns tuple of (major, minor, patch). Only a successful probe is
-        cached. On failure the cache stays empty, so this call uses the
-        legacy script endpoint and the next call probes again.
+        cached. A probe that fails because FortiManager cannot be reached
+        raises, since the real request would fail the same way. On any other
+        failure the cache stays empty, so this call uses the legacy script
+        endpoint and the next call probes again.
         """
         if self._fmg_version is not None:
             return self._fmg_version
@@ -334,9 +336,13 @@ class FortiManagerClient:
             )
             logger.info(f"Detected FortiManager version: {self._fmg_version}")
         except Exception as e:
-            # Do NOT cache the fallback: a probe that failed while FMG was
-            # unreachable would otherwise pin the legacy script endpoint
-            # until restart. The next call probes again.
+            # Unreachable (failed on-demand connect, or a transient error from
+            # a dropped session): raise rather than send the real request to a
+            # guessed endpoint and wait out the same timeout a second time.
+            if isinstance(e, ConnectionError) or self._is_transient_error(e):
+                raise
+            # Do NOT cache the fallback: it says nothing about the version.
+            # The next call probes again.
             logger.warning(f"Failed to detect FMG version, assuming 7.0.0 for this call: {e}")
             return (7, 0, 0)
 

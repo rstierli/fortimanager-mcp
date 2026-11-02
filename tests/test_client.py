@@ -1215,8 +1215,10 @@ class TestVersionDetection:
     """A failed version probe must not pin the legacy script endpoint.
 
     The version picks the script endpoint (7.6+ uses /pm/config, older uses
-    /dvmdb). A probe that fails while FortiManager is unreachable says
-    nothing about the version, so the next script call has to probe again.
+    /dvmdb). A probe that fails because FortiManager cannot be reached raises:
+    the real request would fail the same way, and a script write must not go
+    to a guessed endpoint. Any other failure says nothing about the version,
+    so that call takes the legacy endpoint and the next call probes again.
     """
 
     @pytest.mark.asyncio
@@ -1252,6 +1254,45 @@ class TestVersionDetection:
             "/pm/config/adom/root/obj/fmg/script",
         ]
         assert mock_client.fmg_version == (7, 6, 5)
+
+    @pytest.mark.asyncio
+    async def test_unreachable_fortimanager_raises_from_the_probe(
+        self,
+        mock_client_disconnected: FortiManagerClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The on-demand connect fails: one connect wait per script call, not two."""
+        mock_client_disconnected.connect_on_demand = True
+        connects: list[str] = []
+
+        async def fake_connect(self_: FortiManagerClient) -> None:
+            connects.append("connect")
+            raise ConnectionError("Failed to connect to FortiManager: timed out")
+
+        monkeypatch.setattr(FortiManagerClient, "connect", fake_connect)
+        with pytest.raises(ConnectionError):
+            await mock_client_disconnected.list_scripts(adom="root")
+        assert connects == ["connect"]
+        assert mock_client_disconnected.fmg_version is None
+
+    @pytest.mark.asyncio
+    async def test_dropped_session_raises_from_the_probe(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The session dropped: the transient error is raised and no script
+        request goes to a guessed endpoint."""
+        monkeypatch.setattr(mock_client, "_TRANSIENT_BACKOFF_BASE", 0.0)
+        mock_fmg_instance.get.side_effect = OSError("connection reset")
+
+        with pytest.raises(OSError, match="connection reset"):
+            await mock_client.list_scripts(adom="root")
+
+        urls = [c.args[0] for c in mock_fmg_instance.get.call_args_list]
+        assert urls == ["/sys/status"] * (1 + mock_client._TRANSIENT_RETRIES)
+        assert mock_client.fmg_version is None
 
 
 class TestMoveResilience:
