@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from fortimanager_mcp.tools import object_tools
+from fortimanager_mcp.utils.errors import ConnectionError as FMGConnectionError
 from tests.conftest import MOCK_ADDRESSES
 
 
@@ -339,6 +340,75 @@ class TestServiceTools:
         assert proto == object_tools._TCP_UDP_PROTOCOL_FALLBACK
         msgs = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
         assert any("Could not detect the TCP/UDP service protocol code" in m for m in msgs)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "unreachable",
+        [
+            FMGConnectionError("Connection error: ConnectTimeout"),
+            OSError("connection reset"),
+        ],
+        ids=["failed-connect", "network-error"],
+    )
+    async def test_tcp_udp_protocol_stops_probing_when_unreachable(
+        self, unreachable: Exception
+    ) -> None:
+        """An unreachable FortiManager fails every probe the same way, and with
+        connect_on_demand each probe waits out its own connect timeout. Raise
+        on the first one instead of trying the next name, the list scan, and
+        then the create."""
+        from unittest.mock import AsyncMock
+
+        client = MagicMock()
+        client.get_service = AsyncMock(side_effect=unreachable)
+        client.list_services = AsyncMock(return_value=[])
+
+        with pytest.raises(type(unreachable)):
+            await object_tools._tcp_udp_protocol(client, "adom-down")
+
+        assert client.get_service.await_count == 1
+        client.list_services.assert_not_awaited()
+        assert "adom-down" not in object_tools._TCP_UDP_PROTOCOL_CACHE
+
+    @pytest.mark.asyncio
+    async def test_tcp_udp_protocol_scan_raises_when_unreachable(self) -> None:
+        """The list scan raises too, rather than falling back to a guessed code
+        that the create would then send to an unreachable FortiManager."""
+        from unittest.mock import AsyncMock
+
+        client = MagicMock()
+        client.get_service = AsyncMock(side_effect=Exception("not found"))
+        client.list_services = AsyncMock(
+            side_effect=FMGConnectionError("Connection error: ConnectTimeout")
+        )
+
+        with pytest.raises(FMGConnectionError):
+            await object_tools._tcp_udp_protocol(client, "adom-down")
+
+        assert "adom-down" not in object_tools._TCP_UDP_PROTOCOL_CACHE
+
+    @pytest.mark.asyncio
+    async def test_create_service_tcp_udp_one_connect_attempt_when_unreachable(self) -> None:
+        """Against an unreachable FortiManager the create makes one connect
+        attempt and returns the error envelope (it made seven: five named
+        probes, the list scan, then the create itself)."""
+        from fortimanager_mcp.api.client import FortiManagerClient
+
+        client = FortiManagerClient(host="fmg.example.com", api_token="t", connect_on_demand=True)
+        attempts: list[int] = []
+
+        async def unreachable() -> None:
+            attempts.append(1)
+            raise FMGConnectionError("Connection error: ConnectTimeout")
+
+        client.connect = unreachable  # type: ignore[method-assign]
+        with patch("fortimanager_mcp.tools.object_tools.get_fmg_client", return_value=client):
+            result = await object_tools.create_service_tcp_udp(
+                adom="root", name="svc-a", tcp_portrange="8080"
+            )
+
+        assert result["status"] == "error"
+        assert len(attempts) == 1
 
     @pytest.mark.asyncio
     async def test_tcp_udp_protocol_cached_per_adom(self) -> None:

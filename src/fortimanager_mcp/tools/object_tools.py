@@ -14,7 +14,7 @@ from typing import Any
 from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_default_adom
-from fortimanager_mcp.utils.errors import client_safe_error
+from fortimanager_mcp.utils.errors import ConnectionError, client_safe_error
 from fortimanager_mcp.utils.validation import (
     and_filters,
     substring_filter,
@@ -51,6 +51,13 @@ _TCP_UDP_PROTOCOL_FALLBACK = 15
 # Predefined port-based services present in every ADOM; names vary by build/case.
 _TCP_UDP_PROBE_SERVICES = ("ALL_TCP", "all_tcp", "HTTPS", "HTTP", "DNS")
 
+# Errors that mean FortiManager cannot be reached, so the next probe would fail
+# the same way: a failed connect (with connect_on_demand every request connects
+# first, waiting out the connect timeout) or a network error, which the request
+# has already retried. A -1 or not-found on one probe says nothing about the
+# next name, so those keep probing.
+_UNREACHABLE = (ConnectionError, OSError)
+
 
 def _port_based_protocol(service: Any) -> int | None:
     """Return an int protocol from a service only if it is port-based."""
@@ -76,6 +83,8 @@ async def _tcp_udp_protocol(client: FortiManagerClient, adom: str) -> int:
     for probe in _TCP_UDP_PROBE_SERVICES:
         try:
             proto = _port_based_protocol(await client.get_service(adom, probe))
+        except _UNREACHABLE:
+            raise
         except Exception:
             proto = None
         if proto is not None:
@@ -94,6 +103,8 @@ async def _tcp_udp_protocol(client: FortiManagerClient, adom: str) -> int:
             if proto is not None:
                 _TCP_UDP_PROTOCOL_CACHE[adom] = proto
                 return proto
+    except _UNREACHABLE:
+        raise
     except Exception as e:
         logger.debug(f"TCP/UDP protocol scan of ADOM '{adom}' failed: {e}")
 
