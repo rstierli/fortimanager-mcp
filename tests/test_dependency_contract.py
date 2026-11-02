@@ -3,7 +3,10 @@
 mcp 2.0 removed ``mcp.server.fastmcp`` and replaced it with
 ``mcp.server.mcpserver``. The server is now built on the 2.x API, so the
 floor is load-bearing in the other direction: 1.x lacks the module this
-server imports, and the removed ``<2`` ceiling must stay removed.
+server imports, and the removed ``<2`` ceiling must stay removed. The
+``<3`` ceiling holds the next major back for the same reason #38 held
+back 2.0: an unbounded spec let a fresh install resolve a major that
+broke the import.
 """
 
 import tomllib
@@ -36,15 +39,20 @@ def test_installed_mcp_is_2x() -> None:
     assert version("mcp").startswith("2."), "mcp 1.x lacks mcp.server.mcpserver"
 
 
-def test_mcp_floor_is_2x_and_unceilinged() -> None:
-    """Guards the floor itself: dropping back to 1.x stops the import.
+def test_mcp_is_held_to_the_2x_major() -> None:
+    """Guards both ends: dropping back to 1.x stops the import, and the
+    next major is held back until the server is ported to it.
 
     2.0.0 is also above the ``>=1.28.1`` security floor the old pin
     carried for PYSEC-2026-3483, so nothing regresses by lifting it.
+    The ceiling matches the fortianalyzer-mcp companion: the masking
+    wrapper patches ``mcp.tool``, and the 2.0 bump moved
+    ``stateless_http`` and ``transport_security`` out of the constructor,
+    where dropping them would fail open on the allowed-hosts list.
     """
     requirement = _requirement("mcp")
     assert "<2" not in requirement
-    assert requirement == "mcp>=2.0.0"
+    assert requirement == "mcp>=2.0.0,<3"
 
 
 def test_security_floors_are_declared() -> None:

@@ -11,7 +11,11 @@ dependencies = [
     # Ported to the MCPServer API in #92. 1.x has no mcp.server.mcpserver, so
     # this floor is a hard import requirement rather than a preference, and it
     # sits above the old >=1.28.1 floor that cleared PYSEC-2026-3483.
-    "mcp>=2.0.0",
+    # Upper bound is deliberate, as in fortianalyzer-mcp: the masking wrapper
+    # patches mcp.tool, and 2.0 moved stateless_http and transport_security
+    # out of the constructor on a major bump. #38 is what an unbounded spec
+    # does when the next major ships: a fresh install stops importing.
+    "mcp>=2.0.0,<3",
     "ff3>=1.0.3",
     "pydantic>=2.0.0",
     # Security floors, declared here because nothing upstream raises them to
