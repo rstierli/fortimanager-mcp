@@ -1319,6 +1319,12 @@ def run_http() -> None:
         log_level=settings.LOG_LEVEL.lower(),
         # None is uvicorn's own "unbounded" sentinel.
         limit_concurrency=settings.MCP_MAX_CONCURRENT_REQUESTS or None,
+        # Bound the wait for open connections at shutdown. Without it uvicorn
+        # waits for every one before the lifespan shutdown, and an MCP client
+        # keeps a standing event stream open, so a stop waited for the
+        # supervisor's SIGKILL (90 s under systemd). 5 s lets an in-flight
+        # response finish and fits inside Docker's 10 s stop window.
+        timeout_graceful_shutdown=5,
     )
 
 
