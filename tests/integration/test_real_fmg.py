@@ -441,9 +441,15 @@ class FMGIntegrationTester:
         """Test script_tools module."""
         print("\n=== Script Tools ===")
 
-        # Test list_scripts
+        # Test list_scripts. FMG 7.6+ keeps scripts under /pm/config (8.0
+        # answers -3 on the old /dvmdb path), 7.0-7.4 under /dvmdb; same split
+        # as FortiManagerClient._script_base_url.
         try:
-            status, response = self.fmg.get(f"/dvmdb/adom/{self.adom}/script")
+            url = f"/pm/config/adom/{self.adom}/obj/fmg/script"
+            status, response = self.fmg.get(url)
+            if status != 0:
+                url = f"/dvmdb/adom/{self.adom}/script"
+                status, response = self.fmg.get(url)
             if status == 0:
                 scripts = response if isinstance(response, list) else []
                 script_names = [s.get("name") for s in scripts[:5]]
@@ -451,7 +457,7 @@ class FMGIntegrationTester:
                     "script_tools",
                     "list_scripts",
                     True,
-                    f"Found {len(scripts)} scripts: {script_names}",
+                    f"Found {len(scripts)} scripts via {url}: {script_names}",
                 )
             else:
                 self.add_result("script_tools", "list_scripts", False, str(response))
