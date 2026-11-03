@@ -3,7 +3,7 @@
 [![CI](https://github.com/rstierli/fortimanager-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/rstierli/fortimanager-mcp/actions/workflows/ci.yml)
 [![Python Version](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.12.0-green)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.12.1-green)](CHANGELOG.md)
 [![FortiManager](https://img.shields.io/badge/FortiManager-7.0%20%7C%207.2%20%7C%207.4%20%7C%207.6-red)](README.md)
 
 A Model Context Protocol (MCP) server for FortiManager JSON-RPC API. This server enables AI assistants like Claude to interact with FortiManager for centralized firewall policy management, device provisioning, and network configuration.
@@ -147,8 +147,8 @@ the install documented above). A regular `pip install .` or a wheel does not
 read it; pass the settings as environment variables instead. The Docker image is
 unaffected: its Dockerfile installs the package editable, and the Compose example
 above passes the file through `env_file:` as environment variables anyway. When
-no `.env` was read and a required setting is missing, the startup error names
-the path that was checked.
+no `.env` was read and the settings fail to load, the startup error names the
+path that was checked.
 
 Edit `.env` with your FortiManager settings:
 
