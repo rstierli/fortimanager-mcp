@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from fortimanager_mcp.tools import object_tools
+from fortimanager_mcp.utils.errors import AuthenticationError
 from fortimanager_mcp.utils.errors import ConnectionError as FMGConnectionError
 from tests.conftest import MOCK_ADDRESSES
 
@@ -343,27 +344,26 @@ class TestServiceTools:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "unreachable",
+        "error",
         [
             FMGConnectionError("Connection error: ConnectTimeout"),
             OSError("connection reset"),
+            AuthenticationError("FortiManager login failed: Login fail"),
         ],
-        ids=["failed-connect", "network-error"],
+        ids=["failed-connect", "network-error", "failed-login"],
     )
-    async def test_tcp_udp_protocol_stops_probing_when_unreachable(
-        self, unreachable: Exception
-    ) -> None:
-        """An unreachable FortiManager fails every probe the same way, and with
-        connect_on_demand each probe waits out its own connect timeout. Raise
-        on the first one instead of trying the next name, the list scan, and
-        then the create."""
+    async def test_tcp_udp_protocol_stops_probing(self, error: Exception) -> None:
+        """A failed connect, a network error or a failed login fails every probe
+        the same way, and with connect_on_demand each probe connects (and logs
+        in) again. Raise on the first one instead of trying the next name, the
+        list scan, and then the create."""
         from unittest.mock import AsyncMock
 
         client = MagicMock()
-        client.get_service = AsyncMock(side_effect=unreachable)
+        client.get_service = AsyncMock(side_effect=error)
         client.list_services = AsyncMock(return_value=[])
 
-        with pytest.raises(type(unreachable)):
+        with pytest.raises(type(error)):
             await object_tools._tcp_udp_protocol(client, "adom-down")
 
         assert client.get_service.await_count == 1
@@ -388,20 +388,34 @@ class TestServiceTools:
         assert "adom-down" not in object_tools._TCP_UDP_PROTOCOL_CACHE
 
     @pytest.mark.asyncio
-    async def test_create_service_tcp_udp_one_connect_attempt_when_unreachable(self) -> None:
-        """Against an unreachable FortiManager the create makes one connect
-        attempt and returns the error envelope (it made seven: five named
-        probes, the list scan, then the create itself)."""
+    @pytest.mark.parametrize(
+        "error",
+        [
+            FMGConnectionError("Connection error: ConnectTimeout"),
+            AuthenticationError("FortiManager login failed: Login fail"),
+        ],
+        ids=["failed-connect", "failed-login"],
+    )
+    async def test_create_service_tcp_udp_one_connect_attempt_when_connect_fails(
+        self, error: Exception
+    ) -> None:
+        """When the connect fails, the create makes one connect attempt and
+        returns the error envelope (it made seven: five named probes, the list
+        scan, then the create itself). With a wrong password each attempt is a
+        failed login, and seven is past FortiManager's default
+        admin-lockout-threshold of 3."""
         from fortimanager_mcp.api.client import FortiManagerClient
 
-        client = FortiManagerClient(host="fmg.example.com", api_token="t", connect_on_demand=True)
+        client = FortiManagerClient(
+            host="fmg.example.com", username="admin", password="wrong", connect_on_demand=True
+        )
         attempts: list[int] = []
 
-        async def unreachable() -> None:
+        async def failing_connect() -> None:
             attempts.append(1)
-            raise FMGConnectionError("Connection error: ConnectTimeout")
+            raise error
 
-        client.connect = unreachable  # type: ignore[method-assign]
+        client.connect = failing_connect  # type: ignore[method-assign]
         with patch("fortimanager_mcp.tools.object_tools.get_fmg_client", return_value=client):
             result = await object_tools.create_service_tcp_udp(
                 adom="root", name="svc-a", tcp_portrange="8080"
