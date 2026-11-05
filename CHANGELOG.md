@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A stop no longer waits for the supervisor's SIGKILL while an MCP client holds a stream open (#113).** At shutdown uvicorn waits for every open connection before it runs the lifespan shutdown, with no limit unless `timeout_graceful_shutdown` is set, and an MCP client keeps a stream open: on the 2026-07-28 protocol a `subscriptions/listen` request is a standing notification stream, which mcp's handler ends only when the client disconnects. So a stop logged `Waiting for connections to close.` and then waited for the supervisor: under systemd every stop sat out `TimeoutStopSec` (90 s by default) and ended in SIGKILL, and `docker stop` gives up after 10 s. `run_http` now passes `timeout_graceful_shutdown=5`; after 5 s uvicorn cancels what is left and the lifespan shutdown runs as usual. Each stream cancelled that way logs uvicorn's `Cancel N running task(s)` and an `Exception in ASGI application` traceback ending in `CancelledError`, which is expected on stop. uvicorn 0.30.0, the declared floor, has the parameter. Measured on two systemd units with five connected clients each: the stop took 90.2 s and ended in SIGKILL before, 5.2 to 5.4 s after.
+
 ## [1.12.1] - 2026-11-03
 
 ### Fixed
