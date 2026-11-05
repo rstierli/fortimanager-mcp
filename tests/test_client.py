@@ -1613,6 +1613,9 @@ class TestRunFmgCallCancellation:
 
 def _connected_client(fmg: MagicMock, **kwargs: Any) -> FortiManagerClient:
     client = FortiManagerClient(host="fmg.example.com", **kwargs)
+    # pyfmg's timeout is a number; a bare MagicMock attribute is not.
+    if not isinstance(fmg.timeout, int | float):
+        fmg.timeout = client.timeout
     client._fmg = fmg
     client._connected = True
     client._ever_connected = True
@@ -1635,7 +1638,7 @@ class TestShutdownIsBounded:
         assert client._fmg is None
         assert not client.is_connected
 
-    async def test_session_disconnect_logs_out_on_the_shutdown_timeout(self) -> None:
+    async def test_session_disconnect_logs_out_on_a_capped_timeout(self) -> None:
         """Username/password has a real server session, so it still logs out,
         on pyfmg's own timeout (which bounds the request itself) capped well
         below the request timeout."""
@@ -1647,7 +1650,7 @@ class TestShutdownIsBounded:
 
         await client.disconnect()
 
-        assert seen == [FortiManagerClient._SHUTDOWN_IO_TIMEOUT]
+        assert seen == [FortiManagerClient._LOGOUT_TIMEOUT]
         assert client._fmg is None
         assert not client.is_connected
 
@@ -1672,42 +1675,65 @@ class TestShutdownIsBounded:
         assert client._fmg is None
         assert not client.is_connected
 
-    def test_prepare_shutdown_caps_the_client_and_pyfmg_timeout(self) -> None:
+    async def test_after_prepare_shutdown_a_request_runs_on_what_is_left(self) -> None:
+        """pyfmg's timeout, which requests gets, is lowered to the rest of
+        the shutdown budget before each request."""
         fmg = MagicMock()
         fmg.timeout = 30
-        client = _connected_client(fmg, api_token="t", timeout=30)
+        seen: list[float] = []
 
+        def execute(url: str, **kwargs: Any) -> tuple[int, dict[str, Any]]:
+            seen.append(fmg.timeout)
+            return 0, {}
+
+        fmg.execute.side_effect = execute
+        client = _connected_client(fmg, api_token="t", timeout=30)
         client.prepare_shutdown()
 
-        cap = FortiManagerClient._SHUTDOWN_IO_TIMEOUT
-        # pyfmg's timeout is what requests gets; the client's own is what a
-        # connect made from here on would hand to a new pyfmg instance.
-        assert fmg.timeout == cap
-        assert client.timeout == cap
+        await client.unlock_adom("root")
 
-    def test_prepare_shutdown_keeps_a_shorter_configured_timeout(self) -> None:
+        budget = FortiManagerClient._SHUTDOWN_IO_BUDGET
+        assert len(seen) == 1
+        assert budget - 1 < seen[0] <= budget
+
+    async def test_after_prepare_shutdown_a_shorter_timeout_is_kept(self) -> None:
         fmg = MagicMock()
         fmg.timeout = 1
+        seen: list[float] = []
+
+        def execute(url: str, **kwargs: Any) -> tuple[int, dict[str, Any]]:
+            seen.append(fmg.timeout)
+            return 0, {}
+
+        fmg.execute.side_effect = execute
         client = _connected_client(fmg, api_token="t", timeout=1)
-
         client.prepare_shutdown()
 
-        assert fmg.timeout == 1
-        assert client.timeout == 1
+        await client.unlock_adom("root")
 
-    def test_prepare_shutdown_without_a_connection(self) -> None:
-        client = FortiManagerClient(host="fmg.example.com", api_token="t", timeout=30)
+        assert seen == [1]
 
+    async def test_a_request_after_the_budget_is_used_up_is_not_sent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(FortiManagerClient, "_SHUTDOWN_IO_BUDGET", 0)
+        fmg = MagicMock()
+        client = _connected_client(fmg, api_token="t")
         client.prepare_shutdown()
 
-        assert client.timeout == FortiManagerClient._SHUTDOWN_IO_TIMEOUT
+        with pytest.raises(ConnectionError, match="time for FortiManager requests is used up"):
+            await client.unlock_adom("root")
 
-    def test_the_shutdown_timeout_ends_an_unlock_before_its_wait_for(self) -> None:
+        fmg.execute.assert_not_called()
+        # The refusal releases the request lock like any failed call.
+        assert not client._request_lock.locked()
+
+    def test_the_budget_ends_an_unlock_before_its_wait_for(self) -> None:
         """Otherwise wait_for gives up first, and the thread it leaves running
         holds the request lock the logout then queues behind."""
         from fortimanager_mcp.utils.adom_locks import UNLOCK_TIMEOUT
 
-        assert FortiManagerClient._SHUTDOWN_IO_TIMEOUT < UNLOCK_TIMEOUT
+        assert FortiManagerClient._SHUTDOWN_IO_BUDGET < UNLOCK_TIMEOUT
 
     async def test_after_prepare_shutdown_a_transient_error_is_not_retried(self) -> None:
         fmg = MagicMock()

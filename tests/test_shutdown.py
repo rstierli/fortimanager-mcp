@@ -9,6 +9,7 @@ silent.
 """
 
 import asyncio
+import contextlib
 import datetime
 import json
 import os
@@ -29,6 +30,7 @@ from typing import Any
 import pytest
 
 from fortimanager_mcp.api.client import FortiManagerClient
+from fortimanager_mcp.server import GRACEFUL_SHUTDOWN_TIMEOUT
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="stops the server with SIGTERM")
 
@@ -36,7 +38,10 @@ REPO_SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 # FORTIMANAGER_TIMEOUT of the server under test. Before the fix a stop took
 # this long, and twice this with an ADOM lock held.
 REQUEST_TIMEOUT = 20
-CAP = FortiManagerClient._SHUTDOWN_IO_TIMEOUT
+LOGOUT = FortiManagerClient._LOGOUT_TIMEOUT
+BUDGET = FortiManagerClient._SHUTDOWN_IO_BUDGET
+# docker stop sends SIGKILL after this many seconds.
+DOCKER_STOP = 10
 # Process start, imports and interpreter exit on a slow CI runner.
 MARGIN = 2.0
 
@@ -222,7 +227,7 @@ class _HttpServer:
         """SIGTERM, then the seconds until the process has exited."""
         started = time.monotonic()
         self.proc.send_signal(signal.SIGTERM)
-        self.proc.wait(timeout=3 * REQUEST_TIMEOUT)
+        self.proc.wait(timeout=6 * REQUEST_TIMEOUT)
         return time.monotonic() - started
 
     def kill(self) -> None:
@@ -245,6 +250,40 @@ async def _lock_adom(server: _HttpServer, adom: str) -> None:
     assert not result.is_error, result
 
 
+async def _stop_with_a_listen_stream(server: _HttpServer) -> float:
+    """SIGTERM while a client holds a 2026-07-28 ``subscriptions/listen``
+    stream open, as real MCP clients do; the seconds until the exit."""
+    import httpx2
+    from mcp import Client
+    from mcp.client.streamable_http import streamable_http_client
+
+    ready = asyncio.Event()
+
+    async def hold() -> None:
+        headers = {"Authorization": f"Bearer {server.bearer}"}
+        http = httpx2.AsyncClient(headers=headers, timeout=None)
+        transport = streamable_http_client(f"{server.base}/mcp", http_client=http)
+        try:
+            async with Client(transport, mode="2026-07-28") as client:
+                async with client.listen(tools_list_changed=True) as stream:
+                    ready.set()
+                    async for _ in stream:
+                        pass
+        finally:
+            ready.set()  # the stream ending early fails the assertion below
+
+    holder = asyncio.create_task(hold())
+    try:
+        await asyncio.wait_for(ready.wait(), 15)
+        assert not holder.done(), "the listen stream ended before the stop"
+        await asyncio.sleep(0.5)
+        return await asyncio.to_thread(server.stop)
+    finally:
+        holder.cancel()
+        with contextlib.suppress(BaseException):
+            await holder
+
+
 class TestHttpStop:
     def test_token_mode_does_not_wait_for_a_logout(self, fmg_stub: _FortiManagerStub) -> None:
         server = _HttpServer(fmg_stub, token=True)
@@ -264,10 +303,10 @@ class TestHttpStop:
             elapsed = server.stop()
         finally:
             server.kill()
-        # The logout waits out the cap: the stub never answers it.
-        assert elapsed < 2 * CAP + MARGIN, f"stop took {elapsed:.1f}s"
+        # The logout waits out its cap: the stub never answers it.
+        assert elapsed < LOGOUT + MARGIN, f"stop took {elapsed:.1f}s"
 
-    def test_a_held_adom_lock_is_released_on_the_capped_timeout(
+    def test_a_held_adom_lock_is_released_within_the_budget(
         self, fmg_stub: _FortiManagerStub
     ) -> None:
         server = _HttpServer(fmg_stub, token=True)
@@ -279,8 +318,23 @@ class TestHttpStop:
             elapsed = server.stop()
         finally:
             server.kill()
-        # One unlock on the cap, which the stub never answers, then no logout.
-        assert elapsed < 2 * CAP + MARGIN, f"stop took {elapsed:.1f}s"
+        # One unlock, which the stub never answers, then no logout.
+        assert elapsed < BUDGET + MARGIN, f"stop took {elapsed:.1f}s"
+
+    def test_the_worst_case_fits_dockers_stop_window(self, fmg_stub: _FortiManagerStub) -> None:
+        """Everything that adds to a stop at once: a client stream held open,
+        username/password, two ADOMs locked, FortiManager silent."""
+        server = _HttpServer(fmg_stub, token=False)
+        try:
+            server.wait_connected()
+            for adom in ("root", "branch"):
+                asyncio.run(_lock_adom(server, adom))
+            fmg_stub.silent.set()
+            elapsed = asyncio.run(_stop_with_a_listen_stream(server))
+        finally:
+            server.kill()
+        assert elapsed < GRACEFUL_SHUTDOWN_TIMEOUT + BUDGET + MARGIN, f"stop took {elapsed:.1f}s"
+        assert elapsed < DOCKER_STOP, f"stop took {elapsed:.1f}s"
 
 
 class TestStdioStop:
