@@ -233,8 +233,7 @@ class TestHttpWiring:
         lifespan shutdown, with no limit unless one is configured ("Waiting for
         connections to close."). MCP clients hold a standing event stream per
         session, so under systemd every stop sat out TimeoutStopSec (90 s) and
-        ended in SIGKILL. 5 s gives an in-flight response time to finish and
-        still leaves room inside Docker's 10 s stop window.
+        ended in SIGKILL.
         """
         import uvicorn
 
@@ -243,7 +242,17 @@ class TestHttpWiring:
         monkeypatch.setattr(uvicorn, "run", lambda app, **kw: captured.update(kwargs=kw))
         server.run_http()
 
-        assert captured["kwargs"]["timeout_graceful_shutdown"] == 5
+        assert captured["kwargs"]["timeout_graceful_shutdown"] == 3
+
+    def test_the_stop_fits_dockers_window(self) -> None:
+        """docker stop sends SIGKILL after 10 s. A stop first waits for open
+        connections, then the lifespan shutdown spends up to the client's
+        shutdown budget on the ADOM unlocks and the logout."""
+        from fortimanager_mcp.api.client import FortiManagerClient
+
+        total = server.GRACEFUL_SHUTDOWN_TIMEOUT + FortiManagerClient._SHUTDOWN_IO_BUDGET
+        # Leave room for process start-up of the shutdown path and exit.
+        assert total <= 8
 
     def test_zero_concurrency_leaves_uvicorn_unbounded(
         self, monkeypatch: pytest.MonkeyPatch

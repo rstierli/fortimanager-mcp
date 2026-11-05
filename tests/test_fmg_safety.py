@@ -5,11 +5,15 @@ release, and per-item bulk delete reporting.
 """
 
 import asyncio
+import threading
+import time
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import fortimanager_mcp.server as server
+from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.tools import policy_tools, system_tools
 from fortimanager_mcp.utils import adom_locks, install_gate, task_guard
 from fortimanager_mcp.utils.config import get_settings
@@ -210,6 +214,124 @@ class TestAdomLockTracking:
         client = MagicMock()
         client.unlock_adom = MagicMock(side_effect=wedged)
         await adom_locks.release_held_locks(client)  # returns promptly, no raise
+
+
+def _connected_client(fmg: MagicMock, **kwargs: Any) -> FortiManagerClient:
+    client = FortiManagerClient(host="fmg.example.com", timeout=30, **kwargs)
+    # pyfmg's timeout is a number; a bare MagicMock attribute is not.
+    if not isinstance(fmg.timeout, int | float):
+        fmg.timeout = client.timeout
+    client._fmg = fmg
+    client._connected = True
+    client._ever_connected = True
+    return client
+
+
+class TestShutdownReleaseIsBounded:
+    """The shutdown unlock and logout against a FortiManager that stopped
+    answering. ``wait_for`` around the unlock bounds only the await: the
+    pyfmg thread keeps running and holds the request lock, so the logout
+    queued behind it for the full request timeout, about twice that in all."""
+
+    async def test_stop_caps_the_timeout_before_the_unlock(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fmg = MagicMock()
+        fmg.timeout = 30
+        seen: list[float] = []
+
+        def execute(url: str, **kwargs: Any) -> tuple[int, dict[str, Any]]:
+            seen.append(fmg.timeout)
+            return 0, {}
+
+        fmg.execute.side_effect = execute
+        client = _connected_client(fmg, api_token="t")
+        monkeypatch.setattr(server, "_fmg_client", client)
+        adom_locks.record_lock("root")
+
+        await server._stop_fmg_client(None)
+
+        budget = FortiManagerClient._SHUTDOWN_IO_BUDGET
+        assert len(seen) == 1
+        assert budget - 1 < seen[0] <= budget
+        assert adom_locks.held_locks() == []
+        fmg.logout.assert_not_called()
+
+    async def test_wedged_unlocks_and_logout_share_one_budget(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Through the real ``_run_fmg_call``, with pyfmg calls that block a
+        worker thread until pyfmg's own timeout, like requests does. The first
+        unlock uses up the budget; the second unlock and the logout are not
+        sent, so the stop takes the budget however many ADOMs are locked."""
+        monkeypatch.setattr(FortiManagerClient, "_SHUTDOWN_IO_BUDGET", 0.3)
+        monkeypatch.setattr(adom_locks, "UNLOCK_TIMEOUT", 1.0)
+        unblock = threading.Event()
+        fmg = MagicMock()
+        fmg.timeout = 30
+
+        def wedged(*args: Any, **kwargs: Any) -> tuple[int, dict[str, Any]]:
+            unblock.wait(fmg.timeout)
+            raise OSError("read timeout")
+
+        fmg.execute.side_effect = wedged
+        fmg.logout.side_effect = wedged
+        client = _connected_client(fmg, username="admin", password="pw")
+        monkeypatch.setattr(server, "_fmg_client", client)
+        adom_locks.record_lock("root")
+        adom_locks.record_lock("branch")
+
+        started = time.monotonic()
+        try:
+            await asyncio.wait_for(server._stop_fmg_client(None), timeout=5)
+        finally:
+            unblock.set()
+        elapsed = time.monotonic() - started
+
+        assert elapsed < 0.8, f"stop took {elapsed:.1f}s"
+        assert fmg.execute.call_count == 1
+        fmg.logout.assert_not_called()
+        assert not client.is_connected
+
+    async def test_a_cancelled_tool_call_does_not_hold_the_logout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """uvicorn cancels a tool call still running when its connection wait
+        ends. The call's thread keeps the request lock until pyfmg's full
+        request timeout, so the logout waits for the lock only as long as the
+        budget lasts."""
+        monkeypatch.setattr(FortiManagerClient, "_SHUTDOWN_IO_BUDGET", 0.3)
+        unblock = threading.Event()
+        entered = threading.Event()
+        fmg = MagicMock()
+        fmg.timeout = 30
+
+        def wedged(*args: Any, **kwargs: Any) -> tuple[int, dict[str, Any]]:
+            entered.set()
+            unblock.wait(fmg.timeout)
+            raise OSError("read timeout")
+
+        fmg.get.side_effect = wedged
+        client = _connected_client(fmg, username="admin", password="pw")
+        monkeypatch.setattr(server, "_fmg_client", client)
+
+        tool_call = asyncio.ensure_future(client.get("/dvmdb/adom"))
+        await asyncio.to_thread(entered.wait, 5)
+        tool_call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await tool_call
+        assert client._request_lock.locked()  # handed to the running thread
+
+        started = time.monotonic()
+        try:
+            await asyncio.wait_for(server._stop_fmg_client(None), timeout=5)
+        finally:
+            unblock.set()
+        elapsed = time.monotonic() - started
+
+        assert elapsed < 0.8, f"stop took {elapsed:.1f}s"
+        fmg.logout.assert_not_called()
+        assert not client.is_connected
 
 
 class TestBulkDeletePartialSuccess:

@@ -1063,13 +1063,19 @@ def _start_fmg_client() -> "asyncio.Task[None] | None":
 
 
 async def _stop_fmg_client(connect_task: "asyncio.Task[None] | None") -> None:
-    """Cancel a pending connect, release held ADOM locks, disconnect."""
+    """Cancel a pending connect, release held ADOM locks, disconnect.
+
+    The client's requests are capped first (``prepare_shutdown``), so neither
+    the unlock nor the logout waits out FORTIMANAGER_TIMEOUT when FortiManager
+    has stopped answering.
+    """
     if connect_task is not None:
         connect_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await connect_task
     logger.info("Closing FortiManager connection")
     if _fmg_client:
+        _fmg_client.prepare_shutdown()
         await release_held_locks(_fmg_client)
         await _fmg_client.disconnect()
 
@@ -1210,6 +1216,14 @@ def _ensure_http_auth_or_die() -> None:
     )
 
 
+# Seconds uvicorn waits at shutdown for open connections, then cancels what
+# is left; a tool call still running then is cancelled too. The lifespan
+# shutdown that follows spends up to FortiManagerClient._SHUTDOWN_IO_BUDGET
+# on FortiManager, and the two together must fit docker stop's 10 s. 3 s, as
+# in fortianalyzer-mcp (#165).
+GRACEFUL_SHUTDOWN_TIMEOUT = 3
+
+
 def run_http() -> None:
     """Run MCP server in HTTP mode with Starlette wrapper and optional auth."""
     _ensure_http_auth_or_die()
@@ -1322,9 +1336,8 @@ def run_http() -> None:
         # Bound the wait for open connections at shutdown. Without it uvicorn
         # waits for every one before the lifespan shutdown, and an MCP client
         # keeps a standing event stream open, so a stop waited for the
-        # supervisor's SIGKILL (90 s under systemd). 5 s lets an in-flight
-        # response finish and fits inside Docker's 10 s stop window.
-        timeout_graceful_shutdown=5,
+        # supervisor's SIGKILL (90 s under systemd).
+        timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_TIMEOUT,
     )
 
 
