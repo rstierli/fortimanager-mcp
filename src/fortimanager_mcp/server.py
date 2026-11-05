@@ -1063,13 +1063,19 @@ def _start_fmg_client() -> "asyncio.Task[None] | None":
 
 
 async def _stop_fmg_client(connect_task: "asyncio.Task[None] | None") -> None:
-    """Cancel a pending connect, release held ADOM locks, disconnect."""
+    """Cancel a pending connect, release held ADOM locks, disconnect.
+
+    The client's requests are capped first (``prepare_shutdown``), so neither
+    the unlock nor the logout waits out FORTIMANAGER_TIMEOUT when FortiManager
+    has stopped answering.
+    """
     if connect_task is not None:
         connect_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await connect_task
     logger.info("Closing FortiManager connection")
     if _fmg_client:
+        _fmg_client.prepare_shutdown()
         await release_held_locks(_fmg_client)
         await _fmg_client.disconnect()
 

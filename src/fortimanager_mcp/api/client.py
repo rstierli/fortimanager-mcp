@@ -4,6 +4,7 @@ Based on FNDN FortiManager 7.6.5 API specifications.
 """
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -80,6 +81,12 @@ class FortiManagerClient:
     # Bounded transient retry: at most this many retries with exponential backoff.
     _TRANSIENT_RETRIES = 2
     _TRANSIENT_BACKOFF_BASE = 0.5  # seconds; doubled each retry
+    # Seconds a request may take once the server is stopping: the unlock of
+    # a still-held ADOM lock and the session logout. Shutdown waits for
+    # them, so this is well below FORTIMANAGER_TIMEOUT (default 30), and
+    # below adom_locks.UNLOCK_TIMEOUT so the request ends on its own before
+    # that wait_for gives up on it and leaves its thread running.
+    _SHUTDOWN_IO_TIMEOUT = 3
 
     def __init__(
         self,
@@ -124,6 +131,9 @@ class FortiManagerClient:
         # never connected (a direct API call should still raise "Not connected",
         # unless connect_on_demand makes the first connect before it).
         self._ever_connected = False
+        # Set by prepare_shutdown(): every request from then on gets one
+        # attempt on the shutdown timeout.
+        self._shutting_down = False
         self._fmg_version: tuple[int, int, int] | None = None  # (major, minor, patch)
         # Serialize forced reconnects so concurrent requests that all hit a
         # dropped session perform a single re-login instead of racing to clear
@@ -275,20 +285,57 @@ class FortiManagerClient:
             raise ConnectionError(f"Failed to connect to FortiManager: {e}") from e
 
     async def disconnect(self) -> None:
-        """Disconnect and cleanup resources."""
+        """Disconnect and cleanup resources.
+
+        Runs on every server shutdown, so it must not wait out a request
+        timeout against a FortiManager that stopped answering.
+        """
         if not self._connected or not self._fmg:
             return
 
-        logger.info("Disconnecting from FortiManager")
+        fmg = self._fmg
+        if self.api_token:
+            # With an API token pyfmg's "session" is a UUID made up on the
+            # client and every request carries the token, so there is no
+            # server session to end. A sys/logout did nothing useful and, with
+            # FortiManager not answering, held shutdown for the full
+            # FORTIMANAGER_TIMEOUT.
+            with contextlib.suppress(Exception):
+                fmg.sess.close()
+            self._fmg = None
+            self._connected = False
+            logger.info("Disconnected from FortiManager (API token: no session to log out)")
+            return
 
+        logger.info("Disconnecting from FortiManager")
+        # pyfmg hands its own timeout to requests, so this bounds the logout
+        # request itself; asyncio.wait_for would only stop waiting for it.
+        # fmg is dropped below, so nothing needs restoring.
+        fmg.timeout = min(self.timeout, self._SHUTDOWN_IO_TIMEOUT)
         try:
-            await self._run_fmg_call(self._fmg.logout)
+            await self._run_fmg_call(fmg.logout)
         except Exception as e:
             logger.warning(f"Logout failed: {e}")
         finally:
             self._fmg = None
             self._connected = False
             logger.info("Disconnected from FortiManager")
+
+    def prepare_shutdown(self) -> None:
+        """Bound every request from here on, for a server that is stopping.
+
+        The server calls this before it releases still-held ADOM locks and
+        disconnects. pyfmg hands its own timeout to requests, so lowering it
+        bounds each request itself. ``asyncio.wait_for`` would only stop
+        waiting: the thread keeps running, and :meth:`_run_fmg_call` hands the
+        request lock to it, so the next call (the logout) queues behind it for
+        the full FORTIMANAGER_TIMEOUT. Requests also stop retrying and
+        reconnecting, so each is one attempt on that timeout.
+        """
+        self._shutting_down = True
+        self.timeout = min(self.timeout, self._SHUTDOWN_IO_TIMEOUT)
+        if self._fmg is not None:
+            self._fmg.timeout = self.timeout
 
     async def __aenter__(self) -> "FortiManagerClient":
         """Async context manager entry."""
@@ -630,6 +677,9 @@ class FortiManagerClient:
         Tests inject ``sleep=`` to avoid real sleeps; production uses the real
         ``asyncio.sleep``.
         """
+        if self._shutting_down:
+            # One attempt, no connect, reconnect or retry: shutdown waits for it.
+            return await factory()
         sleeper = sleep or asyncio.sleep
         if self.connect_on_demand:
             # Outside the retry loop: one connect attempt per call, not one per retry.
