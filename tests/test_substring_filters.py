@@ -157,6 +157,37 @@ class TestToolsSendLike:
         assert sent == [[["name", "like", "%RAS-VPN%"]]] * 4
 
     @pytest.mark.asyncio
+    async def test_search_objects_refuses_an_empty_term(
+        self, mock_client: MagicMock, mock_fmg_instance: MagicMock
+    ) -> None:
+        # An empty term wraps to "%%", which matches every name, so the
+        # "search" returned the whole ADOM inventory of four object types in
+        # one response. The list_* tools are the way to list.
+        mock_fmg_instance.get.return_value = (0, [])
+
+        with patch.object(object_tools, "get_fmg_client", return_value=mock_client):
+            result = await object_tools.search_objects(adom="root", search_term="")
+
+        assert result["status"] == "error"
+        assert result["error_code"] == "validation_error"
+        assert "list_addresses" in result["message"]
+        assert mock_fmg_instance.get.call_args_list == []
+
+    @pytest.mark.asyncio
+    async def test_search_objects_keeps_a_space_as_a_real_term(
+        self, mock_client: MagicMock, mock_fmg_instance: MagicMock
+    ) -> None:
+        # A space is a partial match like any other (names with a space in
+        # them, such as "Veeam Ports"), not a request for everything.
+        mock_fmg_instance.get.return_value = (0, [])
+
+        with patch.object(object_tools, "get_fmg_client", return_value=mock_client):
+            result = await object_tools.search_objects(adom="root", search_term=" ")
+
+        assert result["status"] == "success"
+        assert _sent_filters(mock_fmg_instance) == [[["name", "like", "% %"]]] * 4
+
+    @pytest.mark.asyncio
     async def test_search_devices_platform_filter_is_like(
         self, mock_client: MagicMock, mock_fmg_instance: MagicMock
     ) -> None:

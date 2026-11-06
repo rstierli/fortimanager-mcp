@@ -16,6 +16,7 @@ from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_default_adom
 from fortimanager_mcp.utils.errors import AuthenticationError, ConnectionError, client_safe_error
 from fortimanager_mcp.utils.validation import (
+    ValidationError,
     and_filters,
     substring_filter,
     validate_adom,
@@ -1351,7 +1352,9 @@ async def search_objects(
 
     Args:
         adom: ADOM name
-        search_term: Search term (partial match)
+        search_term: Search term (partial match). Must not be empty; to list
+            every object of a type, use list_addresses, list_address_groups,
+            list_services or list_service_groups.
 
     Returns:
         dict: Search results with keys:
@@ -1368,6 +1371,13 @@ async def search_objects(
     """
     try:
         adom = validate_adom(adom)
+        if not search_term:
+            # "%%" matches every name, so an empty term would return the
+            # whole inventory of all four object types in one response.
+            raise ValidationError(
+                "Search term cannot be empty. To list objects, use list_addresses, "
+                "list_address_groups, list_services or list_service_groups."
+            )
         client = _get_client()
 
         filter_list = [substring_filter("name", search_term)]
