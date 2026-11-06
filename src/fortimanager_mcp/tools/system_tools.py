@@ -89,23 +89,22 @@ async def get_system_status() -> dict[str, Any]:
 
 @mcp.tool()
 async def get_ha_status() -> dict[str, Any]:
-    """Get FortiManager High Availability (HA) status.
+    """Get FortiManager High Availability (HA) health.
 
-    Returns HA cluster status including:
-    - HA mode (standalone, cluster)
-    - Cluster members and their status
-    - Sync status
-    - Primary/secondary role
+    Returns what FortiManager reports at `/sys/ha/status`. On a standalone
+    unit that is the HA health alone, `{"HA Health Status": "OK"}` (measured
+    on 7.6.8 and 8.0.2): no HA mode, no peer list and no primary/secondary
+    role. The HA mode is in get_system_status, under "HA Mode".
 
     Returns:
         dict: HA status with keys:
             - status: "success" or "error"
-            - data: HA status information
+            - data: The HA status FortiManager returned
             - message: Error message if failed
 
     Example:
         >>> result = await get_ha_status()
-        >>> print(f"HA Mode: {result['data']['mode']}")
+        >>> print(result["data"].get("HA Health Status"))
     """
     try:
         client = _get_client()
