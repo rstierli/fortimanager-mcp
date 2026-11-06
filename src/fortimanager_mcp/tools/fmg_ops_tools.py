@@ -614,6 +614,14 @@ async def get_fmg_license() -> dict[str, Any]:
     try:
         client = _get_client()
         result = await client.execute("/um/license/self", data={"flags": 0})
+        # FortiManager 8.0.2 sends the contract list without the `count` 7.6.8
+        # sends beside it, so the documented key is filled in from the list.
+        if (
+            isinstance(result, dict)
+            and "count" not in result
+            and isinstance(result.get("contract"), list)
+        ):
+            result = {**result, "count": len(result["contract"])}
         return {
             "status": "success",
             "license": result,
