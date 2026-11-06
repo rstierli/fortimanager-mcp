@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Creating a TCP/UDP service when FortiManager is unreachable or the login fails now makes one connect attempt, not seven (#107).** `create_service_tcp_udp` discovers the ADOM's TCP/UDP protocol code before the create by fetching up to five predefined services by name, then scanning the service list. With `connect_on_demand` every request connects first, and each probe swallowed its failed connect and tried the next name, so one call made five probe connects, one for the scan and one for the create. Against an unreachable appliance each waited out `FORTIMANAGER_TIMEOUT`; with username/password auth and a wrong password each was a failed login, seven per call, past FortiManager's default `admin-lockout-threshold` of 3. The probe and the scan now raise on a `ConnectionError`, a network error (`OSError`, already retried inside the request) or an `AuthenticationError`; a not-found or any other per-object error still moves on to the next name, and nothing is cached on failure. Measured against 192.0.2.1 with `FORTIMANAGER_TIMEOUT=3`: the call fails after 3.0 s with one failed connect (was 21.0 s with seven), same error envelope. The failed-login case is pinned by a test (one login attempt, was seven) and was not reproduced against an appliance, since that would trip the lockout it is about.
+
 ## [1.12.2] - 2026-11-06
 
 Patch release. **Upgrade if the server runs under Docker, systemd or Kubernetes:** a stop could take from 30 s to over a minute, or never finish while an MCP client held a stream open, so the supervisor ended it with SIGKILL and the ADOM lock release and logout never ran. A stop now takes at most about 7 s, inside `docker stop`'s 10 s.
