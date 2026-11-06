@@ -57,6 +57,18 @@ def _sanitize_for_logging(data: Any, depth: int = 0) -> Any:
     return data
 
 
+def _is_bare_envelope(result: Any) -> bool:
+    """Whether ``result`` is a success envelope that carried no ``data`` member.
+
+    pyfmg returns ``result["data"]`` when FortiManager sent one and the whole
+    result object when it did not, so an endpoint with nothing to report comes
+    back as ``{"status": {...}, "url": ...}``. That is the absence of a record,
+    and a caller that treats any truthy object as a record must tell the two
+    apart.
+    """
+    return isinstance(result, dict) and "status" in result and set(result) <= {"status", "url"}
+
+
 class FortiManagerClient:
     """Client for FortiManager JSON RPC API using pyfmg library.
 
@@ -2529,15 +2541,16 @@ class FortiManagerClient:
         self,
         adom: str,
         device: str | None = None,
-    ) -> dict[str, Any]:
-        """Get latest script execution log.
+    ) -> dict[str, Any] | None:
+        """Get latest script execution log, or None when there is none.
 
         FNDN: GET /dvmdb/adom/{adom}/script/log/latest[/device/{device}]
         """
         url = f"/dvmdb/adom/{adom}/script/log/latest"
         if device:
             url += f"/device/{device}"
-        return await self.get(url)
+        result: dict[str, Any] = await self.get(url)
+        return None if _is_bare_envelope(result) else result
 
     async def get_script_log_summary(
         self,
@@ -2552,6 +2565,8 @@ class FortiManagerClient:
         if device:
             url += f"/device/{device}"
         result = await self.get(url)
+        if _is_bare_envelope(result):
+            return []
         return result if isinstance(result, list) else [result] if result else []
 
     async def get_script_log_output(

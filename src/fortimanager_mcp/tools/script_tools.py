@@ -675,7 +675,8 @@ async def get_script_log_latest(
         device: Optional device name to filter logs
 
     Returns:
-        Latest script execution log with content and execution time
+        Latest script execution log with content and execution time, under
+        "log". "log" is null when no script has run in that scope.
     """
     client = get_fmg_client()
     if not client:
