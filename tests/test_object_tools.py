@@ -8,6 +8,7 @@ import pytest
 from fortimanager_mcp.tools import object_tools
 from fortimanager_mcp.utils.errors import AuthenticationError
 from fortimanager_mcp.utils.errors import ConnectionError as FMGConnectionError
+from fortimanager_mcp.utils.errors import PermissionError as FMGPermissionError
 from tests.conftest import MOCK_ADDRESSES
 
 
@@ -349,14 +350,15 @@ class TestServiceTools:
             FMGConnectionError("Connection error: ConnectTimeout"),
             OSError("connection reset"),
             AuthenticationError("FortiManager login failed: Login fail"),
+            FMGPermissionError("No permission for the resource"),
         ],
-        ids=["failed-connect", "network-error", "failed-login"],
+        ids=["failed-connect", "network-error", "failed-login", "permission-denied"],
     )
     async def test_tcp_udp_protocol_stops_probing(self, error: Exception) -> None:
-        """A failed connect, a network error or a failed login fails every probe
-        the same way, and with connect_on_demand each probe connects (and logs
-        in) again. Raise on the first one instead of trying the next name, the
-        list scan, and then the create."""
+        """A failed connect, a network error, a failed login or a denied table
+        fails every probe the same way, and each probe connects or logs in
+        again for it. Raise on the first one instead of trying the next name,
+        the list scan, and then the create."""
         from unittest.mock import AsyncMock
 
         client = MagicMock()
@@ -423,6 +425,39 @@ class TestServiceTools:
 
         assert result["status"] == "error"
         assert len(attempts) == 1
+
+    @pytest.mark.asyncio
+    async def test_create_service_tcp_udp_one_fresh_login_when_permission_is_denied(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """FortiManager answers a denied table with -11, the code a stale session
+        gets too, so the client logs in again once and retries. A -11 that
+        survives that fresh login is a real denial of the service table: the
+        next probe would log in again for the same answer (the create logged in
+        eight times: the connect, then once more for each of the five named
+        probes, the list scan and the create itself). It now stops at the first
+        probe: the connect, one fresh login, and the denial is returned."""
+        from fortimanager_mcp.api.client import FortiManagerClient
+
+        denied = (-11, {"status": {"code": -11, "message": "No permission for the resource"}})
+        stub = MagicMock()
+        stub.login.return_value = (0, {"status": {"code": 0, "message": "OK"}})
+        stub.get.return_value = denied
+        stub.add.return_value = denied
+        monkeypatch.setattr("fortimanager_mcp.api.client.FortiManager", lambda *a, **kw: stub)
+
+        client = FortiManagerClient(
+            host="fmg.example.com", username="admin", password="secret", connect_on_demand=True
+        )
+        with patch("fortimanager_mcp.tools.object_tools.get_fmg_client", return_value=client):
+            result = await object_tools.create_service_tcp_udp(
+                adom="root", name="svc-a", tcp_portrange="8080"
+            )
+
+        assert result["status"] == "error"
+        assert result["error_code"] == "permission_denied"
+        assert stub.login.call_count == 2
+        stub.add.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_tcp_udp_protocol_cached_per_adom(self) -> None:
