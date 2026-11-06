@@ -451,6 +451,33 @@ class TestLicense:
         assert mock_fmg_instance.execute.call_args.args[0] == "/um/license/self"
 
     @pytest.mark.asyncio
+    async def test_license_count_when_the_appliance_omits_it(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """FortiManager 8.0.2 sends the contract list without the `count`
+        member 7.6.8 sends; the documented key is still there."""
+        mock_fmg_instance.execute.return_value = (0, {"contract": MOCK_LICENSE["contract"]})
+
+        with patch.object(fmg_ops_tools, "get_fmg_client", return_value=mock_client):
+            result = await fmg_ops_tools.get_fmg_license()
+
+        assert result["status"] == "success"
+        assert result["license"]["count"] == 1
+        assert result["license"]["contract"] == MOCK_LICENSE["contract"]
+
+    @pytest.mark.asyncio
+    async def test_license_count_from_the_appliance_is_kept(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """A count the appliance sent is passed through, not recomputed."""
+        mock_fmg_instance.execute.return_value = (0, {**MOCK_LICENSE, "count": 2})
+
+        with patch.object(fmg_ops_tools, "get_fmg_client", return_value=mock_client):
+            result = await fmg_ops_tools.get_fmg_license()
+
+        assert result["license"]["count"] == 2
+
+    @pytest.mark.asyncio
     async def test_license_not_connected(self) -> None:
         """Test license when client not connected."""
         with patch.object(fmg_ops_tools, "get_fmg_client", return_value=None):
