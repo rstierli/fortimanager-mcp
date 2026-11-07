@@ -423,3 +423,28 @@ def get_default_device() -> str:
     import os
 
     return os.environ.get("DEFAULT_DEVICE", "").strip()
+
+
+def allow_container_dial_hosts(
+    allowed: list[str], hostname: str, port: int | str
+) -> list[str]:
+    """Add the Docker hostname NCP uses when it dials this container.
+
+    NCP connects to ``http://<first 12 chars of the container id>:port``.
+    Inside the container that id is the hostname, and it is not known when
+    the connector writes ``MCP_ALLOWED_HOSTS``.
+    """
+    hosts = list(allowed)
+    name = (hostname or "").strip().lower()
+    if not name:
+        return hosts
+    port_s = str(port)
+    values = [name]
+    short = name[:12]
+    if short != name:
+        values.append(short)
+    for value in values:
+        for pattern in (f"{value}:*", f"{value}:{port_s}"):
+            if pattern not in hosts:
+                hosts.append(pattern)
+    return hosts

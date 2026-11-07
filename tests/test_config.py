@@ -78,6 +78,19 @@ class TestSettings:
         monkeypatch.setenv("MCP_ALLOWED_HOSTS", "")
         assert Settings().MCP_ALLOWED_HOSTS == []
 
+    def test_container_dial_host_is_added(self) -> None:
+        """NCP's short container-id Host is allowed alongside the configured name."""
+        from fortimanager_mcp.utils.config import allow_container_dial_hosts
+
+        allowed = allow_container_dial_hosts(
+            ["ncp-fortimanager-mcp-fortimanager:*", "127.0.0.1:*"],
+            "4b9ebce8576cdb61bac19ab793b532cc74a9ed0608d4",
+            8001,
+        )
+        assert "4b9ebce8576c:*" in allowed
+        assert "4b9ebce8576c:8001" in allowed
+        assert "ncp-fortimanager-mcp-fortimanager:*" in allowed
+
 
 class TestSafetyDefaultsAreShippedStrict:
     """The shipped default of every safety gate, pinned.

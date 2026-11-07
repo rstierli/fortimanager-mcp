@@ -757,8 +757,9 @@ async def get_device_realtime_status(
 ) -> dict[str, Any]:
     """Get real-time status from a managed device.
 
-    Queries the actual device through FortiManager proxy to get
-    current system status including CPU, memory, and uptime.
+    Queries the FortiGate system-status monitor. That payload is identity
+    (model, hostname, serial, version). For CPU, memory, sessions, and
+    uptime use get_device_performance.
 
     Args:
         adom: ADOM name

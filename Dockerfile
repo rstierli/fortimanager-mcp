@@ -41,6 +41,8 @@ COPY --from=builder /app/.venv /app/.venv
 
 # Copy application source
 COPY src/ ./src/
+COPY scripts/ ./scripts/
+RUN chmod +x ./scripts/start-localmcp.sh ./scripts/healthcheck.py
 
 # Create non-root user
 RUN useradd --create-home --shell /bin/bash fmgmcp && \
@@ -50,12 +52,12 @@ RUN useradd --create-home --shell /bin/bash fmgmcp && \
 # Switch to non-root user
 USER fmgmcp
 
-# Expose port
-EXPOSE 8000
+# 8000 = upstream streamable HTTP; 8001 = NCP LocalMCP SSE
+EXPOSE 8000 8001
 
 # Health check (using python since curl is not available in slim image)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
+    CMD python ./scripts/healthcheck.py
 
-# Run the server
+# Run the server (NCP overrides with scripts/start-localmcp.sh)
 CMD ["python", "-m", "fortimanager_mcp"]

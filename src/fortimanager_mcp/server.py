@@ -2,13 +2,14 @@
 
 Uses FastMCP pattern for tool registration.
 Supports two modes:
-- full: All 232 tools loaded (default)
+- full: All 241 tools loaded (default)
 - dynamic: Only discovery tools loaded (~90% context reduction)
 """
 
 import hmac
 import json
 import logging
+import socket
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -16,7 +17,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.utils.adom_locks import release_held_locks
-from fortimanager_mcp.utils.config import get_settings
+from fortimanager_mcp.utils.config import allow_container_dial_hosts, get_settings
 
 # Get settings
 settings = get_settings()
@@ -37,11 +38,17 @@ def get_fmg_client() -> FortiManagerClient | None:
     return _fmg_client
 
 
-# Configure transport security for reverse proxy deployments
+# Configure transport security for reverse proxy deployments.
+# Also allow this container's own id: NCP dials http://<12-char id>:8001,
+# which is not in the name-based MCP_ALLOWED_HOSTS written at start time.
 _transport_security = None
 if settings.MCP_ALLOWED_HOSTS:
     _transport_security = TransportSecuritySettings(
-        allowed_hosts=settings.MCP_ALLOWED_HOSTS,
+        allowed_hosts=allow_container_dial_hosts(
+            settings.MCP_ALLOWED_HOSTS,
+            socket.gethostname(),
+            settings.MCP_SERVER_PORT,
+        ),
     )
 
 # Create FastMCP server.
@@ -81,7 +88,7 @@ async def health_check() -> str:
     """Check FortiManager MCP server health and connection status."""
     mode = settings.FMG_TOOL_MODE
     if mode == "full":
-        tool_info = "All 232 tools loaded"
+        tool_info = "All 241 tools loaded"
     else:
         tool_info = "Discovery tools + dynamic execution"
     return f"FortiManager MCP Server is healthy (mode: {mode}, {tool_info})"
@@ -103,7 +110,7 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
         """
         op = operation.lower().strip()
 
-        # Define available tools and their categories (232 tools total)
+        # Define available tools and their categories (241 tools total)
         tool_catalog = {
             "system": [
                 ("get_system_status", "Get FortiManager system status and version info"),
@@ -144,6 +151,18 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
                 (
                     "get_device_client_location",
                     "Asset Identity: locate a client (ip/mac/hostname) -> AP/switch/VLAN",
+                ),
+                (
+                    "get_device_performance",
+                    "Live CPU, memory, sessions, and uptime for a managed FortiGate",
+                ),
+                (
+                    "get_device_interface_counters",
+                    "Live per-interface packet and byte counters",
+                ),
+                (
+                    "get_device_logs",
+                    "Recent on-box traffic, system, or threat logs",
                 ),
             ],
             "device_config": [
@@ -540,17 +559,19 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
             Categories with descriptions and tool counts
         """
         return {
-            "total_tools": 232,
+            "total_tools": 241,
             "categories": {
                 "system": {
                     "count": 17,
                     "description": "System status, ADOM management, tasks, packages",
                 },
                 "device": {
-                    "count": 14,
+                    "count": 23,
                     "description": (
                         "Device management, VDOMs, bulk operations, interface config, "
-                        "client location"
+                        "client location, live CPU/memory, interface counters, on-box logs, "
+                        "routes, policy hit counters, IPsec up/down, package vs live policy, "
+                        "LLDP topology view, computed health alerts"
                     ),
                 },
                 "device_config": {
@@ -689,6 +710,21 @@ def register_dynamic_tools(mcp_server: FastMCP) -> None:
                     "get_device_interfaces",
                     "get_device_interface_config",
                     "get_device_client_location",
+                },
+                "device_health_tools": {
+                    "get_device_performance",
+                    "get_device_interface_counters",
+                    "get_device_logs",
+                },
+                "device_read_tools": {
+                    "get_device_routes",
+                    "get_policy_hit_counters",
+                    "get_device_ipsec_tunnel_status",
+                    "compare_package_with_device",
+                },
+                "device_insight_tools": {
+                    "get_device_topology",
+                    "get_device_alerts",
                 },
                 "device_config_tools": {
                     "create_device_interface",
@@ -965,12 +1001,15 @@ if settings.FMG_TOOL_MODE == "dynamic":
 
 else:
     # Full mode: Load all tools (default behavior)
-    logger.info("Loading in FULL mode - all 232 tools")
+    logger.info("Loading in FULL mode - all 241 tools")
 
     # Import all tool modules (registers them with the server)
     from fortimanager_mcp.tools import (  # noqa: E402, F401
         device_config_tools,
         device_group_tools,
+        device_health_tools,
+        device_insight_tools,
+        device_read_tools,
         dvm_tools,
         firmware_tools,
         fmg_ops_tools,
@@ -991,7 +1030,18 @@ else:
 
 def main() -> None:
     """Entry point for the MCP server."""
+    import os
     import sys
+
+    # NCP LocalMCP: SSE on :8001 at /mcp/sse (aviz-shared-network).
+    if os.getenv("LOCAL_MCP_MODE", "").strip().lower() in {"1", "true", "yes"}:
+        logger.info(
+            "Starting FortiManager MCP Server in LocalMCP SSE mode on "
+            f"{settings.MCP_SERVER_HOST}:{settings.MCP_SERVER_PORT}"
+        )
+        logger.info(f"Tool mode: {settings.FMG_TOOL_MODE}")
+        run_localmcp()
+        return
 
     # Determine server mode from settings
     server_mode = settings.MCP_SERVER_MODE
@@ -1294,6 +1344,127 @@ def run_http() -> None:
         port=settings.MCP_SERVER_PORT,
         log_level=settings.LOG_LEVEL.lower(),
         # None is uvicorn's own "unbounded" sentinel.
+        limit_concurrency=settings.MCP_MAX_CONCURRENT_REQUESTS or None,
+    )
+
+
+def run_localmcp() -> None:
+    """Run MCP server in NCP LocalMCP SSE mode (port 8001, /mcp/sse).
+
+    Same FortiManager client lifecycle and optional Bearer auth as ``run_http``,
+    but exposes the FastMCP SSE transport that NCP's MCP client dials.
+    """
+    _ensure_http_auth_or_die()
+
+    from collections.abc import AsyncIterator
+    from contextlib import asynccontextmanager
+
+    import uvicorn
+    from starlette.applications import Starlette
+    from starlette.middleware import Middleware
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse
+    from starlette.routing import Mount, Route
+    from starlette.types import ASGIApp, Receive, Scope, Send
+
+    # NCP LocalMCP clients expect /mcp/sse (not the default /sse).
+    mcp.settings.sse_path = "/sse"
+    mcp.settings.message_path = "/messages/"
+
+    async def health_endpoint(request: Request) -> JSONResponse:
+        is_connected = _fmg_client is not None and _fmg_client.is_connected
+        return JSONResponse(
+            {
+                "status": "healthy",
+                "service": "fortimanager-mcp",
+                "transport": "sse",
+                "fortimanager_connected": is_connected,
+            },
+            status_code=200,
+        )
+
+    class AuthMiddleware:
+        """ASGI middleware that enforces Bearer token auth when MCP_AUTH_TOKEN is set."""
+
+        def __init__(self, app: ASGIApp) -> None:
+            self.app = app
+
+        async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+            if scope["type"] not in ("http", "websocket"):
+                await self.app(scope, receive, send)
+                return
+
+            path = scope.get("path", "")
+            if path == "/health":
+                await self.app(scope, receive, send)
+                return
+
+            token = settings.MCP_AUTH_TOKEN
+            if not token:
+                await self.app(scope, receive, send)
+                return
+
+            headers = dict(scope.get("headers", []))
+            auth_header = headers.get(b"authorization", b"").decode()
+            if not hmac.compare_digest(auth_header, f"Bearer {token}"):
+                response = JSONResponse(
+                    {"error": "Unauthorized", "detail": "Invalid or missing Bearer token"},
+                    status_code=401,
+                )
+                await response(scope, receive, send)
+                return
+
+            await self.app(scope, receive, send)
+
+    @asynccontextmanager
+    async def app_lifespan(app: Starlette) -> AsyncIterator[None]:
+        # SSE transport does not use the streamable-HTTP session manager.
+        global _fmg_client
+
+        if settings.FORTIMANAGER_HOST:
+            logger.info("Initializing FortiManager connection (LocalMCP)")
+            _fmg_client = FortiManagerClient.from_settings(settings)
+            try:
+                await _fmg_client.connect()
+                logger.info("FortiManager connection established")
+            except Exception as e:
+                logger.warning(f"FortiManager connection failed: {e}. Server will still start.")
+                _fmg_client = None
+        else:
+            logger.warning(
+                "FORTIMANAGER_HOST not configured. Set environment variables or .env file to connect."
+            )
+            _fmg_client = None
+
+        try:
+            yield
+        finally:
+            logger.info("Closing FortiManager connection")
+            if _fmg_client:
+                await release_held_locks(_fmg_client)
+                await _fmg_client.disconnect()
+
+    # Mount under /mcp so routes become /mcp/sse and /mcp/messages/.
+    # Do not pass mount_path="/mcp" into sse_app: Starlette already sets
+    # scope root_path to /mcp, and sse_app would prefix /mcp again, so the
+    # advertised POST URL becomes /mcp/mcp/messages/ (404).
+    app = Starlette(
+        routes=[
+            Route("/health", health_endpoint, methods=["GET"]),
+            Mount("/mcp", app=mcp.sse_app()),
+        ],
+        lifespan=app_lifespan,
+        middleware=[
+            Middleware(AuthMiddleware),
+            Middleware(BodyLimitMiddleware, max_bytes=settings.MCP_MAX_REQUEST_BYTES),
+        ],
+    )
+
+    uvicorn.run(
+        app,
+        host=settings.MCP_SERVER_HOST,
+        port=settings.MCP_SERVER_PORT,
+        log_level=settings.LOG_LEVEL.lower(),
         limit_concurrency=settings.MCP_MAX_CONCURRENT_REQUESTS or None,
     )
 
