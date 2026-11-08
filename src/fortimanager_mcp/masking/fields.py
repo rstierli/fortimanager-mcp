@@ -30,13 +30,16 @@ oversight:
   design work, not a table entry.
 - Object and policy names that embed an address (``srv-192.0.2.10``).
   Names route calls, see above.
-- IPv6 prefix lists (``ipv6.ip6-prefix-list[].prefix`` on an interface).
-  Masking it needs the walk to scope a key by its parent, since
-  ``prefix`` on its own is also an integer id and a routing-prefix label,
-  so a global carrier would corrupt both. Settled on the PR after being
-  raised twice: the scoping mechanism is not worth building to hold two
-  keys, given that carrier-shape complexity is what produced this table's
-  leak bugs in the first place.
+- Hostnames and other non-address identifiers under keys this table does
+  not name, on the passthrough tools (see ``PASSTHROUGH_TOOLS``). Those
+  get address and MAC detection by value shape; a name has no shape to
+  detect.
+
+``prefix`` used to be listed here: it is also an integer id and a
+routing-prefix label, so a plain carrier would corrupt both, and scoping
+it by parent key was declined on the PR. It is now covered without
+scoping, by ``COMPOSITE_ADDRESS_OR_NAME``, which masks a value only when
+it is shaped like an address and leaves an int or a label alone.
 - Device coordinates (``latitude``/``longitude`` on dvmdb records).
   Floats, so no format-preserving cipher covers them; masking would mean
   an irreversible placeholder on a value the issue #34 scope never
@@ -174,6 +177,17 @@ FIELD_TYPES: dict[str, str] = {
     "virtual_mac": MAC,  # review, suggested only: not individually observed
     "sfp_dsl_mac": MAC,  # review, suggested only: not individually observed
     "substitute_dst_mac": MAC,  # review, suggested only: not individually observed
+    # ---------------------------------------------------------------- #
+    # Live BGP and IPsec state (1.13.0 review). These come from FortiOS
+    # monitor endpoints through the FMG proxy, never from a template, so
+    # the value is always a literal address and a plain carrier fits.
+    # ---------------------------------------------------------------- #
+    "neighbor_ip": IP,  # static: sdwan_tools.py _summarize_bgp_status
+    "local_ip": IP,  # static: sdwan_tools.py _summarize_bgp_status
+    "learned_from": IP,  # static: sdwan_tools.py _summarize_bgp_status
+    "next_hop": IP,  # static: sdwan_tools.py _summarize_bgp_status
+    "remote_gateway": IP,  # static: sdwan_tools.py _condense_tunnel
+    "rgwy": IP,  # live: 8.0.2 proxy monitor/vpn/ipsec, raw via query_device_api
 }
 
 #: Subnet-shaped keys. FortiManager returns these as a two-element
@@ -222,15 +236,45 @@ COMPOSITE_SUBNET: tuple[str, ...] = (
     "trust_ip_2",  # review r3: was in clear
     "trust_ip_3",  # review r3: was in clear
 )
-#: The IPv6 prefix keys are a DOCUMENTED GAP, not an oversight. Masking
-#: ``ipv6.ip6-prefix-list[].prefix`` needs the walk to scope a key by its
-#: parent, because ``prefix`` alone also appears as an integer id and as a
-#: routing-prefix label, so a global entry would corrupt them. The
-#: maintainer settled it on the PR after it was raised twice: do not build
-#: the mechanism. Three rounds of real leak bugs in this table came out of
-#: carrier-shape complexity, and a new scoping surface is the same kind of
-#: complexity. Revisit only if it starts to matter, with the mutation
-#: harness that now exists to make that safer.
+#: ``prefix`` is not here, for the reason the PR settled: it also appears
+#: as an integer id and a routing-prefix label, and this handler would
+#: turn a label into a placeholder. It is in COMPOSITE_ADDRESS_OR_NAME
+#: below, which leaves anything not shaped like an address alone, so no
+#: parent-key scoping was needed after all.
+
+#: Keys that hold an address on one record and a NAME (or a template
+#: variable, or an integer id) on another. Masked only when the value is
+#: shaped like an address: a bare IP, ``ip/len``, ``ip mask``, an
+#: ``[ip, mask]`` pair or a ``start-end`` range. Anything else is left as
+#: it is, because under these keys a non-address is a routing name
+#: (``dst`` on an SD-WAN rule lists address objects), a ``$(variable)`` in
+#: a template body, or an id, and none of those is ours to mask. Still
+#: fail-closed on the case that matters: a string that carries an address
+#: somewhere but parses as none of those shapes becomes a placeholder.
+#:
+#: Evidence, all from the 1.13.0 port:
+#:
+#: - ``prefix``: ``router bgp`` ``network[]`` / ``neighbor-range[]``, an
+#:   ``[ip, mask]`` pair (live: 8.0.2 BGP template body), and the
+#:   ``net/len`` strings ``get_device_bgp_status`` builds; also
+#:   ``ipv6.ip6-prefix-list[].prefix`` on an interface, closing the gap the
+#:   module docstring used to list.
+#: - ``prefix6``: the ``network6[]`` / ``neighbor-range6[]`` spelling.
+#: - ``dst``: a static route's ``[ip, mask]`` (get_device_static_routes)
+#:   and an SD-WAN service rule's list of address NAMES (get_device_sdwan),
+#:   which is why a plain carrier would not do.
+#: - ``router_id``: a literal on a device, often ``$(router_id)`` in a
+#:   template (live: 8.0.2 BGP template body holds a literal).
+#: - ``remote_gw``: the phase1 ``remote-gw`` (diagnose_ipsec_tunnel and the
+#:   phase1 reads); ``0.0.0.0`` on a dial-up gateway, which SKIP_VALUES
+#:   passes.
+COMPOSITE_ADDRESS_OR_NAME: tuple[str, ...] = (
+    "prefix",  # live: 8.0.2 BGP template network[]/neighbor-range[]
+    "prefix6",  # schema: router bgp network6[]/neighbor-range6[]
+    "dst",  # static: sdwan_tools.py get_device_static_routes, _summarize_sdwan
+    "router_id",  # live: 8.0.2 BGP template body; static: _summarize_bgp
+    "remote_gw",  # static: sdwan_tools.py diagnose_ipsec_tunnel evidence
+)
 
 #: Wildcard ADDRESS: an IP plus a wildcard mask, which FortiManager
 #: returns under this key on a ``type=wildcard`` address object. Distinct
@@ -367,5 +411,23 @@ ROUTING_KEYS_NEVER_MASK: frozenset[str] = frozenset(
         "folder",
         "tool_name",
         "operation",
+        # FortiOS REST copies of an entry's key on every cmdb read; they
+        # route the same follow-up calls the name does.
+        "q_origin_key",
+        "mkey",
     }
 )
+
+#: Free text, deliberately never masked (see the module docstring). Named
+#: so the passthrough value detection below can leave it alone too.
+FREE_TEXT_KEYS: frozenset[str] = frozenset({"comment", "comments", "description"})
+
+#: Tools whose output is the device's own API answer passed through
+#: whole, under whatever keys that FortiOS endpoint uses. No table can
+#: list those, so on these tools a value under a key this module does not
+#: name is masked by SHAPE: an address, ``ip/len``, ``ip mask``, an
+#: ``[ip, mask]`` pair, a range or a MAC is masked, a string that carries
+#: an address in any other form becomes a placeholder, and everything
+#: else passes. Names (ROUTING_KEYS_NEVER_MASK) and free text stay clear
+#: as everywhere else.
+PASSTHROUGH_TOOLS: frozenset[str] = frozenset({"query_device_api"})

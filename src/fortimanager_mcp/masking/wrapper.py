@@ -21,7 +21,9 @@ Two things happen at the boundary:
 
 2. **Outbound, the masker.** Allowlisted keys are masked by type at any
    nesting depth, and composite keys are parsed so only the identifying
-   part masks.
+   part masks. On the passthrough tools (``fields.PASSTHROUGH_TOOLS``),
+   whose keys are whatever the device API uses, unnamed keys are also
+   masked by value shape: addresses and MACs, never names or free text.
 
 Fail-closed by construction. A value that cannot be masked (outside the
 cipher alphabet, malformed) becomes an irreversible keyed placeholder,
@@ -42,6 +44,7 @@ from functools import wraps
 from typing import Any
 
 from fortimanager_mcp.masking.fields import (
+    COMPOSITE_ADDRESS_OR_NAME,
     COMPOSITE_FQDN,
     COMPOSITE_RANGE,
     COMPOSITE_SUBNET,
@@ -49,11 +52,14 @@ from fortimanager_mcp.masking.fields import (
     DOMAIN,
     EMAIL,
     FIELD_TYPES,
+    FREE_TEXT_KEYS,
     HOSTNAME,
     IP,
     IP_OR_HOST,
     MAC,
+    PASSTHROUGH_TOOLS,
     REDACT_KEYS,
+    ROUTING_KEYS_NEVER_MASK,
     SERIAL,
     SKIP_VALUES,
     USERNAME,
@@ -73,6 +79,21 @@ logger = logging.getLogger(__name__)
 
 class TokenInInput(Exception):
     """A masking token was supplied as a tool argument."""
+
+
+#: True while masking the result of a PASSTHROUGH_TOOLS tool, whose keys
+#: no table can name. A context variable rather than a parameter threaded
+#: through every handler, so the composites that recurse back into
+#: ``mask_result`` keep the mode without each having to carry it.
+_PASSTHROUGH: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "fmg_masking_passthrough", default=False
+)
+
+#: A dotted quad anywhere in a string, not part of a longer dotted run
+#: (so a ``7.4.12.2795`` build string does not count).
+_IPV4_IN_TEXT = re.compile(r"(?<![\d.])\d{1,3}(?:\.\d{1,3}){3}(?![\d.])")
+_TEXT_SEPARATORS = re.compile(r"[\s,;\"'()\[\]<>=]+")
+_MAC_SHAPE = re.compile(r"[0-9A-Fa-f]{2}(?:[:-][0-9A-Fa-f]{2}){5}")
 
 
 class OutputMasker:
@@ -286,6 +307,74 @@ class OutputMasker:
             return masked
         return f"*.{masked}"
 
+    @staticmethod
+    def _carries_address(text: str) -> bool:
+        """True when an address sits anywhere in ``text``.
+
+        IPv4 by pattern; IPv6 by parsing each separator-delimited word, since
+        a pattern for it would also catch times and MACs.
+        """
+        if _IPV4_IN_TEXT.search(text):
+            return True
+        for word in _TEXT_SEPARATORS.split(text):
+            if ":" not in word:
+                continue
+            try:
+                ipaddress.IPv6Address(word.partition("/")[0].partition("%")[0])
+            except ValueError:
+                continue
+            return True
+        return False
+
+    def _mask_if_address(self, value: str) -> str:
+        """Mask a string shaped like an address; leave anything else alone.
+
+        Shapes: a bare address, ``ip/len`` or ``ip mask`` (through the
+        discriminating subnet handler, so a second ADDRESS after the
+        separator fails closed rather than being kept), a ``start-end``
+        range and a MAC. A string that carries an address in any other form
+        becomes a placeholder: under an address-or-name key that is not a
+        name, and keeping it would publish the address.
+        """
+        candidate = value.strip()
+        if candidate.lower() in SKIP_VALUES:
+            return value
+        if _MAC_SHAPE.fullmatch(candidate):
+            return self._mask_scalar(MAC, candidate)
+        if self._is_ip(candidate):
+            return self._mask_scalar(IP, candidate)
+        for sep in ("/", " "):
+            net, found, _ = candidate.partition(sep)
+            if found and self._is_ip(net):
+                return str(self._mask_subnet(candidate))
+        start, found, end = candidate.partition("-")
+        if found and self._is_ip(start) and self._is_ip(end):
+            return str(self._mask_range(candidate))
+        if self._carries_address(candidate):
+            return self.placeholder(value)
+        return value
+
+    def _mask_address_or_name(self, value: Any) -> Any:
+        """Address-or-name handler, through whatever container it arrived in.
+
+        Its own recursion rather than ``_each``: the ``[ip, mask]`` pair has
+        to be seen as one value, or the netmask would mask as an address.
+        """
+        if isinstance(value, str):
+            return self._mask_if_address(value)
+        if isinstance(value, list):
+            if (
+                len(value) == 2
+                and all(isinstance(p, str) for p in value)
+                and self._is_ip(value[0])
+                and self._is_mask(value[1])
+            ):
+                return self._mask_subnet(value)
+            return [self._mask_address_or_name(item) for item in value]
+        if isinstance(value, dict):
+            return self.mask_result(value)
+        return value
+
     # -- walk ----------------------------------------------------------- #
 
     def _each(self, handler: Any, value: Any) -> Any:
@@ -349,8 +438,16 @@ class OutputMasker:
             return self._mask_fqdn(value)
         if ckey in COMPOSITE_RANGE:
             return self._mask_range(value)
+        if ckey in COMPOSITE_ADDRESS_OR_NAME:
+            return self._mask_address_or_name(value)
         vtype = FIELD_TYPES.get(ckey)
         if vtype is None:
+            if (
+                _PASSTHROUGH.get()
+                and ckey not in ROUTING_KEYS_NEVER_MASK
+                and ckey not in FREE_TEXT_KEYS
+            ):
+                return self._mask_address_or_name(value)
             return self.mask_result(value)
         # Same container walk the composites use. The scalar route had the
         # original form of this hole and kept it through the first fix: a
@@ -367,7 +464,12 @@ class OutputMasker:
         return obj
 
     def mask_tool_result(self, result: Any, tool_name: str) -> Any:
-        """Mask a result, withholding it entirely if masking fails."""
+        """Mask a result, withholding it entirely if masking fails.
+
+        A PASSTHROUGH_TOOLS result additionally has its unnamed keys masked
+        by value shape (see ``_mask_address_or_name``).
+        """
+        mode = _PASSTHROUGH.set(tool_name in PASSTHROUGH_TOOLS)
         try:
             return self.mask_result(result)
         except Exception:
@@ -377,6 +479,8 @@ class OutputMasker:
                 "error": "masking_failed",
                 "message": f"{tool_name}: output masking failed; raw result withheld (fail-closed)",
             }
+        finally:
+            _PASSTHROUGH.reset(mode)
 
 
 def guard_args(value: Any, pattern: re.Pattern[str], suffix: str) -> None:
