@@ -13,7 +13,7 @@ If you discover a security vulnerability in this project, please report it respo
 
 **Do NOT open a public GitHub issue for security vulnerabilities.**
 
-Instead, please email: **roland@mystier.li**
+Instead, report it privately through GitHub (**Security** tab → **Report a vulnerability**), or email: **roland@mystier.li**
 
 Include:
 - Description of the vulnerability
