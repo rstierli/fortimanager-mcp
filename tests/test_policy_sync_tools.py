@@ -194,7 +194,7 @@ def _client(
             return interfaces or []
         if url.endswith("/obj/fmg/variable"):
             return variables or []
-        if url == "/dvmdb/adom/production/device/branch1":
+        if url == "/dvmdb/adom/demo/device/branch1":
             return {"name": "branch1", "platform_str": "FortiGate-VM64-KVM"}
         return GROUPS
 
@@ -205,7 +205,7 @@ def _client(
 
 async def _check(client: MagicMock, **kwargs: Any) -> dict[str, Any]:
     with patch.object(pst, "get_fmg_client", return_value=client):
-        return await pst.check_device_policy_sync("production", "branch1", **kwargs)
+        return await pst.check_device_policy_sync("demo", "branch1", **kwargs)
 
 
 DRIFT = {
@@ -337,6 +337,35 @@ class TestCheckDevicePolicySync:
         result = await _check(client, source="live")
         assert result["status"] == "error"
         client.get_package_status.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("vdom", ["..", "root/../x", "a;b", ""])
+    async def test_bad_vdom_is_refused(self, vdom: str) -> None:
+        client = _client()
+        result = await _check(client, vdom=vdom)
+        assert result["status"] == "error"
+        assert result["error_code"] == "validation_error"
+        client.get_package_status.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("block", ["..", "../../pkg/x", "a/b", "x;y"])
+    async def test_a_policy_block_name_is_validated_before_the_url(self, block: str) -> None:
+        """The name comes from FortiManager, but it still lands in a URL."""
+        client = _client()
+        policies = [{**PKG_POLICIES[0], "_policy_block": block}, *PKG_POLICIES[1:]]
+        verbose = client.get_verbose.side_effect
+
+        async def get_verbose(url: str, **kwargs: Any) -> Any:
+            if "/pkg/" in url:
+                return policies
+            return await verbose(url, **kwargs)
+
+        client.get_verbose = AsyncMock(side_effect=get_verbose)
+        result = await _check(client)
+
+        assert result["status"] == "error"
+        assert result["error_code"] == "validation_error"
+        assert not any("/pblock/" in c.args[0] for c in client.get_verbose.call_args_list)
 
 
 class TestDeviceDbSource:
@@ -480,6 +509,10 @@ class TestInterfaceMapping:
         vpn_in = next(m for m in modified if m["policyid"] == 1)
         assert vpn_in["differences"]["dstintf"] == {"package": ["port3"], "revision": ["vl_lan"]}
         assert "mapping" in vpn_in["note"]
+        # _interface_map resolves per-platform mappings; the note must not
+        # claim otherwise.
+        assert "not resolved" not in vpn_in["note"]
+        assert "per-platform" in vpn_in["note"]
 
 
 class TestTargeting:
@@ -506,7 +539,7 @@ class TestPackageInstallStatus:
     async def test_filters_to_one_device(self) -> None:
         client = _client()
         with patch.object(pst, "get_fmg_client", return_value=client):
-            result = await pst.get_package_install_status("production", "branch2")
+            result = await pst.get_package_install_status("demo", "branch2")
         assert result["packages"] == [
             {
                 "device": "branch2",
