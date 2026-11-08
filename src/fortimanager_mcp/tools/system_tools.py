@@ -14,13 +14,17 @@ from fortimanager_mcp.utils.config import get_default_adom, get_settings
 from fortimanager_mcp.utils.errors import client_safe_error
 from fortimanager_mcp.utils.install_gate import (
     PREVIEW_VALIDITY_TTL,
+    TERMINAL_TASK_STATES,
     consume_preview,
     find_preview,
     package_revision,
     recorded_revision,
     task_state,
 )
-from fortimanager_mcp.utils.install_preview import PreviewFailed, run_install_preview
+from fortimanager_mcp.utils.install_preview import (
+    DEFAULT_PREVIEW_TIMEOUT,
+    preview_install_response,
+)
 from fortimanager_mcp.utils.responses import error_response, strip_device_credentials
 from fortimanager_mcp.utils.task_guard import (
     MAX_TASK_POLL_FAILURES,
@@ -33,6 +37,7 @@ from fortimanager_mcp.utils.task_guard import (
 from fortimanager_mcp.utils.validation import (
     validate_adom,
     validate_device_name,
+    validate_install_scope,
     validate_package_name,
     validate_task_id,
 )
@@ -340,6 +345,12 @@ async def list_tasks(
     Tasks represent background operations like policy installation,
     device provisioning, and other long-running processes.
 
+    Changed in 1.13.0: returns the newest ``limit`` tasks (default 100;
+    ``total`` says how many matched) and drops each task's ``line`` list
+    unless ``include_lines`` is set. It used to return every task with its
+    lines, which can reach hundreds of KB per call. Raise ``limit``
+    or narrow with ``since_hours`` to see further back.
+
     Args:
         filter_state: Filter by task state (optional):
             - "pending": Not started
@@ -459,10 +470,16 @@ async def wait_for_task(
 
     Returns:
         dict: Final task status with keys:
-            - status: "success" or "error"
+            - status: "success" (task ended done or warning) or "error"
+              (error, cancelled, aborted, timeout)
             - task: Final task object
+            - task_state: Decoded end state (done, warning, error,
+              cancelled, aborted)
             - completed: Whether task completed (vs timeout)
             - message: Status or error message
+
+        A "warning" task finished; its lines (get_task) say what was
+        skipped, e.g. an install that found nothing to push.
 
     Example:
         >>> # Wait for policy installation
@@ -481,10 +498,11 @@ async def wait_for_task(
         timeout = min(timeout, MAX_TASK_WAIT_TIMEOUT)
         poll_interval = max(1, min(poll_interval, 60))
         poll_failures_left = MAX_TASK_POLL_FAILURES
-        start_time = asyncio.get_event_loop().time()
+        loop = asyncio.get_running_loop()
+        start_time = loop.time()
 
         while True:
-            elapsed = asyncio.get_event_loop().time() - start_time
+            elapsed = loop.time() - start_time
             if elapsed > timeout:
                 return {
                     "status": "error",
@@ -516,31 +534,14 @@ async def wait_for_task(
                 poll_failures_left -= 1
                 continue
 
-            state = task.get("state", "").lower() if isinstance(task.get("state"), str) else ""
-
-            # Handle numeric state values
-            # Every /task/task state (8.0 task syntax). States missing from
-            # the old map (6-10) decoded as "unknown" and were never terminal,
-            # so a task ending in "warning" -- e.g. an install with nothing to
-            # push, verified live -- was polled until the timeout.
-            if isinstance(task.get("state"), int):
-                state_map = {
-                    0: "pending",
-                    1: "running",
-                    2: "cancelling",
-                    3: "cancelled",
-                    4: "done",
-                    5: "error",
-                    6: "aborting",
-                    7: "aborted",
-                    8: "warning",
-                    9: "to_continue",
-                    10: "unknown",
-                }
-                state = state_map.get(task["state"], "unknown")
+            # Every /task/task state decodes (install_gate.TASK_STATES), so a
+            # task ending in "warning" -- e.g. an install with nothing to push,
+            # verified live -- or "aborted" ends the wait instead of being
+            # polled until the timeout as an unknown state.
+            state = task_state(task)
 
             # Check if completed
-            if state in ("done", "warning", "error", "cancelled", "aborted"):
+            if state in TERMINAL_TASK_STATES:
                 # Terminal state observed: release this task's spawn slot (a
                 # no-op for tasks not spawned through this server).
                 mark_task_done(task_id)
@@ -677,7 +678,15 @@ async def _check_install_preview(
         return (
             "preview_required",
             f"preview task {preview_task} has not finished yet (state: {state}) — "
-            "wait_for_task first",
+            "wait_for_task on it first",
+        )
+    if state == "warning":
+        # preview_install records the staging task when FortiManager found
+        # nothing to install: there is no reviewed change to authorize.
+        return (
+            "preview_required",
+            f"preview task {preview_task} found nothing to install (state 'warning'); "
+            "change the package or its assignment, then run preview_install again",
         )
     if state != "done":
         return ("preview_required", f"preview task {preview_task} ended in state '{state}'")
@@ -720,23 +729,31 @@ async def install_package(
 
     By default (FMG_INSTALL_SAFETY=strict) a real install requires a
     verified preview first: run preview_install for the same ADOM, package,
-    and devices, wait for its task to finish, then install. Each preview
-    authorizes one install, and only while the package is unchanged — if the
-    package was edited after the preview, the install is refused
-    (preview_stale) and a fresh preview is required.
+    and devices and review its result (on FortiManager builds older than
+    7.6.7 / 8.0.2, preview_install returns a task: wait_for_task on it and
+    read get_preview_result). Each preview authorizes one install, and only
+    while the package is unchanged — if the package was edited after the
+    preview, the install is refused (preview_stale) and a fresh preview is
+    required. A preview that found nothing to install authorizes nothing.
 
     Args:
         adom: ADOM name
         package: Policy package name
         devices: Target devices [{"name": "FGT1", "vdom": "root"}, ...]
-        preview: If True, run a full install preview instead (same as
-            preview_install): nothing is installed (default: False)
+        preview: If True, run preview_install instead: nothing is installed
+            (default: False). Changed in 1.13.0: this used to stage the
+            install and return at once, leaving the devices held by an
+            install-wizard session; it now runs the same full preview as
+            preview_install, returns its result, and like it authorizes one
+            install of the same target.
 
     Returns:
         dict: Installation result with keys:
             - status: "success" or "error"
             - task_id: Task ID for monitoring (if successful)
             - message: Status or error message
+            With preview=True: the preview_install response plus
+            ``preview: True``.
 
     Example:
         >>> # Install to single device
@@ -759,6 +776,9 @@ async def install_package(
     try:
         adom = validate_adom(adom)
         package = validate_package_name(package)
+        # A non-empty, well-formed scope; also keeps the gate's key the same
+        # as the one preview_install recorded.
+        devices = validate_install_scope(devices)
         client = _get_client()
 
         # Preview-before-install gate (bundle D of #11): a real install needs
@@ -775,8 +795,10 @@ async def install_package(
                         error=gate_error,
                         message=(
                             f"Refusing to install package '{package}': {gate_problem}. "
-                            "Run preview_install, wait_for_task, and review "
-                            "get_preview_result first — or set FMG_INSTALL_SAFETY=warn/"
+                            "Run preview_install for the same ADOM, package and devices "
+                            "and review its result first (on FortiManager older than "
+                            "7.6.7 / 8.0.2 it returns a task: wait_for_task, then "
+                            "get_preview_result) — or set FMG_INSTALL_SAFETY=warn/"
                             "disabled to override."
                         ),
                         operation="install_package",
@@ -790,28 +812,18 @@ async def install_package(
             # A bare flags=["preview"] install stages the package and leaves
             # the devices held by an install-wizard session that nothing
             # releases, so later installs queue behind it. Run the complete
-            # preview instead (stage, render, cancel) -- the same one
-            # preview_install runs.
-            try:
-                previewed = await run_install_preview(client, adom, package, devices)
-            except PreviewFailed as e:
-                return error_response(
-                    error="preview_failed",
-                    message=e,
-                    operation="install_package",
-                    adom=adom,
-                    package=package,
-                    step=e.step,
-                    task_id=e.task_id,
-                    task_lines=e.lines,
-                )
-            return {
-                "status": "success",
-                "task_id": previewed["preview_task_id"],
-                "preview": True,
-                "devices": previewed.get("devices", previewed.get("raw")),
-                "message": "Installation preview finished; nothing was installed",
-            }
+            # preview instead -- the one preview_install runs.
+            previewed = await preview_install_response(
+                client,
+                adom,
+                package,
+                devices,
+                DEFAULT_PREVIEW_TIMEOUT,
+                operation="install_package",
+            )
+            if previewed["status"] == "success":
+                previewed["preview"] = True
+            return previewed
 
         result = await spawn_guarded(
             "install_package",
@@ -898,6 +910,7 @@ async def install_device_settings(
     """
     try:
         adom = validate_adom(adom)
+        devices = validate_install_scope(devices)
         comment = _validate_rev_comment(dev_rev_comments) if dev_rev_comments is not None else None
         client = _get_client()
 

@@ -17,9 +17,11 @@ Behavior is governed by ``FMG_INSTALL_SAFETY`` (same shape as
 
 Scope note: FortiManager's ``/securityconsole/install/preview`` is
 *device*-scoped -- it takes ``adom`` + ``scope`` (devices) but no ``pkg``
-parameter, so the preview reflects whatever is pending for those devices, not
-one named package in isolation. The package binding here is therefore enforced
-by this gate, not by the preview API: the record is keyed by
+parameter. On builds with the staged preview (FMG 7.6.7+ / 8.0.2+, see
+``install_preview``) the render is tied to a staging install of the named
+package; on older builds it reflects whatever is pending for those devices,
+not one named package in isolation. The package binding here is therefore
+enforced by this gate either way: the record is keyed by
 ``(adom, package, scope)`` and additionally fingerprinted by the package's
 revision counter, so an install of a given package is only authorized by a
 preview recorded for that same package whose content has not changed since.
@@ -42,15 +44,15 @@ This is ephemeral process state and assumes the server runs as a single
 process (uvicorn with no workers), like the global client itself.
 """
 
-import asyncio
 import logging
+import time
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 # A preview older than this no longer authorizes an install. Long enough to
-# run preview -> wait_for_task -> get_preview_result -> review -> install by
-# hand; short enough that yesterday's preview cannot bless today's install.
+# run preview_install, review its result and install by hand; short enough
+# that yesterday's preview cannot bless today's install.
 PREVIEW_VALIDITY_TTL = 1800.0
 
 # (adom, package, scope_key) ->
@@ -94,7 +96,7 @@ def record_preview(
     key = (adom, package, _scope_key(devices))
     _PREVIEWS[key] = {
         "task_id": task_id,
-        "recorded_at": asyncio.get_event_loop().time(),
+        "recorded_at": time.monotonic(),
         "revision": revision,
     }
 
@@ -108,7 +110,7 @@ def find_preview(adom: str, package: str, devices: list[dict[str, str]]) -> int 
     entry = _PREVIEWS.get(key)
     if entry is None:
         return None
-    age = asyncio.get_event_loop().time() - entry["recorded_at"]
+    age = time.monotonic() - entry["recorded_at"]
     if age > PREVIEW_VALIDITY_TTL:
         del _PREVIEWS[key]
         return None
@@ -135,25 +137,40 @@ def consume_preview(adom: str, package: str, devices: list[dict[str, str]]) -> N
     _PREVIEWS.pop((adom, package, _scope_key(devices)), None)
 
 
+#: ``/task/task`` ``state`` values. FNDN ``STATE_OPTIONS`` macro of the task
+#: syntax; the same 0-10 enum in the 7.2.11, 7.4.8, 7.6.5, 7.6.7 and 8.0.0
+#: references.
+TASK_STATES: dict[int, str] = {
+    0: "pending",
+    1: "running",
+    2: "cancelling",
+    3: "cancelled",
+    4: "done",
+    5: "error",
+    6: "aborting",
+    7: "aborted",
+    8: "warning",
+    9: "to_continue",
+    10: "unknown",
+}
+
+#: States in which a task has ended. ``warning`` is an end state too: an
+#: install with nothing to push ends there (verified live, FMG 8.0.2).
+#: ``to_continue`` is not: the task waits to be resumed.
+TERMINAL_TASK_STATES = frozenset({"done", "warning", "error", "cancelled", "aborted"})
+
+
 def task_state(task: dict[str, Any]) -> str:
-    """Normalize an FMG task object's state to a lowercase string."""
+    """Normalize an FMG task object's state to a lowercase string.
+
+    Numeric states decode through :data:`TASK_STATES`; anything else
+    (missing, or a number outside the enum) is ``"unknown"``.
+    """
     state = task.get("state")
     if isinstance(state, str):
         return state.lower()
-    if isinstance(state, int):
-        state_map = {
-            0: "pending",
-            1: "running",
-            2: "cancelling",
-            3: "cancelled",
-            4: "done",
-            5: "error",
-            6: "aborting",
-            7: "aborted",
-            8: "warning",
-            9: "to_continue",
-        }
-        return state_map.get(state, "unknown")
+    if isinstance(state, int) and not isinstance(state, bool):
+        return TASK_STATES.get(state, "unknown")
     return "unknown"
 
 
