@@ -268,24 +268,91 @@ class TestQueryDeviceApi:
         result = await self._query(
             [
                 {
-                    "name": "198.51.100.9",
-                    "q_origin_key": "198.51.100.9",
+                    "name": "srv-web",
+                    "q_origin_key": "srv-web",
                     "comment": "host 198.51.100.9",
                     "subnet": f"198.51.100.9 {NETMASK}",
                     "firmware": "v7.4.12 build2795",
                     "build_str": "7.4.12.2795",
+                    "oid": "1.3.6.1.4.1.12356",
                 }
             ],
             "/api/v2/cmdb/firewall/address",
         )
         entry = masker.mask_tool_result(result, "query_device_api")["results"][0]
 
-        assert entry["name"] == "198.51.100.9"
-        assert entry["q_origin_key"] == "198.51.100.9"
+        assert entry["name"] == "srv-web"
+        assert entry["q_origin_key"] == "srv-web"
         assert entry["comment"] == "host 198.51.100.9"
         assert entry["firmware"] == "v7.4.12 build2795"
         assert entry["build_str"] == "7.4.12.2795"
+        assert entry["oid"] == "1.3.6.1.4.1.12356"
         assert not entry["subnet"].startswith("198.51.100.9")
+
+    @pytest.mark.asyncio
+    async def test_an_entry_key_that_is_an_address_is_masked(self, masker: OutputMasker) -> None:
+        """A BGP neighbor is keyed by its peer IP: q_origin_key repeats the
+        masked ``ip`` (security audit M11)."""
+        result = await self._query(
+            [
+                {"ip": PEER, "q_origin_key": PEER, "remote-as": 65001},
+                {"name": f"{STATIC_NET}/26", "mkey": f"{STATIC_NET} 255.255.255.192"},
+                {"name": ARP_MAC, "q_origin_key": f"{UNDERLAY_IP}-{STATIC_GW}"},
+            ],
+            "/api/v2/cmdb/router/bgp/neighbor",
+        )
+        out = masker.mask_tool_result(result, "query_device_api")
+        text = _text(out["results"])
+
+        for value in (PEER, STATIC_NET, ARP_MAC, UNDERLAY_IP, STATIC_GW):
+            assert value not in text
+        assert out["results"][0]["remote-as"] == 65001
+        assert out["results"][1]["name"].endswith("/26")
+
+    def test_a_name_that_only_embeds_an_address_stays(self, masker: OutputMasker) -> None:
+        """Names route calls; an embedded address in one stays out of scope."""
+        record = {"results": [{"name": f"srv-{PEER}", "q_origin_key": f"srv-{PEER}"}]}
+        out = masker.mask_tool_result(record, "query_device_api")
+        assert out == record
+
+    def test_a_dict_key_that_is_an_address_is_masked(self, masker: OutputMasker) -> None:
+        """FortiOS keys some monitor results by address: the key leaked whole."""
+        record = {
+            "results": {
+                PEER: {"state": "established"},
+                f"{LEARNED_NET}/24": {"paths": 2},
+                ARP_MAC: "port3",
+                f"peer {LOCAL}": 1,
+                "port1": {"status": "up"},
+            }
+        }
+        out = masker.mask_tool_result(record, "query_device_api")["results"]
+        text = _text(out)
+
+        for value in (PEER, LEARNED_NET, ARP_MAC, LOCAL):
+            assert value not in text
+        assert out["port1"] == {"status": "up"}
+        assert {"state": "established"} in out.values()
+        assert any(key.endswith("/24") for key in out)
+
+    def test_other_tools_keep_address_shaped_keys(self, masker: OutputMasker) -> None:
+        record = {"by_peer": {PEER: 1}}
+        assert masker.mask_tool_result(record, "get_device_status") == record
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            f"cannot reach {PEER}.",
+            f"x.{PEER}",
+            f"({PEER}).",
+            "via 2001:db8::5.",
+            "peer 2001:db8::5: down",
+        ],
+    )
+    def test_an_address_beside_a_dot_fails_closed(self, masker: OutputMasker, text: str) -> None:
+        """The dotted-run guard read a sentence's full stop as part of the address (L11)."""
+        out = masker.mask_tool_result({"results": [{"msg": text}]}, "query_device_api")
+        assert out["results"][0]["msg"].startswith(PLACEHOLDER_MARK)
 
     @pytest.mark.asyncio
     async def test_an_embedded_address_fails_closed(self, masker: OutputMasker) -> None:
