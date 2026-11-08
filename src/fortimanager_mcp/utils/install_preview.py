@@ -139,16 +139,26 @@ class PreviewFailed(Exception):
         self.release_warning: str | None = None
 
 
-#: A secret directive quoted inside a line of task text ("failed at: set
+#: A secret directive quoted inside a line of text ("failed at: set
 #: psksecret ENC ..."). redact_config_text_secrets only matches a directive
-#: at the start of a line; in a task message it can sit anywhere, so the
-#: rest of that line is masked.
+#: at the start of a line; in a task message or a broken JSON envelope it
+#: can sit anywhere, after any non-word character. The rest of the line is
+#: masked, and a value that opens a double quote is masked up to the
+#: closing quote, across lines, or to the end of the text if it never
+#: closes (a PEM key quoted mid-line otherwise leaked its body lines).
 _INLINE_SECRET_DIRECTIVE = re.compile(
-    r"(?P<prefix>\bset\s+(?:"
-    + "|".join(re.escape(d) for d in sorted(CONFIG_TEXT_SECRET_DIRECTIVES))
-    + r")\s+)[^\n]*"
+    r"(?P<prefix>(?<!\w)set\s+(?:"
+    + "|".join(re.escape(d) for d in sorted(CONFIG_TEXT_SECRET_DIRECTIVES, key=len, reverse=True))
+    + r')[ \t]+)(?:"(?:\\[\s\S]?|[^"\\])*(?:"|\Z))?[^\n]*'
 )
-_INLINE_ENC_VALUE = re.compile(r'(?P<prefix>\bset\s+\S+\s+)"?ENC\s[^\n]*')
+_INLINE_ENC_VALUE = re.compile(r'(?P<prefix>(?<!\w)set\s+\S+\s+)"?ENC\s[^\n]*')
+
+
+def _redact_inline_cli(text: str) -> str:
+    """CLI secrets at the start of a line and anywhere inside one."""
+    text = redact_config_text_secrets(text)
+    text = _INLINE_SECRET_DIRECTIVE.sub(lambda m: m.group("prefix") + MASK_VALUE, text)
+    return _INLINE_ENC_VALUE.sub(lambda m: m.group("prefix") + MASK_VALUE, text)
 
 
 def redact_task_text(text: str) -> str:
@@ -159,10 +169,7 @@ def redact_task_text(text: str) -> str:
     redactor does not see, as well as ``password=...`` pairs, which the CLI
     redactor does not.
     """
-    text = redact_config_text_secrets(text)
-    text = _INLINE_SECRET_DIRECTIVE.sub(lambda m: m.group("prefix") + MASK_VALUE, text)
-    text = _INLINE_ENC_VALUE.sub(lambda m: m.group("prefix") + MASK_VALUE, text)
-    return redact(text)
+    return redact(_redact_inline_cli(text))
 
 
 def summarize_task_lines(lines: Any) -> list[dict[str, Any]]:
@@ -286,16 +293,55 @@ def parse_preview_message(result: Any) -> list[dict[str, Any]] | None:
     return decoded
 
 
+#: How many times a JSON string nested in a JSON string is decoded.
+_MAX_JSON_STRING_DEPTH = 3
+
+_JSON_ESCAPE = re.compile(r'\\(["\\/nrt])')
+_JSON_UNESCAPED = {"n": "\n", "r": "\r", "t": "\t"}
+
+
 def _decode_json(text: str) -> Any:
-    """``text`` decoded if it is a JSON object or array, else ``text`` itself."""
-    stripped = text.strip()
-    if not stripped or stripped[0] not in "[{":
-        return text
-    try:
-        decoded = json.loads(stripped)
-    except ValueError:
-        return text
-    return decoded if isinstance(decoded, dict | list) else text
+    """``text`` decoded if it is JSON, else ``text`` itself.
+
+    A JSON string literal is decoded again while its content is JSON too, up
+    to _MAX_JSON_STRING_DEPTH levels, so a double-encoded envelope ends as
+    the object or array inside it. The result is an object, an array, a
+    decoded string, or ``text`` itself when nothing decoded.
+    """
+    value: Any = text
+    for _ in range(_MAX_JSON_STRING_DEPTH):
+        stripped = value.strip()
+        if not stripped or stripped[0] not in '[{"':
+            break
+        try:
+            value = json.loads(stripped)
+        except ValueError:
+            break
+        if not isinstance(value, str):
+            break
+    return value if value != text else text
+
+
+def _redact_preview_text(text: str) -> str:
+    """Redact one preview string that is not a JSON object or array.
+
+    Text that starts like JSON but did not decode (a truncated envelope, or
+    a nested encoding) still has its CLI escaped, once per level:
+    ``\\n`` for line breaks, so no line starts with ``set``, and ``\\"`` for
+    quotes, so a quoted multi-line value is never seen to open. Those
+    escapes are read back first and the directive is matched anywhere in a
+    line (after ``"result": "``, say). Returned unchanged when that finds no
+    secret, so harmless text keeps its escapes.
+    """
+    if text.lstrip()[:1] not in ("[", "{", '"'):
+        return redact_config_text_secrets(text)
+    unescaped = text
+    for _ in range(_MAX_JSON_STRING_DEPTH):
+        unescaped = _JSON_ESCAPE.sub(
+            lambda m: _JSON_UNESCAPED.get(m.group(1), m.group(1)), unescaped
+        )
+    redacted = _redact_inline_cli(unescaped)
+    return text if redacted == unescaped else redacted
 
 
 def redact_preview(value: Any) -> Any:
@@ -318,7 +364,9 @@ def redact_preview(value: Any) -> Any:
     text, where every newline is still a ``\\n`` escape and no line starts
     with ``set``, so redacting the encoded text matched nothing. A string
     that looks like JSON but does not parse (e.g. a truncated envelope) is
-    redacted with those escapes read as line breaks, for the same reason.
+    redacted with those escapes read back, for the same reason (see
+    _redact_preview_text). A JSON-encoded string, single or nested, is
+    decoded and redacted; it is returned as it came when it held no secret.
 
     Not measured against a preview that actually contains a credential --
     that needs a pending change carrying one, which is why the finding was
@@ -326,11 +374,13 @@ def redact_preview(value: Any) -> Any:
     """
     if isinstance(value, str):
         decoded = _decode_json(value)
-        if decoded is not value:
+        if isinstance(decoded, dict | list):
             return redact_preview(decoded)
-        if value.lstrip()[:1] in ("[", "{") and "\\n" in value:
-            return redact_config_text_secrets(value.replace("\\n", "\n"))
-        return redact_config_text_secrets(value)
+        if decoded is value:
+            return _redact_preview_text(value)
+        # A JSON-encoded string: comes back decoded only if it held a secret.
+        redacted = _redact_preview_text(decoded)
+        return value if redacted == decoded else redacted
     if isinstance(value, dict):
         return {k: redact_preview(v) for k, v in value.items()}
     if isinstance(value, list):

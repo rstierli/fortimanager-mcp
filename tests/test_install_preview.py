@@ -681,6 +681,39 @@ class TestPreviewRedactionFailsClosed:
             result = await policy_tools.get_preview_result("demo", DEVICES, 11)
         assert "LiveSecret" not in json.dumps(result)
 
+    # 1.13.1 re-audit: the fallback for text that is not a JSON container.
+
+    PEM_CLI = (
+        "config vpn certificate local\n"
+        '    edit "c1"\n'
+        '        set private-key "-----BEGIN KEY-----\nPemBody1\nPemBody2\n-----END KEY-----"\n'
+        "    next\n"
+        "end\n"
+    )
+
+    def test_truncated_json_with_a_multi_line_quoted_secret(self) -> None:
+        message = json.dumps([{"name": "branch1", "result": self.PEM_CLI}])[:-10]
+        rendered = json.dumps(install_preview.redact_preview(message))
+        assert "PemBody" not in rendered and "END KEY" not in rendered
+
+    def test_truncated_json_with_the_secret_on_the_first_line(self) -> None:
+        message = '[{"name": "branch1", "result": "set psksecret FirstLine1\\nnext'
+        assert "FirstLine1" not in json.dumps(install_preview.redact_preview(message))
+        message = '[{"result": "set password NoNewline1"'
+        assert "NoNewline1" not in json.dumps(install_preview.redact_preview(message))
+
+    def test_json_encoded_string(self) -> None:
+        once = json.dumps("config x\n  set password Scalar1\nend")
+        twice = json.dumps(once)
+        thrice = json.dumps(json.dumps([{"result": "set psksecret Nested1"}]))
+        for message in (once, twice, thrice):
+            rendered = json.dumps(install_preview.redact_preview(message))
+            assert "Scalar1" not in rendered and "Nested1" not in rendered, message
+
+    def test_json_encoded_string_without_secrets_is_unchanged(self) -> None:
+        for message in (json.dumps("config x\nend"), '"HUB1"', "[not json] C:\\new"):
+            assert install_preview.redact_preview(message) == message
+
 
 class TestTaskLineRedaction:
     """Task-line detail and history can quote CLI: the CLI-form redactor
@@ -715,6 +748,17 @@ class TestTaskLineRedaction:
         rendered = json.dumps(policy_tools._redact_task_lines(raw))
         assert "DetailSecret" not in rendered
         assert "HistorySecret" not in rendered
+
+    def test_multi_line_quoted_secret_mid_line(self) -> None:
+        text = (
+            'failed at: set private-key "-----BEGIN KEY-----\nPemBody1\n'
+            '-----END KEY-----" (invalid)\nnext object'
+        )
+        out = install_preview.redact_task_text(text)
+        assert "PemBody1" not in out and "END KEY" not in out
+        assert out.endswith("\nnext object")
+        unterminated = install_preview.redact_task_text('at: set private-key "BEGIN\nPemBody2')
+        assert "PemBody2" not in unterminated
 
     @pytest.mark.asyncio
     async def test_failed_preview_returns_redacted_lines(self) -> None:
