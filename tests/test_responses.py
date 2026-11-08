@@ -44,6 +44,40 @@ class TestRedact:
     def test_empty_string(self):
         assert redact("") == ""
 
+    def test_masks_every_cli_secret_directive_name(self):
+        """The key list covers CONFIG_TEXT_SECRET_DIRECTIVES, in both
+        spellings, so a FortiOS field name in an error is masked too."""
+        for key in (
+            "psksecret",
+            "psk",
+            "private-key",
+            "private_key",
+            "passphrase",
+            "secret",
+            "key-string",
+            "md5-key",
+            "auth-pwd",
+            "passwd",
+        ):
+            for sep in ("=", ": ", '": "'):
+                out = redact(f'object rejected: "{key}{sep}Hunter2x" invalid')
+                assert "Hunter2x" not in out, (key, sep, out)
+                assert MASK_VALUE in out
+
+    def test_quoted_value_with_spaces_is_masked_whole(self):
+        out = redact('error: password="two words" rejected')
+        assert "two" not in out and "words" not in out
+
+    def test_lists_agree(self):
+        from fortimanager_mcp.utils import responses
+        from fortimanager_mcp.utils.validation import CONFIG_TEXT_SECRET_DIRECTIVES
+
+        assert CONFIG_TEXT_SECRET_DIRECTIVES - {"key"} <= set(responses._REDACT_KEYS)
+
+    def test_similar_non_secret_names_are_untouched(self):
+        text = "password-expire: 30, keyword=abc, secretary=Bob"
+        assert redact(text) == text
+
 
 class TestErrorResponse:
     """error_response() builds one structured envelope for every error path."""

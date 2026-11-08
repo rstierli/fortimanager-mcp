@@ -287,6 +287,75 @@ class TestCliTemplateRedaction:
         )
         assert self._redact(script) == script
 
+    # 1.13.1 re-audit: the redactor tokenizes the template instead of
+    # matching one pattern per construct; each case below is a regression pin.
+
+    def _assert_masked(self, script: str, *secrets: str) -> str:
+        out = self._redact(script)
+        for secret in secrets:
+            assert secret not in out, (secret, out)
+        return out
+
+    def test_every_set_on_one_line_is_examined(self) -> None:
+        out = self._assert_masked(
+            "{% if x %}set password {{ a }}{% else %}set password Lit4{% endif %}", "Lit4"
+        )
+        assert out.startswith("{% if x %}set password {{ a }}{% else %}set password ***")
+        self._assert_masked(
+            "{% if a %}set alias x{% endif %}{% if b %}set psksecret Lit6{% endif %}", "Lit6"
+        )
+        self._assert_masked("set alias x\rset password Lit7", "Lit7")
+
+    def test_plus_openers(self) -> None:
+        self._assert_masked("{%+ set q='Lit7' %}\nset password {{ q }}", "Lit7")
+        self._assert_masked("{%+ set psk %}Lit8{%+ endset %}", "Lit8")
+        self._assert_masked("{%+ set psk = 'Lit9' %}", "Lit9")
+
+    def test_tuple_targets(self) -> None:
+        self._assert_masked("{% set (psk, y) = ('Lit9', 1) %}", "Lit9")
+        self._assert_masked("{% set (a, b) = ('Lit10', 1) %}\nset password {{ a }}", "Lit10")
+        self._assert_masked("{% set a, b = 'Lit11', 'x' %}\nset password {{ a }}", "Lit11")
+
+    def test_tag_closer_inside_a_string_literal(self) -> None:
+        self._assert_masked("{% set q = 'a%}Lit9' %}\nset password {{ q }}", "Lit9")
+        self._assert_masked("{% set psk = 'ab%}Lit11' %}", "Lit11")
+
+    def test_literals_reaching_a_secret_through_other_constructs(self) -> None:
+        for script, secret in (
+            ("{% macro m() %}Lit13{% endmacro %}\nset password {{ m() }}", "Lit13"),
+            ("{% for x in ['Lit14'] %}\nset password {{ x }}\n{% endfor %}", "Lit14"),
+            ("{% with s = 'Lit15' %}\nset password {{ s }}\n{% endwith %}", "Lit15"),
+            ("{% set ns = namespace(k='Lit27') %}\nset password {{ ns.k }}", "Lit27"),
+            ("{% set l = [] %}{% do l.append('Lit28') %}\nset password {{ l[0] }}", "Lit28"),
+            ("{% set pin = 4711 %}\nset sim-pin {{ pin }}", "4711"),
+            ("{% set q %}Lit16\nset password {{ q }}", "Lit16"),
+        ):
+            self._assert_masked(script, secret)
+
+    def test_the_reference_stays_readable_when_literals_are_masked(self) -> None:
+        out = self._redact("{% set wan = 'port1' %}{% set q = 'Lit1' %}\nset password {{ q }}")
+        assert "Lit1" not in out and "port1" not in out
+        assert "set password {{ q }}" in out
+        assert "{% set wan = " in out
+
+    def test_unterminated_tag_masks_the_rest(self) -> None:
+        out = self._assert_masked("set alias a\n{% set x = 'Lit1", "Lit1")
+        assert out.startswith("set alias a\n")
+
+    def test_secret_inside_a_jinja_comment(self) -> None:
+        self._assert_masked("{# old: set password Lit1 #}\nend", "Lit1")
+
+    def test_uppercase_and_tabs(self) -> None:
+        self._assert_masked("SET PASSWORD Lit1\nset\tpsksecret Lit2", "Lit1", "Lit2")
+
+    def test_quoted_value_around_a_reference(self) -> None:
+        script = 'set password "{{ x }}"\nset psksecret "$(psk)"\nnext'
+        assert self._redact(script) == script
+        self._assert_masked('set password "ab{{ x }}Lit1"', "Lit1", "ab")
+
+    def test_secret_directive_inside_a_literal(self) -> None:
+        self._assert_masked("{{ 'set password Lit1' }}", "Lit1")
+
     @pytest.mark.asyncio
     async def test_get_cli_template_uses_the_template_redactor(
         self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock

@@ -16,18 +16,33 @@ land in a log line or response.
 import re
 from typing import Any
 
-from fortimanager_mcp.utils.validation import MASK_VALUE, SENSITIVE_FIELDS
+from fortimanager_mcp.utils.validation import (
+    CONFIG_TEXT_SECRET_DIRECTIVES,
+    MASK_VALUE,
+    SENSITIVE_FIELDS,
+)
 
 # Max length of a (redacted) human error message echoed back to the caller.
 _MAX_MESSAGE_LEN = 500
 
-# Secret-ish keys to scrub from free text as `key=value` / `key: value`. Drawn
-# from SENSITIVE_FIELDS but excluding the most generic words ("key", "auth",
-# "pass") so ordinary text is not mangled; the long-token rule below still masks
-# real session ids/tokens.
-_REDACT_KEYS = sorted(SENSITIVE_FIELDS - {"key", "auth", "pass"}, key=len, reverse=True)
+# Secret-ish keys to scrub from free text as `key=value`, `key: value` or
+# `"key": "value"`. The union of SENSITIVE_FIELDS (the log sanitizer's names)
+# and CONFIG_TEXT_SECRET_DIRECTIVES (the FortiOS field names the CLI-text
+# redactors mask), so this redactor and those agree on what a secret is: it
+# used to miss psksecret, private-key, passphrase and the rest of the FortiOS
+# names. "-" and "_" match each other, since FortiOS spells a field one way
+# and a JSON or Python key often the other. The most generic words ("key",
+# "auth", "pass") are left out so ordinary text is not mangled; the
+# long-token rule below still masks real session ids/tokens.
+_REDACT_KEYS = sorted(
+    (SENSITIVE_FIELDS | CONFIG_TEXT_SECRET_DIRECTIVES) - {"key", "auth", "pass"},
+    key=len,
+    reverse=True,
+)
 _KV_PATTERN = re.compile(
-    r"(?i)\b(" + "|".join(re.escape(k) for k in _REDACT_KEYS) + r")\b\s*[=:]\s*\"?([^\s\"&,;]+)\"?"
+    r"(?i)\b(?P<key>"
+    + "|".join("".join("[-_]" if c in "-_" else re.escape(c) for c in k) for k in _REDACT_KEYS)
+    + r")\b(?P<sep>[\"']?\s*[=:]\s*)(?P<value>\"[^\"]*\"?|'[^']*'?|[^\s\"'&,;]+)"
 )
 # Opaque token-like run (mirrors sanitize_for_logging's hex>20 heuristic).
 _HEX_TOKEN_PATTERN = re.compile(r"\b[a-fA-F0-9]{20,}\b")
@@ -100,7 +115,12 @@ def redact(text: str) -> str:
     """
     if not text:
         return text
-    redacted = _KV_PATTERN.sub(lambda m: f"{m.group(1)}={MASK_VALUE}", text)
+
+    def mask(m: re.Match[str]) -> str:
+        quote = m.group("value")[0] if m.group("value")[0] in "\"'" else ""
+        return f"{m.group('key')}{m.group('sep')}{quote}{MASK_VALUE}{quote}"
+
+    redacted = _KV_PATTERN.sub(mask, text)
     redacted = _HEX_TOKEN_PATTERN.sub(MASK_VALUE, redacted)
     return redacted
 
