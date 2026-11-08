@@ -80,7 +80,7 @@ async def _call(client: MagicMock, tool: str, **kwargs: Any) -> dict[str, Any]:
 class TestListFirmwareTemplates:
     @pytest.mark.asyncio
     async def test_decodes_enums_and_assignment(self) -> None:
-        result = await _call(_client(), "list_firmware_templates", adom="production")
+        result = await _call(_client(), "list_firmware_templates", adom="demo")
 
         assert result["status"] == "success"
         [template] = result["templates"]
@@ -108,7 +108,7 @@ class TestCreateFirmwareTemplate:
             "create_firmware_template",
             name="branch3_upgrade",
             versions=self.VERSIONS,
-            adom="production",
+            adom="demo",
         )
 
         assert result["status"] == "success", result
@@ -213,10 +213,10 @@ class TestDeleteFirmwareTemplate:
     @pytest.mark.asyncio
     async def test_unassigned_template_is_deleted(self) -> None:
         client = _client([{**CAMPUS_EMEA, "name": "spare", "scope member": None}])
-        result = await _call(client, "delete_firmware_template", name="spare", adom="production")
+        result = await _call(client, "delete_firmware_template", name="spare", adom="demo")
 
         assert result["status"] == "success"
-        client.delete_firmware_template.assert_awaited_once_with("production", "spare")
+        client.delete_firmware_template.assert_awaited_once_with("demo", "spare")
 
     @pytest.mark.asyncio
     async def test_missing_template(self) -> None:
