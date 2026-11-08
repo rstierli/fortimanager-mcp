@@ -705,7 +705,12 @@ def _summarize_bgp_status(neighbors: Any, paths: Any, routes: Any) -> dict[str, 
         if isinstance(n, dict)
     ]
     all_paths = [p for p in (paths if isinstance(paths, list) else []) if isinstance(p, dict)]
-    learned = [p for p in all_paths if p.get("learned_from") not in (None, "0.0.0.0")]
+    # "0.0.0.0" is a route field value (no BGP source), not a bind address.
+    learned = [
+        p
+        for p in all_paths
+        if p.get("learned_from") not in (None, "0.0.0.0")  # nosec B104
+    ]
     bgp_routes = [
         {
             "prefix": r.get("ip_mask"),
@@ -1043,7 +1048,8 @@ def _verdict(
                 f"The tunnel auto-negotiates once {underlay} is back; recheck with this tool.",
             ],
         )
-    if u.get("link") is True and "ip" in u and u["ip"] in ("0.0.0.0", "", None):
+    # "0.0.0.0" is how FortiOS reports an interface without an address.
+    if u.get("link") is True and "ip" in u and u["ip"] in ("0.0.0.0", "", None):  # nosec B104
         return (
             "underlay_no_address",
             f"{underlay} is up but has no IPv4 address, so IKE cannot be sourced from it.",
