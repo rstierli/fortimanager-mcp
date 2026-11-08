@@ -577,6 +577,10 @@ def validate_install_scope(devices: Any) -> list[dict[str, str]]:
         if not isinstance(device.get("name"), str):
             raise ValidationError(f"devices[{index}] needs a 'name'")
         validate_device_name(device["name"])
+        if "vdom" in device:
+            vdom = device["vdom"]
+            if not isinstance(vdom, str) or not ADOM_PATTERN.match(vdom):
+                raise ValidationError(f"devices[{index}] has an invalid vdom {vdom!r}")
     return cast(list[dict[str, str]], devices)
 
 

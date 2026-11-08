@@ -23,6 +23,8 @@ from fortimanager_mcp.utils.validation import (
     validate_device_serial,
     validate_filename,
     validate_fqdn,
+    validate_install_on,
+    validate_install_scope,
     validate_interface_name,
     validate_ipv4_address,
     validate_ipv4_subnet,
@@ -1505,3 +1507,54 @@ class TestTaskIdValidation:
     @pytest.mark.parametrize("good", [0, 1, 11111])
     def test_a_real_task_id_passes_through(self, good):
         assert validate_task_id(good) == good
+
+
+class TestInstallScope:
+    """Install/preview targets: a non-empty list of {"name", "vdom"} dicts."""
+
+    def test_a_device_scope_passes_through(self):
+        scope = [{"name": "branch1", "vdom": "root"}, {"name": "branch2"}]
+        assert validate_install_scope(scope) == scope
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            [],
+            "branch1",
+            {"name": "branch1"},
+            [{"vdom": "root"}],
+            [{"name": "bad/name"}],
+            [{"name": "branch1", "vdom": "root/../x"}],
+            [{"name": "branch1", "vdom": 3}],
+        ],
+    )
+    def test_a_bad_scope_is_refused(self, bad):
+        with pytest.raises(ValidationError):
+            validate_install_scope(bad)
+
+
+class TestInstallOn:
+    """A policy's install-on targets: devices with a vdom, groups without."""
+
+    def test_devices_and_groups(self):
+        assert validate_install_on(
+            [{"name": "branch1", "vdom": "root"}, {"name": "emea_spokes"}]
+        ) == [{"name": "branch1", "vdom": "root"}, {"name": "emea_spokes"}]
+
+    def test_an_empty_list_clears_the_targets(self):
+        assert validate_install_on([]) == []
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "branch1",
+            {"name": "branch1"},
+            [{"name": "branch1", "vdom": "root", "extra": 1}],
+            [{"name": "branch1", "vdom": "a/b"}],
+            [{"name": "group/../x"}],
+            [{"vdom": "root"}],
+        ],
+    )
+    def test_bad_targets_are_refused(self, bad):
+        with pytest.raises(ValidationError):
+            validate_install_on(bad)
