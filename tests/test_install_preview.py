@@ -94,7 +94,7 @@ def _client(
 
 async def _preview(client: MagicMock, package: str | None = "branch_pkg") -> Any:
     with patch.object(policy_tools, "get_fmg_client", return_value=client):
-        return await policy_tools.preview_install("production", package, DEVICES)
+        return await policy_tools.preview_install("demo", package, DEVICES)
 
 
 class TestPreviewFlow:
@@ -105,13 +105,13 @@ class TestPreviewFlow:
 
         assert result["status"] == "success"
         client.install_package.assert_awaited_once_with(
-            adom="production", pkg="branch_pkg", scope=DEVICES, flags=["preview"]
+            adom="demo", pkg="branch_pkg", scope=DEVICES, flags=["preview"]
         )
         # The render names the staging task: without it FMG previews its
         # last install task instead of this package.
         assert client.install_preview.await_args.kwargs["preview_taskid"] == 11
-        client.get_preview_result.assert_awaited_once_with("production", DEVICES, preview_taskid=11)
-        client.cancel_install.assert_awaited_once_with("production", preview_taskid=11)
+        client.get_preview_result.assert_awaited_once_with("demo", DEVICES, preview_taskid=11)
+        client.cancel_install.assert_awaited_once_with("demo", preview_taskid=11)
         assert result["task_id"] == 12
         assert result["staging_task_id"] == 11
 
@@ -136,8 +136,8 @@ class TestPreviewFlow:
     @pytest.mark.asyncio
     async def test_records_the_render_task_for_the_install_gate(self) -> None:
         await _preview(_client())
-        assert install_gate.find_preview("production", "branch_pkg", DEVICES) == 12
-        assert install_gate.recorded_revision("production", "branch_pkg", DEVICES) == 10
+        assert install_gate.find_preview("demo", "branch_pkg", DEVICES) == 12
+        assert install_gate.recorded_revision("demo", "branch_pkg", DEVICES) == 10
 
     @pytest.mark.asyncio
     async def test_device_settings_preview_stages_install_device(self) -> None:
@@ -146,7 +146,7 @@ class TestPreviewFlow:
 
         assert result["status"] == "success"
         client.install_device.assert_awaited_once_with(
-            adom="production", scope=DEVICES, flags=["preview"]
+            adom="demo", scope=DEVICES, flags=["preview"]
         )
         client.install_package.assert_not_called()
         # No package, nothing for the package install gate to authorize.
@@ -163,7 +163,7 @@ class TestNothingToInstall:
     async def test_no_changes_is_not_a_failure(self) -> None:
         client = _client(stage_state=8)
         client.get_task_line = AsyncMock(
-            return_value=[{"name": "production:", "state": 8, "detail": "no changes on device"}]
+            return_value=[{"name": "demo:", "state": 8, "detail": "no changes on device"}]
         )
 
         result = await _preview(client, package=None)
@@ -174,7 +174,7 @@ class TestNothingToInstall:
         assert result["task_lines"][0]["detail"] == "no changes on device"
         client.install_preview.assert_not_awaited()
         # Whatever the stage left behind is released too.
-        client.cancel_install.assert_awaited_once_with("production", preview_taskid=11)
+        client.cancel_install.assert_awaited_once_with("demo", preview_taskid=11)
 
     @pytest.mark.asyncio
     async def test_no_installing_devices_is_nothing_to_install(self) -> None:
@@ -182,7 +182,7 @@ class TestNothingToInstall:
         in state 8 with "No installing devices" (measured live)."""
         client = _client(stage_state=8)
         client.get_task_line = AsyncMock(
-            return_value=[{"name": "production:pkg", "state": 8, "detail": "No installing devices"}]
+            return_value=[{"name": "demo:pkg", "state": 8, "detail": "No installing devices"}]
         )
 
         result = await _preview(client)
@@ -190,7 +190,7 @@ class TestNothingToInstall:
         assert result["status"] == "success"
         assert result["devices"][0]["has_changes"] is False
         assert "No installing devices" in result["message"]
-        client.cancel_install.assert_awaited_once_with("production", preview_taskid=11)
+        client.cancel_install.assert_awaited_once_with("demo", preview_taskid=11)
 
     @pytest.mark.asyncio
     async def test_nothing_to_install_authorizes_no_install(self) -> None:
@@ -198,13 +198,13 @@ class TestNothingToInstall:
         strict gate refuses: there is no reviewed change to install."""
         client = _client(stage_state=8)
         client.get_task_line = AsyncMock(
-            return_value=[{"name": "production:pkg", "state": 8, "detail": "no changes on device"}]
+            return_value=[{"name": "demo:pkg", "state": 8, "detail": "no changes on device"}]
         )
         await _preview(client)
-        assert install_gate.find_preview("production", "branch_pkg", DEVICES) == 11
+        assert install_gate.find_preview("demo", "branch_pkg", DEVICES) == 11
 
         with patch.object(system_tools, "get_fmg_client", return_value=client):
-            result = await system_tools.install_package("production", "branch_pkg", DEVICES)
+            result = await system_tools.install_package("demo", "branch_pkg", DEVICES)
 
         assert result["status"] == "error"
         assert result["error"] == "preview_required"
@@ -238,7 +238,7 @@ class TestPreviewFailure:
         assert result["task_id"] == 11
         assert "voice.fortilink" in json.dumps(result["task_lines"])
         client.install_preview.assert_not_called()
-        client.cancel_install.assert_awaited_once_with("production", preview_taskid=11)
+        client.cancel_install.assert_awaited_once_with("demo", preview_taskid=11)
         assert install_gate._PREVIEWS == {}
 
     @pytest.mark.asyncio
@@ -248,7 +248,7 @@ class TestPreviewFailure:
 
         assert result["error"] == "preview_failed"
         assert result["step"] == "render"
-        client.cancel_install.assert_awaited_once_with("production", preview_taskid=11)
+        client.cancel_install.assert_awaited_once_with("demo", preview_taskid=11)
 
     @pytest.mark.asyncio
     async def test_result_fetch_error_still_releases_the_stage(self) -> None:
@@ -257,7 +257,7 @@ class TestPreviewFailure:
         result = await _preview(client)
 
         assert result["status"] == "error"
-        client.cancel_install.assert_awaited_once_with("production", preview_taskid=11)
+        client.cancel_install.assert_awaited_once_with("demo", preview_taskid=11)
 
     @pytest.mark.asyncio
     async def test_cancel_failure_does_not_lose_the_preview(self) -> None:
@@ -291,12 +291,10 @@ class TestPreviewFailure:
             return_value=[{"name": "branch1", "state": 0, "detail": "Blocked by preview wizard"}]
         )
         with patch.object(policy_tools, "get_fmg_client", return_value=client):
-            result = await policy_tools.preview_install(
-                "production", "branch_pkg", DEVICES, timeout=0
-            )
+            result = await policy_tools.preview_install("demo", "branch_pkg", DEVICES, timeout=0)
         assert result["error"] == "preview_failed"
         assert result["step"] == "stage"
-        client.cancel_install.assert_awaited_once_with("production", preview_taskid=11)
+        client.cancel_install.assert_awaited_once_with("demo", preview_taskid=11)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("cancels", [1, 2])
@@ -315,9 +313,7 @@ class TestPreviewFailure:
 
         client.cancel_install = AsyncMock(side_effect=slow_cancel)
         with patch.object(policy_tools, "get_fmg_client", return_value=client):
-            call = asyncio.create_task(
-                policy_tools.preview_install("production", "branch_pkg", DEVICES)
-            )
+            call = asyncio.create_task(policy_tools.preview_install("demo", "branch_pkg", DEVICES))
             await asyncio.sleep(0.05)  # staged, now polling the stage task
             for _ in range(cancels):
                 call.cancel()
@@ -325,7 +321,7 @@ class TestPreviewFailure:
             with pytest.raises(asyncio.CancelledError):
                 await call
         await asyncio.wait_for(release_sent.wait(), 1)
-        client.cancel_install.assert_awaited_once_with("production", preview_taskid=11)
+        client.cancel_install.assert_awaited_once_with("demo", preview_taskid=11)
         await asyncio.sleep(0)
         assert not install_preview._BACKGROUND_RELEASES
 
@@ -350,7 +346,7 @@ class TestPreviewFailure:
     async def test_empty_scope_is_refused_before_staging(self) -> None:
         client = _client()
         with patch.object(policy_tools, "get_fmg_client", return_value=client):
-            result = await policy_tools.preview_install("production", "pkg", [])
+            result = await policy_tools.preview_install("demo", "pkg", [])
         assert result["status"] == "error"
         client.install_package.assert_not_called()
 
@@ -371,12 +367,12 @@ class TestPreviewEnvelope:
         newlines are \\n escapes, so no line starts with 'set psksecret'."""
         client = _client()
         with patch.object(policy_tools, "get_fmg_client", return_value=client):
-            result = await policy_tools.get_preview_result("production", DEVICES, 11)
+            result = await policy_tools.get_preview_result("demo", DEVICES, 11)
 
         assert result["status"] == "success"
         assert "LiveSecret" not in json.dumps(result)
         assert result["preview"]["message"][0]["name"] == "branch1"
-        client.get_preview_result.assert_awaited_once_with("production", DEVICES, preview_taskid=11)
+        client.get_preview_result.assert_awaited_once_with("demo", DEVICES, preview_taskid=11)
 
 
 class TestVersionGate:
@@ -413,22 +409,18 @@ class TestVersionGate:
         assert result["task_id"] == 12
         assert "wait_for_task(12)" in result["message"]
         assert "preview_taskid" in result["warning"]
-        client.install_preview.assert_awaited_once_with(
-            adom="production", scope=DEVICES, flags=["json"]
-        )
+        client.install_preview.assert_awaited_once_with(adom="demo", scope=DEVICES, flags=["json"])
         # Nothing staged, so nothing to release with an ADOM-wide cancel.
         client.install_package.assert_not_called()
         client.cancel_install.assert_not_called()
         # The gate still records it, as before 1.13.0.
-        assert install_gate.find_preview("production", "branch_pkg", DEVICES) == 12
+        assert install_gate.find_preview("demo", "branch_pkg", DEVICES) == 12
 
     @pytest.mark.asyncio
     async def test_older_build_install_package_preview_does_not_stage(self) -> None:
         client = _client(version=(7, 6, 5))
         with patch.object(system_tools, "get_fmg_client", return_value=client):
-            result = await system_tools.install_package(
-                "production", "branch_pkg", DEVICES, preview=True
-            )
+            result = await system_tools.install_package("demo", "branch_pkg", DEVICES, preview=True)
         assert result["status"] == "success"
         assert result["preview"] is True
         client.install_package.assert_not_called()
@@ -446,13 +438,13 @@ class TestGateEndToEnd:
         client.install_package.return_value = {"task": 50}
 
         with patch.object(system_tools, "get_fmg_client", return_value=client):
-            first = await system_tools.install_package("production", "branch_pkg", DEVICES)
-            second = await system_tools.install_package("production", "branch_pkg", DEVICES)
+            first = await system_tools.install_package("demo", "branch_pkg", DEVICES)
+            second = await system_tools.install_package("demo", "branch_pkg", DEVICES)
 
         assert first["status"] == "success"
         assert first["task_id"] == 50
         client.install_package.assert_awaited_once_with(
-            adom="production", pkg="branch_pkg", scope=DEVICES, flags=["none"]
+            adom="demo", pkg="branch_pkg", scope=DEVICES, flags=["none"]
         )
         assert second["status"] == "error"
         assert second["error"] == "preview_required"
@@ -462,19 +454,19 @@ class TestGateEndToEnd:
         client = _client()
         with patch.object(system_tools, "get_fmg_client", return_value=client):
             previewed = await system_tools.install_package(
-                "production", "branch_pkg", DEVICES, preview=True
+                "demo", "branch_pkg", DEVICES, preview=True
             )
         assert previewed["status"] == "success"
         assert previewed["preview"] is True
         assert previewed["devices"][0]["has_changes"] is True
-        client.cancel_install.assert_awaited_once_with("production", preview_taskid=11)
-        assert install_gate.find_preview("production", "branch_pkg", DEVICES) == 12
+        client.cancel_install.assert_awaited_once_with("demo", preview_taskid=11)
+        assert install_gate.find_preview("demo", "branch_pkg", DEVICES) == 12
 
     @pytest.mark.asyncio
     async def test_strict_refusal_names_the_current_flow(self) -> None:
         client = _client()
         with patch.object(system_tools, "get_fmg_client", return_value=client):
-            result = await system_tools.install_package("production", "branch_pkg", DEVICES)
+            result = await system_tools.install_package("demo", "branch_pkg", DEVICES)
         assert result["error"] == "preview_required"
         assert "Run preview_install for the same ADOM, package and devices" in result["message"]
         client.install_package.assert_not_called()
@@ -483,6 +475,6 @@ class TestGateEndToEnd:
     async def test_empty_scope_install_refused(self) -> None:
         client = _client()
         with patch.object(system_tools, "get_fmg_client", return_value=client):
-            result = await system_tools.install_package("production", "branch_pkg", [])
+            result = await system_tools.install_package("demo", "branch_pkg", [])
         assert result["status"] == "error"
         client.install_package.assert_not_called()

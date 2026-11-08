@@ -533,7 +533,7 @@ def register_dynamic_tools(mcp_server: MCPServer) -> None:
                 ),
             ],
             "device_proxy": [
-                ("query_device_api", "Read any FortiOS API path on a device through FortiManager"),
+                ("query_device_api", "Read an allowlisted FortiOS diagnostic API path on a device"),
             ],
             "policy_sync": [
                 (

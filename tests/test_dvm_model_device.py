@@ -556,7 +556,10 @@ class TestInlineBlueprint:
         assert "/pm/pkg/adom/demo/branch_pkg" in urls
         assert "/pm/tmplgrp/adom/demo/branch_templates" in urls
         assert "/dvmdb/adom/demo/group/emea_spokes" in urls
-        assert "/pm/config/adom/demo/obj/fmg/fabric/authorization/template/branch_templates_FAT" in urls
+        assert (
+            "/pm/config/adom/demo/obj/fmg/fabric/authorization/template/branch_templates_FAT"
+            in urls
+        )
         assert "/pm/config/adom/demo/obj/cli/template/cluster_bootstrap" in urls
         assert "/pm/fwmprof/adom/demo/campus_emea" in urls
 

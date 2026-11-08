@@ -845,7 +845,7 @@ are copied from the source either way. It now sends the new name as
 
 | Tool | Description |
 |------|-------------|
-| `query_device_api` | Read any FortiOS `monitor` or `cmdb` API path on a managed device through `/sys/proxy/json`. GET only, secrets redacted, file exports refused |
+| `query_device_api` | Read an allowlisted FortiOS `monitor` or `cmdb` diagnostic path on a managed device through `/sys/proxy/json`. GET only, secrets redacted, other paths and file exports refused |
 
 ## Skills and Prompts
 
