@@ -570,7 +570,7 @@ async def get_packet_capture_status(capture_id: int | None = None) -> dict[str, 
         if capture_id is not None:
             capture_id = validate_capture_id(capture_id)
         client = _get_client()
-        result = await client.execute(
+        result = await client.execute_read(
             "/cli/global/system/sniffer",
             data={"action": "progress"},
         )
@@ -613,7 +613,7 @@ async def get_fmg_license() -> dict[str, Any]:
     """
     try:
         client = _get_client()
-        result = await client.execute("/um/license/self", data={"flags": 0})
+        result = await client.execute_read("/um/license/self", data={"flags": 0})
         # FortiManager 8.0.2 sends the contract list without the `count` 7.6.8
         # sends beside it, so the documented key is filled in from the list.
         if (

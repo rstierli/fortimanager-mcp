@@ -859,7 +859,8 @@ can use them.
 
 A prompt is picked by the user, not by the model: the client lists the
 server's prompts, you choose one, and its text (the playbook, with what you
-filled in as the argument appended) goes into the conversation. Nothing is
+filled in as the argument appended as a fenced data block, up to 2 KB per
+argument) goes into the conversation. Nothing is
 sent until you ask for a prompt, so the skills add no context to a session
 that does not use them. Prompts load in both `FMG_TOOL_MODE=full` and
 `dynamic`; in dynamic mode they tell the model to call tools through
