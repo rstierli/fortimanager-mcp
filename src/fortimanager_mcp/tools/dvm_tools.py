@@ -14,6 +14,7 @@ from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_default_adom, get_default_device
 from fortimanager_mcp.utils.errors import ResourceNotFoundError, client_safe_error
+from fortimanager_mcp.utils.redaction import strip_secret_fields
 from fortimanager_mcp.utils.responses import (
     DEVICE_CREDENTIAL_KEYS,
     strip_device_credentials,
@@ -1691,24 +1692,6 @@ _INTERFACE_SECRET_FIELDS = frozenset(
 )
 
 
-def _strip_secret_fields(result: Any, secret_fields: frozenset[str]) -> Any:
-    """Strip named credential fields from anything FMG echoes back.
-
-    Recurses through dict values and list items at any depth -- see the
-    identical helper in device_config_tools.py for why a shallow strip is
-    not safe here either.
-    """
-    if isinstance(result, dict):
-        return {
-            k: _strip_secret_fields(v, secret_fields)
-            for k, v in result.items()
-            if k not in secret_fields
-        }
-    if isinstance(result, list):
-        return [_strip_secret_fields(item, secret_fields) for item in result]
-    return result
-
-
 @mcp.tool()
 async def get_device_interface_config(
     device: str | None = None,
@@ -1753,7 +1736,7 @@ async def get_device_interface_config(
         device = validate_device_name(device)
         if name is not None:
             name = validate_object_name(name, "interface")
-        interfaces = _strip_secret_fields(
+        interfaces = strip_secret_fields(
             await client.get_device_interface_config(
                 device=device,
                 vlanids=vlanids,
@@ -1761,7 +1744,6 @@ async def get_device_interface_config(
             ),
             _INTERFACE_SECRET_FIELDS,
         )
-        interfaces = _strip_secret_fields(interfaces, _INTERFACE_SECRET_FIELDS)
         summary = _summarize_interfaces(interfaces)
         return {
             "device": device,
