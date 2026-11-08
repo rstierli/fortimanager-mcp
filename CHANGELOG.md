@@ -15,7 +15,7 @@ Security release from an audit of everything added since 1.12.3. The audit found
 - `install_device_settings` now needs a verified `preview_install(package=None)` for the same ADOM and devices, like `install_package`. Set `FMG_INSTALL_SAFETY=warn` or `disabled` to keep the old behaviour.
 - A preview authorizes only the exact device scope it covered: a scope entry without a `vdom` no longer matches a preview made for `root`. Install and preview scopes accept only `name` and `vdom` keys.
 - `add_model_device` has a `confirm` parameter. Under `FMG_FIRMWARE_SAFETY=strict` (the default), a blueprint that enforces a firmware version (a firmware template or `prefer-img-ver`), or a saved blueprint that cannot be read, needs `confirm=True`. A name or serial number already in use is refused with `device_exists`.
-- Meta-variable values containing `"`, `\`, `#`, `{{`, `{%`, `{#`, `$(`, C1 control characters or U+2028/U+2029 are refused.
+- Meta-variable values containing `"`, `\`, `{{`, `{%`, `{#`, `$(`, C1 control characters or U+2028/U+2029 are refused.
 - `query_device_api` refuses `filter`, `key`, `pattern` and `sort` on SNMP community tables, on secret fields, and whenever output masking is on. Below `monitor/switch-controller/managed-switch` only `status` is allowed.
 - Install, script, add, clone and move requests are no longer retried after a dropped connection or a FortiManager internal error (-1).
 
@@ -25,11 +25,12 @@ Security release from an audit of everything added since 1.12.3. The audit found
 - **One preview authorizes exactly one install, also under parallel calls.** The preview record is taken before the first await, and installs to the same target run one at a time.
 - **The preview gate keys on the exact scope.** Only `name` and `vdom` (stripped) form the key, and a missing vdom no longer counts as `root`. Verified live: before this fix, a vdom-less install passed a `root` preview.
 - **A new preview cancels the previous one for the same target**, even if the new preview fails.
+- **A preview is kept when its install was never sent** (no free task slot), and in `warn` mode an install that goes out spends the preview it used.
 - **Device names with a VDOM suffix must be exactly `name[vdom]`.** Malformed bracket forms could pass the check and reach FortiManager URLs.
 - **Validation patterns anchor at the very end and take ASCII digits only**, so a trailing newline or non-ASCII digits no longer pass name, address, port, firmware-version or schedule-time checks.
 - **`query_device_api`:**
   - SNMP community strings are redacted in every community table, including switch-controller and wireless-controller child tables and bare entry lists.
-  - Selector parameters can no longer be used to probe redacted or masked values.
+  - Selector parameters can no longer be used to probe redacted or masked values, including through community child tables.
   - Only ASCII API paths are accepted.
   - The managed-switch monitor allowlist is narrowed to `status`.
 - **Output masking (`FMG_MASKING`):** entry names and response keys that are addresses are masked in `query_device_api` output; addresses followed by punctuation in free text are masked; `username`, `user` and `user_name` (as user names) and `srcname` (as host name) are masked.
@@ -42,11 +43,11 @@ Security release from an audit of everything added since 1.12.3. The audit found
 - **Meta-variable values refuse characters that could change how a template reads them.**
 - **`clone_package` refuses an existing target name**, or a clone for which FortiManager returns no task, before writing anything.
 - **Playbook prompt arguments are placed in a marked, size-capped data block**, so a value cannot pass for playbook steps.
-- **The flow-trace HTML report template carries a Content-Security-Policy** that allows only its inline styles, and a no-referrer policy.
+- **The flow-trace HTML report template carries a Content-Security-Policy** that allows only its inline styles and no form or base URL, and a no-referrer policy.
 
 ### Changed
 - The preview freshness check goes through one fingerprint function. It still compares the package revision, which was verified live on 8.0.2 to move when an object the package references changes.
-- The install-status playbook reads an object's reference count from its entry path, which also works with masking on.
+- The install-status playbook says to use `find_object_usage` alone when output masking is on, since `query_device_api` then refuses `filter`.
 
 ## [1.13.0] - 2026-11-08
 
