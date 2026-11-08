@@ -15,8 +15,15 @@ from fortimanager_mcp.utils.errors import ResourceNotFoundError
 from fortimanager_mcp.utils.validation import MASK_VALUE
 
 
+def _absent(client: MagicMock) -> MagicMock:
+    """No device with this name or serial exists before the add."""
+    client.get_device = AsyncMock(side_effect=ResourceNotFoundError("nope", code=-3))
+    client.list_devices = AsyncMock(return_value=[])
+    return client
+
+
 async def _add(os_version: str) -> dict[str, Any]:
-    client = MagicMock()
+    client = _absent(MagicMock())
     client.add_device = AsyncMock(return_value={"device": {}})
     with patch.object(dvm_tools, "get_fmg_client", return_value=client):
         result = await dvm_tools.add_model_device(
@@ -193,9 +200,10 @@ class TestBulkDeviceNameValidation:
 async def _add_with(
     get: AsyncMock | None = None, **kwargs: Any
 ) -> tuple[dict[str, Any], MagicMock]:
-    client = MagicMock()
+    client = _absent(MagicMock())
     client.add_device = AsyncMock(return_value={"device": {}})
     client.get = get or AsyncMock(return_value={})
+    client.get_metadata_variables = AsyncMock(return_value=[])
     with patch.object(dvm_tools, "get_fmg_client", return_value=client):
         result = await dvm_tools.add_model_device(
             adom="demo",
@@ -271,6 +279,20 @@ class TestModelDeviceBlueprint:
             {"hostname": "b1\x7f"},
             # The marker this server puts in place of a password value.
             {"psk": MASK_VALUE},
+            # A value that ends a quoted CLI value, escapes, starts a comment,
+            # or reads as a template expression or another variable.
+            {"desc": 'x" next'},
+            {"desc": "x\\"},
+            {"desc": "Branch #1"},
+            {"desc": "{{ psk }}"},
+            {"desc": "{% if 1 %}"},
+            {"desc": "{# c #}"},
+            {"desc": "$(psk)"},
+            # C1 controls and the Unicode line and paragraph separators.
+            {"desc": "b1\x85end"},
+            {"desc": "b1\x9b"},
+            {"desc": "b1\u2028end"},
+            {"desc": "b1\u2029end"},
         ],
     )
     async def test_invalid_meta_variables_are_refused_before_any_call(self, meta: Any) -> None:
@@ -282,14 +304,18 @@ class TestModelDeviceBlueprint:
 
     @pytest.mark.asyncio
     async def test_meta_variable_value_with_spaces_and_symbols_is_kept(self) -> None:
-        result, client = await _add_with(
-            meta_variables={"banner": "Branch 1 (EMEA) - $site #1", "port3": "192.0.2.1/24"}
-        )
+        banner = "Branch 1 (EMEA) - $site no.1, O'Hare @ 50% {x} [a]: ok/ok & ü"
+        result, client = await _add_with(meta_variables={"banner": banner, "port3": "192.0.2.1/24"})
         assert result["status"] == "success", result
         assert client.add_device.call_args.kwargs["device"]["meta variables"] == {
-            "banner": "Branch 1 (EMEA) - $site #1",
+            "banner": banner,
             "port3": "192.0.2.1/24",
         }
+
+    @pytest.mark.asyncio
+    async def test_refused_meta_character_is_named_in_the_error(self) -> None:
+        result, _ = await _add_with(meta_variables={"desc": "Branch #1"})
+        assert "'#'" in result["message"], result
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("serial", ["", "NOTASERIAL", "FGVM0200;rm", "FG12"])
@@ -486,7 +512,9 @@ class TestMetadataVariables:
         assert good["ok"] is True
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("expected", [{"bad name": "x"}, {"hostname": "b2\nend"}])
+    @pytest.mark.parametrize(
+        "expected", [{"bad name": "x"}, {"hostname": "b2\nend"}, {"hostname": 'b2"'}]
+    )
     async def test_check_refuses_invalid_expected(self, expected: dict[str, Any]) -> None:
         client = _var_client()
         with patch.object(dvm_tools, "get_fmg_client", return_value=client):
@@ -536,7 +564,7 @@ class TestInlineBlueprint:
 
     @pytest.mark.asyncio
     async def test_gui_capture_is_normalized_and_sent(self) -> None:
-        result, client = await _add_with(device_blueprint=_GUI_BLUEPRINT)
+        result, client = await _add_with(device_blueprint=_GUI_BLUEPRINT, confirm=True)
         assert result["status"] == "success", result
         bp = client.add_device.call_args.kwargs["device"]["device blueprint"]
         assert bp["vm-log-disk"] == "enable"
@@ -551,7 +579,7 @@ class TestInlineBlueprint:
     @pytest.mark.asyncio
     async def test_every_named_object_is_looked_up(self) -> None:
         get = AsyncMock(return_value={})
-        await _add_with(get=get, device_blueprint=_GUI_BLUEPRINT)
+        await _add_with(get=get, device_blueprint=_GUI_BLUEPRINT, confirm=True)
         urls = [c.args[0] for c in get.call_args_list]
         assert "/pm/pkg/adom/demo/branch_pkg" in urls
         assert "/pm/tmplgrp/adom/demo/branch_templates" in urls
@@ -568,6 +596,7 @@ class TestInlineBlueprint:
         result, client = await _add_with(
             get=_not_found_for("cluster_bootstrap", "/group/emea_spokes"),
             device_blueprint=_GUI_BLUEPRINT,
+            confirm=True,
         )
         assert result["status"] == "error"
         assert result["error_code"] == "blueprint_reference_missing"
@@ -593,7 +622,7 @@ class TestInlineBlueprint:
             return {}
 
         result, client = await _add_with(
-            get=AsyncMock(side_effect=get), device_blueprint=_GUI_BLUEPRINT
+            get=AsyncMock(side_effect=get), device_blueprint=_GUI_BLUEPRINT, confirm=True
         )
         assert result["status"] == "success", result
         assert result["unverified_references"] == ["firmware template 'campus_emea'"]
@@ -640,39 +669,117 @@ class TestInlineBlueprint:
         client.add_device.assert_not_called()
 
 
+_SERIAL = "FGVM020000123456"
+
+
+def _partial_client(before: Any, after: Any, serial_users: list[Any] | None = None) -> MagicMock:
+    """add_device fails; get_device answers ``before`` then ``after``.
+
+    Each of before/after is a record dict, or an exception to raise.
+    """
+    client = MagicMock()
+    client.get = AsyncMock(return_value={})
+    client.add_device = AsyncMock(side_effect=RuntimeError("boom"))
+    client.get_device = AsyncMock(side_effect=[before, after])
+    client.list_devices = AsyncMock(return_value=serial_users or [])
+    return client
+
+
+async def _add_partial(client: MagicMock) -> dict[str, Any]:
+    with patch.object(dvm_tools, "get_fmg_client", return_value=client):
+        return await dvm_tools.add_model_device(adom="demo", name="branch1", serial_number=_SERIAL)
+
+
+_NOT_FOUND = ResourceNotFoundError("nope", code=-3)
+
+
 class TestPartialCreation:
     @pytest.mark.asyncio
     async def test_failed_add_with_device_present_is_flagged(self) -> None:
-        client = MagicMock()
-        client.get = AsyncMock(return_value={})
-        client.add_device = AsyncMock(side_effect=RuntimeError("boom"))
-        client.get_device = AsyncMock(return_value={"name": "branch1"})
-        with patch.object(dvm_tools, "get_fmg_client", return_value=client):
-            result = await dvm_tools.add_model_device(
-                adom="demo", name="branch1", serial_number="FGVM020000123456"
-            )
+        client = _partial_client(_NOT_FOUND, {"name": "branch1", "sn": _SERIAL})
+        result = await _add_partial(client)
         assert result["status"] == "error"
         assert result["partially_created"] is True
-        client.get_device.assert_awaited_once_with("branch1", adom="demo")
+        assert "delete it" in result["message"]
+        client.get_device.assert_awaited_with("branch1", adom="demo")
 
     @pytest.mark.asyncio
     async def test_failed_add_without_device_is_plain_error(self) -> None:
-        client = MagicMock()
-        client.get = AsyncMock(return_value={})
-        client.add_device = AsyncMock(side_effect=RuntimeError("boom"))
-        client.get_device = AsyncMock(side_effect=ResourceNotFoundError("nope", code=-3))
-        with patch.object(dvm_tools, "get_fmg_client", return_value=client):
-            result = await dvm_tools.add_model_device(
-                adom="demo", name="branch1", serial_number="FGVM020000123456"
-            )
+        client = _partial_client(_NOT_FOUND, _NOT_FOUND)
+        result = await _add_partial(client)
         assert result["status"] == "error"
         assert "partially_created" not in result
+
+    @pytest.mark.asyncio
+    async def test_existing_name_is_refused_and_never_called_partial(self) -> None:
+        client = _partial_client({"name": "branch1", "sn": "FGVM020000999999"}, None)
+        result = await _add_partial(client)
+        assert result["status"] == "error"
+        assert result["error_code"] == "device_exists"
+        assert result.get("partially_created") is not True
+        assert "delete" not in result["message"].lower()
+        assert "already exists" in result["message"]
+        client.add_device.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_serial_in_use_is_refused(self) -> None:
+        client = _partial_client(
+            _NOT_FOUND, None, serial_users=[{"name": "branch9", "sn": _SERIAL.lower()}]
+        )
+        result = await _add_partial(client)
+        assert result["status"] == "error"
+        assert result["error_code"] == "device_exists"
+        assert "branch9" in result["message"]
+        assert "delete" not in result["message"].lower()
+        client.add_device.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_present_after_with_other_serial_is_not_claimed(self) -> None:
+        client = _partial_client(_NOT_FOUND, {"name": "branch1", "sn": "FGVM020000999999"})
+        result = await _add_partial(client)
+        assert result["status"] == "error"
+        assert result.get("partially_created") is not True
+        assert "delete" not in result["message"].lower()
+
+    @pytest.mark.asyncio
+    async def test_unverified_before_is_never_claimed_partial(self) -> None:
+        client = _partial_client(RuntimeError("lookup failed"), {"name": "branch1", "sn": _SERIAL})
+        result = await _add_partial(client)
+        assert result["status"] == "error"
+        client.add_device.assert_called_once()
+        assert result.get("partially_created") is not True
+        assert result.get("device_present") is True
+        assert "delete" not in result["message"].lower()
+
+    @pytest.mark.asyncio
+    async def test_failure_before_the_add_is_not_checked_for_partial(self) -> None:
+        # The name existed all along; the call fails before it adds anything.
+        client = _partial_client({"name": "branch1", "sn": _SERIAL}, None)
+        client.get_device = AsyncMock(return_value={"name": "branch1", "sn": _SERIAL})
+        with (
+            patch.object(
+                dvm_tools,
+                "_check_blueprint_references",
+                AsyncMock(side_effect=RuntimeError("x")),
+            ),
+            patch.object(dvm_tools, "get_fmg_client", return_value=client),
+        ):
+            result = await dvm_tools.add_model_device(
+                adom="demo",
+                name="branch1",
+                serial_number=_SERIAL,
+                device_blueprint={"pkg": "branch_pkg"},
+            )
+        assert result["status"] == "error"
+        client.add_device.assert_not_called()
+        assert "partially_created" not in result
+        assert "delete" not in result["message"].lower()
 
 
 class TestModelDeviceFlags:
     @pytest.mark.asyncio
     async def test_flags_are_passed_and_task_id_returned(self) -> None:
-        client = MagicMock()
+        client = _absent(MagicMock())
         client.get = AsyncMock(return_value={})
         client.add_device = AsyncMock(return_value={"device": {}, "taskid": 42})
         with patch.object(dvm_tools, "get_fmg_client", return_value=client):
@@ -721,7 +828,11 @@ def _task_client(*task_states: dict[str, Any]) -> MagicMock:
     client.get = AsyncMock(return_value={})
     client.add_device = AsyncMock(return_value={"taskid": 337})
     client.get_task = AsyncMock(side_effect=list(task_states))
-    client.get_device = AsyncMock(return_value={"name": "branch5"})
+    client.get_device = AsyncMock(
+        side_effect=[_NOT_FOUND, {"name": "branch5", "sn": "FGVM020000123459"}]
+    )
+    client.list_devices = AsyncMock(return_value=[])
+    client.get_metadata_variables = AsyncMock(return_value=[])
     return client
 
 
@@ -768,3 +879,186 @@ class TestBlueprintAddRunsAsTask:
         assert result["status"] == "success", result
         assert client.add_device.call_args.kwargs["flags"] == ["create_task"]
         client.get_task.assert_not_called()
+
+
+class TestTaskErrorsAreScrubbed:
+    """Task history detail is device/FMG text: scrubbed and bounded (L8)."""
+
+    @pytest.mark.asyncio
+    async def test_detail_is_redacted_folded_and_capped(self) -> None:
+        history = [
+            {"detail": "2026-10-12 23:59:44:Pre-run error: password=hunter2", "state": 5},
+            {"detail": "2026-10-12 23:59:44:" + "x" * 2000, "state": 5},
+            {"detail": "line one\nline two", "state": 5},
+        ] + [{"detail": f"step {i} error", "state": 5} for i in range(100)]
+        client = _task_client({"state": 5, "line": [{"history": history}]})
+        result = await TestBlueprintAddRunsAsTask()._add(client)
+        errors = result["task_errors"]
+        assert "hunter2" not in repr(result)
+        assert all(len(e) <= 300 for e in errors)
+        assert "line one line two" in errors
+        assert len(errors) <= dvm_tools._MAX_TASK_ERRORS
+
+
+class TestFirmwareBlueprintNeedsConfirm:
+    """A blueprint that enforces a firmware version needs confirm=True (L9)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "blueprint",
+        [
+            {"firmware-template": "campus_emea"},
+            {"prefer-img-ver": "7.0.17-b682|0"},
+            _GUI_BLUEPRINT,
+        ],
+    )
+    async def test_inline_firmware_blueprint_is_refused_without_confirm(
+        self, blueprint: dict[str, Any]
+    ) -> None:
+        result, client = await _add_with(device_blueprint=blueprint)
+        assert result["status"] == "error"
+        assert result["error_code"] == "confirmation_required"
+        client.add_device.assert_not_called()
+        client.get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_inline_firmware_blueprint_with_confirm_is_added(self) -> None:
+        result, client = await _add_with(
+            device_blueprint={"firmware-template": "campus_emea"}, confirm=True
+        )
+        assert result["status"] == "success", result
+        client.add_device.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_blueprint_without_firmware_needs_no_confirm(self) -> None:
+        result, _ = await _add_with(device_blueprint={"pkg": "branch_pkg", "prefer-img-ver": ""})
+        assert result["status"] == "success", result
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "saved",
+        [
+            {"name": "bp", "firmware-template": ["campus_emea"]},
+            {"name": "bp", "prefer-img-ver": "7.4.5-b2702|0"},
+        ],
+    )
+    async def test_saved_firmware_blueprint_is_refused_without_confirm(
+        self, saved: dict[str, Any]
+    ) -> None:
+        result, client = await _add_with(get=AsyncMock(return_value=saved), device_blueprint="bp")
+        assert result["status"] == "error"
+        assert result["error_code"] == "confirmation_required"
+        client.add_device.assert_not_called()
+        ok, client = await _add_with(
+            get=AsyncMock(return_value=saved), device_blueprint="bp", confirm=True
+        )
+        assert ok["status"] == "success", ok
+
+    @pytest.mark.asyncio
+    async def test_saved_blueprint_without_firmware_needs_no_confirm(self) -> None:
+        result, _ = await _add_with(
+            get=AsyncMock(return_value={"name": "bp", "firmware-template": []}),
+            device_blueprint="bp",
+        )
+        assert result["status"] == "success", result
+
+    @pytest.mark.asyncio
+    async def test_unreadable_saved_blueprint_needs_confirm(self) -> None:
+        result, client = await _add_with(
+            get=AsyncMock(side_effect=RuntimeError("unsupported")), device_blueprint="bp"
+        )
+        assert result["status"] == "error"
+        assert result["error_code"] == "confirmation_required"
+        client.add_device.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_gate_off_when_firmware_safety_disabled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from fortimanager_mcp.utils.config import get_settings
+
+        monkeypatch.setenv("FMG_FIRMWARE_SAFETY", "disabled")
+        get_settings.cache_clear()
+        try:
+            result, _ = await _add_with(device_blueprint={"firmware-template": "campus_emea"})
+        finally:
+            get_settings.cache_clear()
+        assert result["status"] == "success", result
+
+
+_ECHO_VARIABLES = [
+    {"name": "hostname", "type": 0, "value": ""},
+    {"name": "vpn_token", "type": "password", "value": ""},
+]
+
+
+class TestMetaVariableEcho:
+    """The echoed device must not carry password-type meta-variable values.
+
+    ``vpn_token``, not ``psk``: strip_device_credentials already drops a key
+    named ``psk`` at any depth, which would hide what is tested here.
+    """
+
+    @pytest.mark.asyncio
+    async def test_password_type_values_are_masked_in_the_echo(self) -> None:
+        meta = {"hostname": "branch1", "vpn_token": "Secr3t-tok"}
+        client = _absent(MagicMock())
+        client.get = AsyncMock(return_value={})
+        client.add_device = AsyncMock(
+            return_value={"device": {"name": "branch1", "meta variables": dict(meta)}}
+        )
+        client.get_metadata_variables = AsyncMock(return_value=_ECHO_VARIABLES)
+        with patch.object(dvm_tools, "get_fmg_client", return_value=client):
+            result = await dvm_tools.add_model_device(
+                adom="demo",
+                name="branch1",
+                serial_number=_SERIAL,
+                meta_variables=meta,
+            )
+        assert result["status"] == "success", result
+        echoed = result["device"]["meta variables"]
+        assert echoed == {"hostname": "branch1", "vpn_token": MASK_VALUE}
+        assert "Secr3t-tok" not in repr(result)
+        # What went to FortiManager is the real value.
+        sent = client.add_device.call_args.kwargs["device"]["meta variables"]
+        assert sent["vpn_token"] == "Secr3t-tok"
+
+    @pytest.mark.asyncio
+    async def test_submitted_config_echo_is_masked_too(self) -> None:
+        # FMG echoes no device, so the submitted device_config is returned.
+        client = _absent(MagicMock())
+        client.get = AsyncMock(return_value={})
+        client.add_device = AsyncMock(return_value={})
+        client.get_metadata_variables = AsyncMock(return_value=_ECHO_VARIABLES)
+        with patch.object(dvm_tools, "get_fmg_client", return_value=client):
+            result = await dvm_tools.add_model_device(
+                adom="demo",
+                name="branch1",
+                serial_number=_SERIAL,
+                meta_variables={"hostname": "b1", "vpn_token": "Secr3t-tok"},
+            )
+        assert result["status"] == "success", result
+        assert result["device"]["meta variables"] == {"hostname": "b1", "vpn_token": MASK_VALUE}
+        sent = client.add_device.call_args.kwargs["device"]["meta variables"]
+        assert sent["vpn_token"] == "Secr3t-tok"
+
+    @pytest.mark.asyncio
+    async def test_unknown_variable_types_mask_every_value(self) -> None:
+        client = _absent(MagicMock())
+        client.get = AsyncMock(return_value={})
+        client.add_device = AsyncMock(return_value={})
+        client.get_metadata_variables = AsyncMock(side_effect=RuntimeError("no access"))
+        with patch.object(dvm_tools, "get_fmg_client", return_value=client):
+            result = await dvm_tools.add_model_device(
+                adom="demo",
+                name="branch1",
+                serial_number=_SERIAL,
+                meta_variables={"hostname": "branch1", "vpn_token": "Secr3t-tok"},
+            )
+        assert result["status"] == "success", result
+        assert result["device"]["meta variables"] == {
+            "hostname": MASK_VALUE,
+            "vpn_token": MASK_VALUE,
+        }
+        sent = client.add_device.call_args.kwargs["device"]["meta variables"]
+        assert sent["vpn_token"] == "Secr3t-tok"

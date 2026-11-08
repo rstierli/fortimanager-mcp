@@ -235,9 +235,10 @@ class Settings(BaseSettings):
     # Firmware Upgrade Safety
     FMG_FIRMWARE_SAFETY: Literal["strict", "disabled"] = Field(
         default="strict",
-        description="Firmware-upgrade safety mode. 'strict' refuses upgrade_device_firmware "
-        "unless the caller also passes confirm=True (upgrading reboots the real managed "
-        "device). 'disabled' allows it unconditionally.",
+        description="Firmware-upgrade safety mode. 'strict' refuses upgrade_device_firmware, "
+        "and add_model_device with a blueprint that enforces a firmware version, unless "
+        "the caller also passes confirm=True (upgrading reboots the real managed device). "
+        "'disabled' allows it unconditionally.",
     )
 
     # Policy Safety

@@ -12,10 +12,10 @@ from typing import Any
 
 from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.server import get_fmg_client, mcp
-from fortimanager_mcp.utils.config import get_default_adom, get_default_device
+from fortimanager_mcp.utils.config import get_default_adom, get_default_device, get_settings
 from fortimanager_mcp.utils.errors import ResourceNotFoundError, client_safe_error
 from fortimanager_mcp.utils.install_gate import task_state
-from fortimanager_mcp.utils.redaction import strip_secret_fields
+from fortimanager_mcp.utils.redaction import safe_device_message, strip_secret_fields
 from fortimanager_mcp.utils.responses import (
     DEVICE_CREDENTIAL_KEYS,
     strip_device_credentials,
@@ -50,6 +50,25 @@ def _get_client() -> FortiManagerClient:
 #: templates as ``$(name)``.
 _META_VARIABLE_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_\-]{0,63}")
 _META_VARIABLE_MAX_VALUE = 255
+#: Text a meta-variable value cannot hold, with what it would do in the
+#: template that pastes it in: end a quoted CLI value, escape the next
+#: character, start a FortiOS comment, open a Jinja expression, statement or
+#: comment, or read another meta variable (a password one included).
+_META_VALUE_FORBIDDEN = {
+    '"': "would end a quoted CLI value",
+    "\\": "would escape the next CLI character",
+    "#": "starts a FortiOS CLI comment",
+    "{{": "opens a Jinja expression",
+    "{%": "opens a Jinja statement",
+    "{#": "opens a Jinja comment",
+    "$(": "reads another meta variable",
+}
+
+
+def _is_meta_control(ch: str) -> bool:
+    """C0 and C1 controls, DEL, and the Unicode line/paragraph separators."""
+    code = ord(ch)
+    return code < 32 or 127 <= code <= 159 or code in (0x2028, 0x2029)
 
 
 def _validate_meta_variables(meta_variables: Any) -> dict[str, str]:
@@ -61,11 +80,15 @@ def _validate_meta_variables(meta_variables: Any) -> dict[str, str]:
     A value is pasted verbatim into every CLI template that references it
     as ``$(name)`` and is installed with the next install_device_settings,
     so a newline in a value would add CLI lines of its own. Control
-    characters are therefore refused, as is the redaction marker this
-    server puts in place of password values (writing it back would store
-    the marker as the secret). This keeps a value on one CLI line; it does
-    not make arbitrary text safe in every template position, so a template
-    still has to quote what it substitutes where that matters.
+    characters (C0, DEL, C1) and the Unicode line and paragraph separators
+    are therefore refused, and so is the text listed in
+    _META_VALUE_FORBIDDEN, which would end a quoted value, start a comment
+    or be read as template syntax. The redaction marker this server puts in
+    place of password values is refused too (writing it back would store
+    the marker as the secret). Quoting is left to the template: a value can
+    sit inside "..." safely because it cannot close the quote. Single quotes
+    stay allowed (names such as O'Hare), so a template should quote with
+    double quotes.
     """
     if not isinstance(meta_variables, dict):
         raise ValidationError("meta_variables must be an object of name -> value")
@@ -82,11 +105,17 @@ def _validate_meta_variables(meta_variables: Any) -> dict[str, str]:
             raise ValidationError(
                 f"Meta-variable {key!r} is longer than {_META_VARIABLE_MAX_VALUE} characters"
             )
-        if any(ord(ch) < 32 or ord(ch) == 127 for ch in text):
+        if any(_is_meta_control(ch) for ch in text):
             raise ValidationError(
                 f"Meta-variable {key!r} cannot contain control characters or newlines: "
                 "templates substitute the value into CLI as is"
             )
+        for token, effect in _META_VALUE_FORBIDDEN.items():
+            if token in text:
+                raise ValidationError(
+                    f"Meta-variable {key!r} cannot contain {token!r}: templates substitute "
+                    f"the value into CLI as is, where it {effect}"
+                )
         if MASK_VALUE in text:
             raise ValidationError(
                 f"Meta-variable {key!r} holds the redaction marker {MASK_VALUE!r}, "
@@ -285,6 +314,38 @@ def _validate_inline_blueprint(blueprint: dict[str, Any]) -> dict[str, Any]:
 
 def _as_list(value: Any) -> list[str]:
     return [value] if isinstance(value, str) else list(value or [])
+
+
+#: Blueprint attributes that bind the device to a firmware version: an
+#: enforced firmware template, or a preferred image FortiManager installs.
+_BLUEPRINT_FIRMWARE_FIELDS = ("firmware-template", "prefer-img-ver")
+
+
+def _binds_firmware(blueprint: Any) -> bool:
+    """True if a blueprint (inline, or a saved record) sets a firmware field."""
+    if isinstance(blueprint, list):
+        blueprint = next((b for b in blueprint if isinstance(b, dict)), {})
+    if not isinstance(blueprint, dict):
+        return False
+    for key in _BLUEPRINT_FIRMWARE_FIELDS:
+        value = blueprint.get(key)
+        items = value if isinstance(value, list) else [value]
+        if any(item is not None and str(item).strip() for item in items):
+            return True
+    return False
+
+
+async def _fetch_saved_blueprint(
+    client: FortiManagerClient, adom: str, name: str
+) -> tuple[bool | None, Any]:
+    """(True, record), (False, None) if not found (-3), (None, None) if the
+    lookup failed for another reason."""
+    try:
+        return True, await client.get(f"/pm/config/adom/{adom}/obj/fmg/device/blueprint/{name}")
+    except ResourceNotFoundError:
+        return False, None
+    except Exception:
+        return None, None
 
 
 async def _object_state(client: FortiManagerClient, urls: list[str]) -> bool | None:
@@ -717,13 +778,19 @@ async def add_device(
 _TASK_RUNNING = frozenset({"pending", "running", "cancelling", "aborting"})
 _ADD_TASK_TIMEOUT = 180.0
 _ADD_TASK_POLL = 2.0
+#: Most failed task steps returned; a blueprint has a handful of steps, so
+#: more than this is a loop or a dump, not information.
+_MAX_TASK_ERRORS = 20
 
 
 async def _wait_add_task(client: FortiManagerClient, task_id: int) -> tuple[str, list[str]]:
     """Poll an add-device task; return its final state and the failed steps.
 
     Each failed step is the history ``detail`` of an entry in error state,
-    timestamp removed (e.g. "Pre-run CLI template [x] error: ...").
+    timestamp removed (e.g. "Pre-run CLI template [x] error: ..."). The
+    detail is FortiManager's and the device's text, so it is passed through
+    safe_device_message (secret redaction, one bounded line), and at most
+    _MAX_TASK_ERRORS of them are returned.
     """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + _ADD_TASK_TIMEOUT
@@ -744,16 +811,92 @@ async def _wait_add_task(client: FortiManagerClient, task_id: int) -> tuple[str,
                 continue
             # "2026-10-12 23:59:44:Pre-run CLI template ..." -> drop the stamp
             stamp = re.match(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}:", detail)
-            errors.append(detail[stamp.end() :] if stamp else detail)
+            errors.append(safe_device_message(detail[stamp.end() :] if stamp else detail))
+            if len(errors) >= _MAX_TASK_ERRORS:
+                return state, errors
     return state, errors
 
 
-async def _device_exists(adom: str, name: str) -> bool:
+async def _lookup_device(
+    client: FortiManagerClient, adom: str, name: str
+) -> tuple[bool | None, dict[str, Any]]:
+    """(True, record) if the device exists, (False, {}) if FortiManager says
+    it does not (-3), (None, {}) if that could not be established."""
     try:
-        await _get_client().get_device(name, adom=adom)
-        return True
+        record = await client.get_device(name, adom=adom)
+    except ResourceNotFoundError:
+        return False, {}
     except Exception:
+        return None, {}
+    if isinstance(record, list):
+        record = next((r for r in record if isinstance(r, dict)), {})
+    return (True, record) if isinstance(record, dict) and record else (None, {})
+
+
+async def _serial_users(client: FortiManagerClient, adom: str, serial: str) -> list[str] | None:
+    """Names of the ADOM's devices with this serial, None if the lookup failed.
+
+    The serial is compared here as well, so a FortiManager that ignored the
+    filter cannot make every device look like a match.
+    """
+    try:
+        rows = await client.list_devices(
+            adom=adom, fields=["name", "sn"], filter=["sn", "==", serial]
+        )
+    except Exception:
+        return None
+    return [
+        str(r.get("name"))
+        for r in rows
+        if isinstance(r, dict) and str(r.get("sn") or "").upper() == serial
+    ]
+
+
+async def _created_by_this_call(
+    client: FortiManagerClient, adom: str, name: str, serial: str, absent_before: bool
+) -> bool | None:
+    """After a failed add: did this call leave a device behind?
+
+    True only if the name was absent before the add and a device with this
+    name and serial is there now. None if a device with this name is there
+    but that cannot be shown (it may have existed already, or carry another
+    serial); False if none is there.
+    """
+    state, record = await _lookup_device(client, adom, name)
+    if state is not True:
         return False
+    if absent_before and str(record.get("sn") or "").upper() == serial:
+        return True
+    return None
+
+
+async def _secret_variable_names(client: FortiManagerClient, adom: str) -> set[str] | None:
+    """Names of the ADOM's password-type metadata variables; None if unknown."""
+    try:
+        raw = await client.get_metadata_variables(adom)
+    except Exception:
+        return None
+    records = raw if isinstance(raw, list) else [raw] if isinstance(raw, dict) else []
+    return {
+        str(r.get("name"))
+        for r in records
+        if isinstance(r, dict) and r.get("type") in _SECRET_VARIABLE_TYPES
+    }
+
+
+def _mask_meta_echo(value: Any, secret: set[str] | None) -> Any:
+    """Mask password-type values in an echoed ``meta variables``; every value
+    when the variable types are unknown (``secret`` is None)."""
+    if isinstance(value, dict):
+        return {k: MASK_VALUE if secret is None or k in secret else v for k, v in value.items()}
+    if isinstance(value, list):
+        return [
+            {**e, "value": MASK_VALUE}
+            if isinstance(e, dict) and (secret is None or e.get("name") in secret)
+            else e
+            for e in value
+        ]
+    return MASK_VALUE
 
 
 @mcp.tool()
@@ -772,6 +915,7 @@ async def add_model_device(
     ha_priority: int = 128,
     ha_members: list[dict[str, Any]] | None = None,
     flags: list[str] | None = None,
+    confirm: bool = False,
 ) -> dict[str, Any]:
     """Add a model device for offline provisioning.
 
@@ -796,6 +940,14 @@ async def add_model_device(
     metadata variable with an empty default (so a misspelt name leaves a
     stray variable behind; check names with list_metadata_variables).
 
+    The add is refused if the ADOM already has a device with this name or
+    serial number. Safety: a blueprint that sets a firmware template or
+    ``prefer-img-ver`` binds the device to a firmware version FortiManager
+    can install on the FortiGate when it registers (a reboot), so under
+    FMG_FIRMWARE_SAFETY=strict (default) it needs confirm=True, as
+    upgrade_device_firmware does. So does a saved blueprint that cannot be
+    read to check.
+
     Args:
         adom: ADOM name where device will be added
         name: Device display name
@@ -818,8 +970,9 @@ async def add_model_device(
         meta_variables: Per-device meta-variable values, e.g.
             {"hostname": "b1", "branch_id": "1", "port3": "192.0.2.1/24"}.
             Values are strings or numbers, at most 255 characters, with no
-            newlines or other control characters (templates paste them into
-            CLI as is)
+            newlines or other control characters and none of ``"``, ``\\``,
+            ``#``, ``{{``, ``{%``, ``{#`` or ``$(`` (templates paste them into
+            CLI as is). Password-type values are masked in the result
         groups: Device group names to add the device to (root VDOM)
         ha_mode: Declare a model HA cluster: "AP" (active-passive) or "AA".
             ``name``/``serial_number`` are then the primary member and the
@@ -831,6 +984,9 @@ async def add_model_device(
             {"name": "branch3-1", "serial_number": "FGVM...", "priority": 100}
         flags: dvm/cmd/add/device flags, e.g. ["create_task"] (the GUI sends
             ["create_task", "nonblocking"]); the task ID is returned
+        confirm: Must be True to add from a blueprint that enforces a
+            firmware version, under FMG_FIRMWARE_SAFETY=strict (default).
+            Ignored when FMG_FIRMWARE_SAFETY=disabled.
 
     Returns:
         dict: Add result with keys:
@@ -873,6 +1029,10 @@ async def add_model_device(
         ...                  "serial_number": "FGVM020000123458", "priority": 100}],
         ... )
     """
+    # Set once the add has been sent; only then can a failure have left a
+    # device behind, and only a device absent before can be this call's.
+    add_attempted = False
+    absent_before = False
     try:
         adom = validate_adom(adom)
         name = validate_device_name(name)
@@ -905,18 +1065,24 @@ async def add_model_device(
             ha_slave = _build_ha_slave(name, serial_number, ha_priority, ha_members)
         elif ha_members or ha_group_name:
             raise ValidationError("ha_members and ha_group_name need ha_mode")
+
+        firmware_gate = get_settings().FMG_FIRMWARE_SAFETY == "strict" and not confirm
+        if firmware_gate and inline_blueprint is not None and _binds_firmware(inline_blueprint):
+            return _firmware_blueprint_refusal(name, "The device blueprint enforces")
         client = _get_client()
 
         # Refuse a blueprint that names something absent rather than leave a
         # half-provisioned model device behind.
+        saved_state: bool | None = None
+        saved_blueprint: Any = None
         if inline_blueprint is not None:
             missing, unverified = await _check_blueprint_references(client, adom, inline_blueprint)
         elif isinstance(device_blueprint, str):
-            state = await _object_state(
-                client, [f"/pm/config/adom/{adom}/obj/fmg/device/blueprint/{device_blueprint}"]
+            saved_state, saved_blueprint = await _fetch_saved_blueprint(
+                client, adom, device_blueprint
             )
-            missing = [f"device blueprint {device_blueprint!r}"] if state is False else []
-            unverified = [f"device blueprint {device_blueprint!r}"] if state is None else []
+            missing = [f"device blueprint {device_blueprint!r}"] if saved_state is False else []
+            unverified = [f"device blueprint {device_blueprint!r}"] if saved_state is None else []
         else:
             missing, unverified = [], []
         if missing:
@@ -927,6 +1093,37 @@ async def add_model_device(
                 "error_code": "blueprint_reference_missing",
                 "missing": missing,
             }
+        if firmware_gate and isinstance(device_blueprint, str):
+            if saved_state is None:
+                return _firmware_blueprint_refusal(
+                    name,
+                    f"Device blueprint {device_blueprint!r} could not be read to check "
+                    "whether it enforces",
+                )
+            if _binds_firmware(saved_blueprint):
+                return _firmware_blueprint_refusal(
+                    name, f"Device blueprint {device_blueprint!r} enforces"
+                )
+
+        # A name or serial already in use is someone else's device: refuse
+        # rather than let a failed add later look like this call's leftover.
+        existed, _ = await _lookup_device(client, adom, name)
+        if existed:
+            return {
+                "status": "error",
+                "error_code": "device_exists",
+                "message": f"A device named {name} already exists in ADOM {adom}; nothing "
+                "was added. Choose another name, or keep working with the existing device.",
+            }
+        users = await _serial_users(client, adom, serial_number)
+        if users:
+            return {
+                "status": "error",
+                "error_code": "device_exists",
+                "message": f"Serial number {serial_number} is already used by device "
+                f"{users[0]!r} in ADOM {adom}; nothing was added.",
+            }
+        absent_before = existed is False
 
         # FMG expects the major version in os_ver ("7.0") and the minor in a
         # separate mr field; passing "7.6" as os_ver fails with "Unsupported
@@ -972,6 +1169,7 @@ async def add_model_device(
         # live on 8.0). So a blueprint add runs as a task unless the caller
         # chose flags.
         as_task = flags is None and (inline_blueprint is not None or bool(device_blueprint))
+        add_attempted = True
         result = await client.add_device(
             adom=adom,
             device=device_config,
@@ -983,14 +1181,16 @@ async def add_model_device(
         if as_task and task_id:
             task_state, task_errors = await _wait_add_task(client, int(task_id))
             if task_errors or task_state not in ("done", "warning"):
-                created = await _device_exists(adom, name)
-                return {
+                created = await _created_by_this_call(
+                    client, adom, name, serial_number, absent_before
+                )
+                failed: dict[str, Any] = {
                     "status": "error",
                     "error_code": "model_device_task_failed",
                     "task_id": task_id,
                     "task_state": task_state,
                     "task_errors": task_errors,
-                    "partially_created": created,
+                    "partially_created": created is True,
                     "message": f"Adding model device {name} did not complete cleanly"
                     + (
                         "; FortiManager created the device -- fix the cause and "
@@ -999,14 +1199,25 @@ async def add_model_device(
                         else ""
                     ),
                 }
+                if created is None:
+                    failed["device_present"] = True
+                    failed["message"] += _UNCONFIRMED_DEVICE_NOTE.format(name=name)
+                return failed
 
+        # Stripped for the same reason the read paths are: the echo carries
+        # whatever the record holds, not only what was submitted, and a
+        # model-device record can come back with blanked or default-populated
+        # psk and private_key fields.
+        echoed = strip_device_credentials(result.get("device", device_config))
+        if isinstance(echoed, dict) and "meta variables" in echoed:
+            # Password-type variable values are masked as the read paths
+            # (list_metadata_variables) do; all of them if the types are
+            # unknown.
+            secret = await _secret_variable_names(client, adom)
+            echoed["meta variables"] = _mask_meta_echo(echoed["meta variables"], secret)
         return {
             "status": "success",
-            # Stripped for the same reason the read paths are: the echo
-            # carries whatever the record holds, not only what was
-            # submitted, and a model-device record can come back with
-            # blanked or default-populated psk and private_key fields.
-            "device": strip_device_credentials(result.get("device", device_config)),
+            "device": echoed,
             "message": f"Model device {name} added successfully",
             **({"task_id": task_id} if task_id else {}),
             **({"unverified_references": unverified} if unverified else {}),
@@ -1017,14 +1228,41 @@ async def add_model_device(
         error: dict[str, Any] = {"status": "error", "message": msg, "error_code": code}
         # FMG can fail a blueprint step after the device record is written
         # (seen live: -1 "Internal error", device present). Say so, or the
-        # retry fails with "Serial number already in use".
-        if not isinstance(e, ValidationError) and await _device_exists(adom, name):
-            error["partially_created"] = True
-            error["message"] = (
-                f"{msg}; FortiManager nevertheless created model device {name} -- check "
-                "what the blueprint applied, or delete it before retrying"
+        # retry fails with "Serial number already in use" -- but only for a
+        # device this call can be shown to have created.
+        if add_attempted and not isinstance(e, ValidationError):
+            created = await _created_by_this_call(
+                _get_client(), adom, name, serial_number, absent_before
             )
+            if created:
+                error["partially_created"] = True
+                error["message"] = (
+                    f"{msg}; FortiManager nevertheless created model device {name} -- check "
+                    "what the blueprint applied, or delete it before retrying"
+                )
+            elif created is None:
+                error["device_present"] = True
+                error["message"] = msg + _UNCONFIRMED_DEVICE_NOTE.format(name=name)
         return error
+
+
+_UNCONFIRMED_DEVICE_NOTE = (
+    "; a device named {name} is in FortiManager, but this call cannot show it "
+    "created it (its serial differs, or whether it existed before is unknown) -- "
+    "check it before changing anything"
+)
+
+
+def _firmware_blueprint_refusal(name: str, subject: str) -> dict[str, Any]:
+    logger.warning(f"Model device {name} blocked: firmware blueprint without confirm=True")
+    return {
+        "status": "error",
+        "message": f"{subject} a firmware version (firmware template or prefer-img-ver): "
+        "FortiManager can install it on the FortiGate when it registers, which reboots "
+        "it. Pass confirm=True to proceed, or set FMG_FIRMWARE_SAFETY=disabled to "
+        "remove this gate.",
+        "error_code": "confirmation_required",
+    }
 
 
 #: fmg/variable ``type`` values whose content must not be echoed back.
@@ -1143,7 +1381,8 @@ async def set_metadata_variable(
         name: Variable name (it must already exist)
         device: Managed device name
         value: New value: one line, at most 255 characters, no newlines or
-            other control characters (templates paste it into CLI as is)
+            other control characters and none of ``"``, ``\\``, ``#``,
+            ``{{``, ``{%``, ``{#`` or ``$(`` (templates paste it into CLI as is)
         vdom: Only this scope (optional, e.g. "global" or "root")
 
     Returns:

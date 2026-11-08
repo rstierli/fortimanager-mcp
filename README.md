@@ -505,7 +505,7 @@ networks:
 | `get_device_status` | Get device connection and sync status |
 | `search_devices` | Search devices with filters |
 | `add_device` | Add a new device to FortiManager |
-| `add_model_device` | Add offline model device; optional `device_blueprint` (saved blueprint name or inline blueprint object; every referenced object is checked to exist first), per-device `meta_variables`, `groups`, patch level via `os_version="7.4.12"`, and model HA clusters via `ha_mode`/`ha_group_name`/`ha_members` |
+| `add_model_device` | Add offline model device; optional `device_blueprint` (saved blueprint name or inline blueprint object; every referenced object is checked to exist first), per-device `meta_variables`, `groups`, patch level via `os_version="7.4.12"`, and model HA clusters via `ha_mode`/`ha_group_name`/`ha_members`. Refused if the name or serial is already in use; a blueprint that enforces a firmware version needs `confirm=True` (`FMG_FIRMWARE_SAFETY`) |
 | `list_metadata_variables` | List an ADOM's metadata variables with their per-device values (password-type values redacted) |
 | `check_device_variables` | Check a device's metadata variables against expected values (match / mismatch / not mapped / undefined) |
 | `set_metadata_variable` | Set a device's value for an existing metadata variable, in every scope the device has unless `vdom` is given |
@@ -1256,7 +1256,7 @@ FMG_REVERT_SAFETY=disabled  # Allow unconditionally
 
 #### Firmware Upgrade Safety (`FMG_FIRMWARE_SAFETY`)
 
-Blocks `upgrade_device_firmware` (reboots the real managed device) unless the caller also passes `confirm=True`.
+Blocks `upgrade_device_firmware` (reboots the real managed device) unless the caller also passes `confirm=True`. The same gate applies to `add_model_device` with a device blueprint that sets a firmware template or `prefer-img-ver` (FortiManager can install that version on the FortiGate when it registers), and to a saved blueprint that cannot be read to check.
 
 ```bash
 FMG_FIRMWARE_SAFETY=strict    # Default: refuse without confirm=True
