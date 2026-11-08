@@ -25,7 +25,7 @@ class TestCliTemplates:
             [{"name": "a", "type": 1, "description": "d", "variables": ["branch_id"]}],
         )
         with patch.object(template_tools, "get_fmg_client", return_value=mock_client):
-            result = await template_tools.list_cli_templates(adom="production")
+            result = await template_tools.list_cli_templates(adom="demo")
 
         assert result["cli_templates"] == [
             {"name": "a", "type": "jinja", "description": "d", "variables": ["branch_id"]}
@@ -39,11 +39,9 @@ class TestCliTemplates:
         script = 'config system admin\n    edit "admin"\n        set password hunter2\nend\n'
         _client_get(mock_client, mock_fmg_instance, {"name": "a", "type": 0, "script": script})
         with patch.object(template_tools, "get_fmg_client", return_value=mock_client):
-            result = await template_tools.get_cli_template(adom="production", name="a")
+            result = await template_tools.get_cli_template(adom="demo", name="a")
 
-        assert mock_fmg_instance.get.call_args[0][0] == (
-            "/pm/config/adom/production/obj/cli/template/a"
-        )
+        assert mock_fmg_instance.get.call_args[0][0] == ("/pm/config/adom/demo/obj/cli/template/a")
         assert result["cli_template"]["type"] == "cli"
         assert "hunter2" not in result["cli_template"]["script"]
         assert 'edit "admin"' in result["cli_template"]["script"]
@@ -51,7 +49,7 @@ class TestCliTemplates:
     @pytest.mark.asyncio
     async def test_not_connected(self) -> None:
         with patch.object(template_tools, "get_fmg_client", return_value=None):
-            result = await template_tools.get_cli_template(adom="production", name="a")
+            result = await template_tools.get_cli_template(adom="demo", name="a")
         assert "error" in result
 
 
@@ -62,9 +60,9 @@ class TestPolicyBlocks:
     ) -> None:
         _client_get(mock_client, mock_fmg_instance, [{"name": "b", "type": "pblock"}])
         with patch.object(policy_tools, "get_fmg_client", return_value=mock_client):
-            result = await policy_tools.list_policy_blocks(adom="production")
+            result = await policy_tools.list_policy_blocks(adom="demo")
 
-        assert mock_fmg_instance.get.call_args[0][0] == "/pm/pblock/adom/production"
+        assert mock_fmg_instance.get.call_args[0][0] == "/pm/pblock/adom/demo"
         assert result["count"] == 1
 
     @pytest.mark.asyncio
@@ -74,11 +72,11 @@ class TestPolicyBlocks:
         _client_get(mock_client, mock_fmg_instance, [{"policyid": 1, "name": "p"}])
         with patch.object(policy_tools, "get_fmg_client", return_value=mock_client):
             result = await policy_tools.list_policy_block_policies(
-                adom="production", block="b", fields=["name"], limit=5, offset=2
+                adom="demo", block="b", fields=["name"], limit=5, offset=2
             )
 
         assert mock_fmg_instance.get.call_args[0][0] == (
-            "/pm/config/adom/production/pblock/b/firewall/policy"
+            "/pm/config/adom/demo/pblock/b/firewall/policy"
         )
         assert mock_fmg_instance.get.call_args.kwargs["range"] == [2, 5]
         assert result["policies"] == [{"policyid": 1, "name": "p"}]
@@ -91,7 +89,7 @@ class TestScopeMember:
     ) -> None:
         _client_get(mock_client, mock_fmg_instance, {"policyid": 6})
         with patch.object(policy_tools, "get_fmg_client", return_value=mock_client):
-            await policy_tools.get_firewall_policy("production", "pkg", 6)
+            await policy_tools.get_firewall_policy("demo", "pkg", 6)
 
         assert mock_fmg_instance.get.call_args.kwargs["option"] == ["scope member"]
 
@@ -136,7 +134,7 @@ class TestDeviceInterfaces:
         client = MagicMock()
         client.proxy_call = AsyncMock(return_value=[])
         with patch.object(dvm_tools, "_get_client", return_value=client):
-            await dvm_tools.get_device_interfaces("production", "branch3")
+            await dvm_tools.get_device_interfaces("demo", "branch3")
 
         resource = client.proxy_call.await_args.kwargs["resource"]
         assert resource == "/api/v2/monitor/system/interface?include_vlan=true"
@@ -233,7 +231,7 @@ class TestCliTemplateRedaction:
         script = "{% set psk = 'k1' %}\nset psksecret {{ psk }}\n"
         _client_get(mock_client, mock_fmg_instance, {"name": "a", "type": 1, "script": script})
         with patch.object(template_tools, "get_fmg_client", return_value=mock_client):
-            result = await template_tools.get_cli_template(adom="production", name="a")
+            result = await template_tools.get_cli_template(adom="demo", name="a")
 
         body = result["cli_template"]["script"]
         assert "k1" not in body

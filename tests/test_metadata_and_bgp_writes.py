@@ -161,9 +161,9 @@ class TestGetProfileGroup:
     async def test_reads_the_group(self, mock_client: Any, mock_fmg_instance: MagicMock) -> None:
         mock_fmg_instance.get.return_value = (0, {"name": "default", "ips-sensor": ["default"]})
         with patch.object(security_profile_tools, "get_fmg_client", return_value=mock_client):
-            result = await security_profile_tools.get_profile_group("production", "default")
+            result = await security_profile_tools.get_profile_group("demo", "default")
 
         assert mock_fmg_instance.get.call_args[0][0] == (
-            "/pm/config/adom/production/obj/firewall/profile-group/default"
+            "/pm/config/adom/demo/obj/firewall/profile-group/default"
         )
         assert result["profile_group"]["ips-sensor"] == ["default"]
