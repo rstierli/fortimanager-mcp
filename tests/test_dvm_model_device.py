@@ -226,12 +226,12 @@ class TestModelDeviceBlueprint:
     async def test_blueprint_and_meta_variables_use_the_gui_keys(self) -> None:
         result, client = await _add_with(
             os_version="7.4",
-            device_blueprint="sites_BRANCH_DBP_STANDALONE",
+            device_blueprint="branch_standalone_blueprint",
             meta_variables={"hostname": "branch1", "branch_id": 1, "port3": "192.0.2.1/24"},
         )
         assert result["status"] == "success", result
         device = client.add_device.call_args.kwargs["device"]
-        assert device["device blueprint"] == "sites_BRANCH_DBP_STANDALONE"
+        assert device["device blueprint"] == "branch_standalone_blueprint"
         assert device["meta variables"] == {
             "hostname": "branch1",
             "branch_id": "1",
@@ -510,12 +510,12 @@ _GUI_BLUEPRINT: dict[str, Any] = {
     "sdwan-management": 0,
     "dev-group": ["emea_spokes"],
     "folder": "/",
-    "auth-template": "sites_BRANCH_FAT",
+    "auth-template": "branch_templates_FAT",
     "prerun-cliprof": "cluster_bootstrap",
-    "pkg": "sites_BRANCH_PPKG",
+    "pkg": "branch_pkg",
     "cluster-worker": [],
     "prov-type": "template-group",
-    "template-group": "sites_BRANCH",
+    "template-group": "branch_templates",
     "templates": [],
 }
 
@@ -542,10 +542,10 @@ class TestInlineBlueprint:
         assert bp["vm-log-disk"] == "enable"
         assert bp["linked-to-model"] == "disable"
         assert bp["enforce-device-config"] == "disable"
-        assert bp["auth-template"] == "sites_BRANCH_FAT"
+        assert bp["auth-template"] == "branch_templates_FAT"
         assert bp["prerun-cliprof"] == "cluster_bootstrap"
         assert bp["dev-group"] == ["emea_spokes"]
-        assert bp["template-group"] == "sites_BRANCH"
+        assert bp["template-group"] == "branch_templates"
         assert "unverified_references" not in result
 
     @pytest.mark.asyncio
@@ -553,10 +553,10 @@ class TestInlineBlueprint:
         get = AsyncMock(return_value={})
         await _add_with(get=get, device_blueprint=_GUI_BLUEPRINT)
         urls = [c.args[0] for c in get.call_args_list]
-        assert "/pm/pkg/adom/demo/sites_BRANCH_PPKG" in urls
-        assert "/pm/tmplgrp/adom/demo/sites_BRANCH" in urls
+        assert "/pm/pkg/adom/demo/branch_pkg" in urls
+        assert "/pm/tmplgrp/adom/demo/branch_templates" in urls
         assert "/dvmdb/adom/demo/group/emea_spokes" in urls
-        assert "/pm/config/adom/demo/obj/fmg/fabric/authorization/template/sites_BRANCH_FAT" in urls
+        assert "/pm/config/adom/demo/obj/fmg/fabric/authorization/template/branch_templates_FAT" in urls
         assert "/pm/config/adom/demo/obj/cli/template/cluster_bootstrap" in urls
         assert "/pm/fwmprof/adom/demo/campus_emea" in urls
 
@@ -578,7 +578,7 @@ class TestInlineBlueprint:
     async def test_cli_template_group_satisfies_cliprofs(self) -> None:
         result, _ = await _add_with(
             get=_not_found_for("/cli/template/"),
-            device_blueprint={"cliprofs": ["sites_BRANCH_CLIGRP"]},
+            device_blueprint={"cliprofs": ["branch_templates_CLIGRP"]},
         )
         assert result["status"] == "success", result
 
@@ -623,7 +623,7 @@ class TestInlineBlueprint:
             # Names are looked up by URL: a "/" or ".." would address
             # another object than the one named.
             {"dev-group": ["spokes/../other"]},
-            {"template-group": "../sites_BRANCH"},
+            {"template-group": "../branch_templates"},
             {"firmware-template": "a/b"},
             {"prerun-cliprof": "a/../b"},
             {"cliprofs": ["x;y"]},
@@ -702,7 +702,7 @@ _TASK_FAILED = {
                     "state": 5,
                 },
                 {
-                    "detail": "2026-10-12 23:59:44:Authorization template [sites_BRANCH_FAT] "
+                    "detail": "2026-10-12 23:59:44:Authorization template [branch_templates_FAT] "
                     "generation error: datasrc invalid",
                     "state": 5,
                 },
@@ -732,7 +732,7 @@ class TestBlueprintAddRunsAsTask:
                 adom="demo",
                 name="branch5",
                 serial_number="FGVM020000123459",
-                device_blueprint={"pkg": "sites_BRANCH_PPKG"},
+                device_blueprint={"pkg": "branch_pkg"},
                 **kwargs,
             )
 
@@ -747,7 +747,7 @@ class TestBlueprintAddRunsAsTask:
         assert result["partially_created"] is True
         assert result["task_errors"] == [
             "Pre-run CLI template [cluster_bootstrap] error: invalid ip",
-            "Authorization template [sites_BRANCH_FAT] generation error: datasrc invalid",
+            "Authorization template [branch_templates_FAT] generation error: datasrc invalid",
         ]
 
     @pytest.mark.asyncio

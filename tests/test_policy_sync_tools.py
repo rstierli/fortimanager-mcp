@@ -163,8 +163,8 @@ def _client(
     client = MagicMock()
     client.get_package_status = AsyncMock(
         return_value=[
-            {"dev": "branch1", "vdom": "root", "pkg": "sites_BRANCH_PPKG", "status": status},
-            {"dev": "branch2", "vdom": "root", "pkg": "sites_BRANCH_PPKG", "status": "installed"},
+            {"dev": "branch1", "vdom": "root", "pkg": "branch_pkg", "status": status},
+            {"dev": "branch2", "vdom": "root", "pkg": "branch_pkg", "status": "installed"},
         ]
     )
     client.get_device_revision_content = AsyncMock(
@@ -262,7 +262,7 @@ class TestCheckDevicePolicySync:
 
         assert result["status"] == "success"
         assert result["in_sync"] is False
-        assert result["package"] == "sites_BRANCH_PPKG"
+        assert result["package"] == "branch_pkg"
         assert result["install_status"] == "out of sync"
         assert list(result["comparisons"]) == ["package_vs_revision"]
         cmp = result["comparisons"]["package_vs_revision"]
@@ -511,7 +511,7 @@ class TestPackageInstallStatus:
             {
                 "device": "branch2",
                 "vdom": "root",
-                "package": "sites_BRANCH_PPKG",
+                "package": "branch_pkg",
                 "install_status": "installed",
             }
         ]

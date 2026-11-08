@@ -72,7 +72,7 @@ _FAZ_PARAMS: dict[str, frozenset[str]] = {
 #: Fortimanager tools that execute_fortimanager_tool cannot reach in
 #: FMG_TOOL_MODE=dynamic although a skill names them. A gap in server.py's
 #: dynamic allowlist, not in the skills: remove an entry once it is reachable.
-_KNOWN_DYNAMIC_GAPS = frozenset({"list_policy_block_policies"})
+_KNOWN_DYNAMIC_GAPS: frozenset[str] = frozenset()
 
 _BACKTICKED = re.compile(r"`([^`\n]+)`")
 _IDENTIFIER = re.compile(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+")

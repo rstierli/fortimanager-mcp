@@ -86,7 +86,7 @@ from fortimanager_mcp.utils.install_gate import (
     record_preview,
     task_state,
 )
-from fortimanager_mcp.utils.responses import error_response
+from fortimanager_mcp.utils.responses import error_response, redact
 from fortimanager_mcp.utils.task_guard import mark_task_done, spawn_guarded
 from fortimanager_mcp.utils.validation import redact_config_text_secrets
 
@@ -135,13 +135,18 @@ class PreviewFailed(Exception):
 
 
 def summarize_task_lines(lines: Any) -> list[dict[str, Any]]:
-    """Reduce FMG task lines to what explains an outcome: name, state, detail, history."""
+    """Reduce FMG task lines to what explains an outcome: name, state, detail, history.
+
+    The detail and history are FortiManager's own text about the object a
+    step failed on and can quote the offending value, so they go through
+    the free-text redactor here, before any caller returns them.
+    """
     out: list[dict[str, Any]] = []
     for line in lines if isinstance(lines, list) else []:
         if not isinstance(line, dict):
             continue
         history = [
-            h.get("detail")
+            redact(str(h.get("detail")))
             for h in line.get("history") or []
             if isinstance(h, dict) and h.get("detail")
         ]
@@ -149,7 +154,7 @@ def summarize_task_lines(lines: Any) -> list[dict[str, Any]]:
             {
                 "name": line.get("name"),
                 "state": task_state(line),
-                "detail": line.get("detail"),
+                "detail": redact(d) if isinstance(d := line.get("detail"), str) else d,
                 "history": history,
             }
         )

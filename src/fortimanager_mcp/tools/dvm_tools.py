@@ -806,8 +806,8 @@ async def add_model_device(
         description: Device description
         device_blueprint: Name of a saved device blueprint, or an inline
             blueprint object (what the GUI sends with the blueprint option
-            unchecked), e.g. {"pkg": "sites_BRANCH_PPKG",
-            "prov-type": "template-group", "template-group": "sites_BRANCH",
+            unchecked), e.g. {"pkg": "branch_pkg",
+            "prov-type": "template-group", "template-group": "branch_templates",
             "dev-group": ["emea_spokes"], "prerun-cliprof": "bootstrap"}.
             Attributes follow fmg/device/blueprint; every object it names
             (package, template group, device groups, templates, CLI and
@@ -853,7 +853,7 @@ async def add_model_device(
         ...     serial_number="FGVM020000123456",
         ...     platform="FortiGate-VM64-KVM",
         ...     os_version="7.4.12",
-        ...     device_blueprint="sites_BRANCH_DBP_STANDALONE",
+        ...     device_blueprint="branch_standalone_blueprint",
         ...     meta_variables={"hostname": "branch1", "branch_id": "1"},
         ... )
 
@@ -864,7 +864,7 @@ async def add_model_device(
         ...     serial_number="FGVM020000123457",
         ...     platform="FortiGate-VM64-KVM",
         ...     os_version="7.4.12",
-        ...     device_blueprint="sites_BRANCH_DBP_CLUSTER",
+        ...     device_blueprint="branch_cluster_blueprint",
         ...     ha_mode="AP",
         ...     ha_group_name="branch3_cluster",
         ...     ha_priority=200,
