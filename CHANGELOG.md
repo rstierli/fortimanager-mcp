@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Creating a TCP/UDP service with an admin that may not read the service table now logs in twice, not eight times (#118).** FortiManager answers a denied table with -11, the code a stale session gets too, so the client logs in again once and retries before it reports the denial. `create_service_tcp_udp` took that denial from each of its five named probes and from the list scan as a reason to try the next one, and then sent the create, so one call made seven requests that each logged in again for the same answer. Those logins succeed, so there was no lockout risk. `PermissionError` now stops the probing, as a failed connect or a failed login does since #107: a -11 that survives a fresh login means the service table itself is denied. The call still ends in `permission_denied`. Reproduced with a stub that answers every request with -11, not against an appliance.
+
 ## [1.12.3] - 2026-11-08
 
 Patch release: fewer pointless FortiManager logins when it is unreachable or the login fails, results that match what FortiManager 8.0 actually returns, an empty `search_objects` term refused, and `mcp` held to 2.x.
