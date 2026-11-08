@@ -277,9 +277,15 @@ CONFIG_TEXT_SECRET_DIRECTIVES = {
     "wifi-private-key-password",
 }
 
+# Case-insensitive, and "-" and "_" match each other: the redactors are run
+# over text that is not always FortiOS's own export (a task message, a
+# preview envelope), and over-matching costs a masked value at most.
 _CONFIG_TEXT_SECRET_LINE = re.compile(
-    r"^(?P<prefix>\s*set\s+(?:"
-    + "|".join(re.escape(d) for d in CONFIG_TEXT_SECRET_DIRECTIVES)
+    r"^(?P<prefix>\s*(?i:set)\s+(?i:"
+    + "|".join(
+        "".join("[-_]" if c in "-_" else re.escape(c) for c in d)
+        for d in sorted(CONFIG_TEXT_SECRET_DIRECTIVES, key=len, reverse=True)
+    )
     + r")\s+)(?P<rest>.*)$"
 )
 
@@ -291,7 +297,7 @@ _CONFIG_TEXT_SECRET_LINE = re.compile(
 # the name list above learns it. Not a substitute for the list: a secret
 # that is not ENC-encoded (a "set key" typed into a CLI script, a PEM
 # private key) is only recognised by name.
-_CONFIG_TEXT_ENC_LINE = re.compile(r'^(?P<prefix>\s*set\s+\S+\s+)(?P<rest>"?ENC\s.*)$')
+_CONFIG_TEXT_ENC_LINE = re.compile(r'^(?P<prefix>\s*(?i:set)\s+\S+\s+)(?P<rest>"?ENC\s.*)$')
 
 
 def _has_unescaped_quote(text: str) -> bool:
@@ -322,31 +328,19 @@ def _has_unescaped_quote(text: str) -> bool:
 # ``config system snmp community`` (and the switch and wireless controllers'
 # ``config snmp-community`` / ``config community``) ``set name`` is a secret
 # though the directive is not one anywhere else.
-_CONFIG_BLOCK_LINE = re.compile(r"^\s*config\s+(?P<path>.+?)\s*$")
-_CONFIG_END_LINE = re.compile(r"^\s*end\s*$")
-_COMMUNITY_BLOCKS = frozenset({"community", "snmp-community"})
-_CONFIG_TEXT_NAME_LINE = re.compile(r"^(?P<prefix>\s*set\s+name\s+)(?P<rest>.*)$")
+_CONFIG_BLOCK_LINE = re.compile(r"^\s*config\s+(?P<path>.+?)\s*$", re.I)
+_CONFIG_END_LINE = re.compile(r"^\s*end\s*$", re.I)
+_CONFIG_TEXT_NAME_LINE = re.compile(r"^(?P<prefix>\s*set\s+name\s+)(?P<rest>.*)$", re.I)
 
 
-def redact_snmp_community_names(text: str) -> str:
-    """Mask ``set name`` inside SNMP community blocks of FortiOS CLI text.
+def is_snmp_community_block(path: str) -> bool:
+    """Whether a ``config <path>`` line opens an SNMP community table.
 
-    Only this rule, for text whose other secrets are handled elsewhere (CLI
-    templates, where a bare variable reference is kept readable).
+    Any path naming "community" counts, quoted or followed by a ``#``
+    comment: an over-masked ``set name`` costs less than a community string
+    left in clear because its table was spelled in a way a list missed.
     """
-    lines = text.split("\n")
-    blocks: list[str] = []
-    for i, line in enumerate(lines):
-        block = _CONFIG_BLOCK_LINE.match(line)
-        if block:
-            blocks.append(block.group("path").split()[-1].lower())
-        elif _CONFIG_END_LINE.match(line) and blocks:
-            blocks.pop()
-        elif _COMMUNITY_BLOCKS.intersection(blocks):
-            name = _CONFIG_TEXT_NAME_LINE.match(line)
-            if name:
-                lines[i] = name.group("prefix") + MASK_VALUE
-    return "\n".join(lines)
+    return "community" in path.split("#", 1)[0].lower()
 
 
 def redact_config_text_secrets(text: str) -> str:
@@ -372,17 +366,21 @@ def redact_config_text_secrets(text: str) -> str:
     """
     lines = text.split("\n")
     out: list[str] = []
-    blocks: list[str] = []
+    # Open config blocks (True for a community table) and how many of those
+    # are community tables: a counter, not a scan of the stack per line.
+    blocks: list[bool] = []
+    communities = 0
     i = 0
     while i < len(lines):
         line = lines[i]
         block = _CONFIG_BLOCK_LINE.match(line)
         if block:
-            blocks.append(block.group("path").split()[-1].lower())
+            blocks.append(is_snmp_community_block(block.group("path")))
+            communities += blocks[-1]
         elif _CONFIG_END_LINE.match(line) and blocks:
-            blocks.pop()
+            communities -= blocks.pop()
         match = _CONFIG_TEXT_SECRET_LINE.match(line) or _CONFIG_TEXT_ENC_LINE.match(line)
-        if not match and _COMMUNITY_BLOCKS.intersection(blocks):
+        if not match and communities:
             match = _CONFIG_TEXT_NAME_LINE.match(line)
         if not match:
             out.append(line)

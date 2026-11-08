@@ -337,12 +337,13 @@ def _is_secret_field(field: str) -> bool:
 
     A community child table counts too: ``snmp-community.name=@x`` on a
     managed switch would test the community names the redaction hides.
+    "_" and "-" match each other (``snmp_community``), as in _is_secret_key.
     """
     parts = [part for part in re.split(r"[./]", field) if part]
     return (
         _is_secret_key(field)
         or any(_is_secret_key(part) for part in parts)
-        or any(part.lower() in _COMMUNITY_SEGMENTS for part in parts)
+        or any(part.lower().replace("_", "-") in _COMMUNITY_SEGMENTS for part in parts)
     )
 
 

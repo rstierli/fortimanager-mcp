@@ -174,8 +174,9 @@ class TestCliTemplateRedaction:
     def test_set_after_a_jinja_tag_on_the_same_line(self) -> None:
         out = self._redact("{% if hub %}set psksecret hubsecret{% endif %}")
         assert "hubsecret" not in out
-        assert out.startswith("{% if hub %}set psksecret ***REDACTED***")
-        assert out.endswith("{% endif %}")
+        # The value is not a lone literal or reference, so everything after
+        # the directive on the line is masked, the closing tag included.
+        assert out == "{% if hub %}set psksecret ***REDACTED***"
 
     def test_conditional_literal_value_is_masked(self) -> None:
         out = self._redact("set password {% if a %}one{% else %}two{% endif %}")
@@ -300,7 +301,7 @@ class TestCliTemplateRedaction:
         out = self._assert_masked(
             "{% if x %}set password {{ a }}{% else %}set password Lit4{% endif %}", "Lit4"
         )
-        assert out.startswith("{% if x %}set password {{ a }}{% else %}set password ***")
+        assert out == "{% if x %}set password ***REDACTED***"
         self._assert_masked(
             "{% if a %}set alias x{% endif %}{% if b %}set psksecret Lit6{% endif %}", "Lit6"
         )

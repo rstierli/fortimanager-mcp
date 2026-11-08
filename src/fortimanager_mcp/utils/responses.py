@@ -39,11 +39,24 @@ _REDACT_KEYS = sorted(
     key=len,
     reverse=True,
 )
+_KEY_ALTERNATION = "|".join(
+    "".join("[-_]" if c in "-_" else re.escape(c) for c in k) for k in _REDACT_KEYS
+)
+# The separator may sit inside a JSON string that was itself escaped
+# (``{\"password\": \"...\"}``), be ``=>`` or a full-width colon; a quoted
+# value runs to its closing quote past backslash escapes (``"ab\"cd"``),
+# optionally behind a Python bytes/str prefix (``b'...'``).
 _KV_PATTERN = re.compile(
     r"(?i)\b(?P<key>"
-    + "|".join("".join("[-_]" if c in "-_" else re.escape(c) for c in k) for k in _REDACT_KEYS)
-    + r")\b(?P<sep>[\"']?\s*[=:]\s*)(?P<value>\"[^\"]*\"?|'[^']*'?|[^\s\"'&,;]+)"
+    + _KEY_ALTERNATION
+    + r")\b(?P<sep>\\?[\"']?\s*(?:=>|[=:\uff1a])\s*\\?)"
+    + r"(?P<value>[bru]?\"(?:\\.|[^\"\\])*\"?|[bru]?'(?:\\.|[^'\\])*'?|[^\s\"'&,;]+)",
+    re.DOTALL,
 )
+#: A secret key followed by an ENC blob without a separator (``psksecret ENC x``).
+_KV_ENC_PATTERN = re.compile(r"(?i)\b(?P<key>" + _KEY_ALTERNATION + r")\b(?P<sep>\s+)ENC\s+\S+")
+#: An ENC blob anywhere: how FortiOS writes a stored secret, whatever its key.
+_ENC_BLOB_PATTERN = re.compile(r"\bENC\s+[A-Za-z0-9+/=]{16,}")
 # Opaque token-like run (mirrors sanitize_for_logging's hex>20 heuristic).
 _HEX_TOKEN_PATTERN = re.compile(r"\b[a-fA-F0-9]{20,}\b")
 
@@ -117,10 +130,15 @@ def redact(text: str) -> str:
         return text
 
     def mask(m: re.Match[str]) -> str:
-        quote = m.group("value")[0] if m.group("value")[0] in "\"'" else ""
+        value = m.group("value").lstrip("bruBRU")
+        quote = value[0] if value[:1] in ("'", '"') else ""
         return f"{m.group('key')}{m.group('sep')}{quote}{MASK_VALUE}{quote}"
 
     redacted = _KV_PATTERN.sub(mask, text)
+    redacted = _KV_ENC_PATTERN.sub(
+        lambda m: f"{m.group('key')}{m.group('sep')}{MASK_VALUE}", redacted
+    )
+    redacted = _ENC_BLOB_PATTERN.sub(MASK_VALUE, redacted)
     redacted = _HEX_TOKEN_PATTERN.sub(MASK_VALUE, redacted)
     return redacted
 

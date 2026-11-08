@@ -19,7 +19,7 @@ from fortimanager_mcp.utils.errors import client_safe_error
 from fortimanager_mcp.utils.validation import (
     CONFIG_TEXT_SECRET_DIRECTIVES,
     MASK_VALUE,
-    redact_snmp_community_names,
+    is_snmp_community_block,
     validate_adom,
     validate_device_name,
     validate_object_name,
@@ -27,7 +27,7 @@ from fortimanager_mcp.utils.validation import (
 
 logger = logging.getLogger(__name__)
 
-#: ``type`` of a CLI template (``obj/cli/template``).
+#: ``type`` of a CLI template (``obj/cli/template``); FNDN: "cli" 0, "jinja" 1.
 _CLI_TEMPLATE_TYPES: dict[Any, str] = {0: "cli", 1: "jinja"}
 
 # -----------------------------------------------------------------------------
@@ -35,31 +35,44 @@ _CLI_TEMPLATE_TYPES: dict[Any, str] = {0: "cli", 1: "jinja"}
 #
 # A template body is FortiOS CLI, so the "set <secret-directive> <value>"
 # rule that redact_config_text_secrets applies to device config exports
-# applies here too. A Jinja template (type 1) differs from an export in that
-# the secret need not be written on the "set" line: it can sit in a
+# applies here too. A Jinja template (type 1) differs from an export in two
+# ways: the secret need not be written on the "set" line (it can sit in a
 # "{% set %}", a loop list, a macro body or a dict literal and reach the
-# "set" line through a variable. Matching each such construct with its own
-# pattern was tried first and leaked whenever a template used a form the
-# pattern did not expect ("{%+", a tuple target, a "%}" inside a string, two
-# "set" statements on one line). So the body is tokenized instead, the way
-# Jinja's lexer splits it, and the redactor fails closed on what it finds:
+# "set" line through a variable), and whitespace control ("-%}", "{%-") or
+# trim_blocks can carry a value on over any number of lines. Two rounds of
+# matching one construct at a time each leaked on a form the patterns did
+# not expect, so the redactor fails closed by design instead:
 #
-# - In template text, every "set <secret-directive>" is masked up to the end
-#   of the line, or to the closing quote of a quoted value (across lines),
-#   whatever precedes it on the line.
-# - A value that is only a bare reference ("{{ psk }}", "$(psk)") is kept:
+# - The body is tokenized the way Jinja's lexer splits it (quoted strings
+#   and bracket nesting inside a tag are skipped, so a "%}" or "}}" there
+#   does not end it). A plain CLI template (type 0) is not tokenized: braces
+#   are text there.
+# - A secret value is precise only if it is one quoted string closed on its
+#   line, or a bare "{{ name }}" / "$(name)" alone, and no left-trimming tag
+#   follows to pull the next line in. A literal is masked, a reference kept:
 #   it says where the value comes from and is not itself a secret.
-# - If a secret value is anything more than a bare reference, or reads a
-#   variable the template itself mentions in another tag, the template could
-#   be computing the secret from its own constants. Then every string and
-#   number literal in every tag, and the body of every "{% set %}",
-#   "{% macro %}", "{% call %}" and "{% block %}", is masked. The model loses
-#   the template's literal constants but never sees a secret.
-# - Independently of that, a "{% set %}" of a secret-looking name and a
-#   secret-keyed literal ('{"password": "..."}', psk='...') are masked.
-#
-# Single quotes are tracked as well as double quotes, since a template author
-# may write either. A tag that never closes masks the rest of the script.
+# - Any other value is opaque. Everything after the directive (text and
+#   tags) is masked up to the start of the next line that begins with a
+#   FortiOS CLI keyword outside a tag, or a line holding only statement or
+#   comment tags that close back to the depth the directive started at.
+#   After such a tag line, a line that is neither CLI, blank nor more tags
+#   is masked again, since trim_blocks may join it to the value.
+# - A directive the template spells with a tag ("set {{ f }}", "set
+#   pass{{ x }}", "set $(f)") is treated as a secret one, as is a secret
+#   directive name right after a tag.
+# - In SNMP community blocks (config/end are tracked) "set name" is a secret
+#   directive: the name is the community string.
+# - If a secret value holds a tag that is not a bare reference, reads a name
+#   the template mentions elsewhere (another tag, or a "#"/"%" line that a
+#   line-statement setup would run), or a tag spells a secret directive,
+#   the template could compute the secret from its own constants. Then every
+#   literal in every tag, the body of every "{% set %}", "{% macro %}" and
+#   "{% block %}" and every "#"/"%" line is masked. A "{% call %}" body and
+#   a "{% set %}" block of a secret-looking name are always masked.
+# - A "{% set %}" of a secret-looking name and a secret-keyed literal
+#   ('{"password": "..."}', psk='...') are masked in any case. A comment is
+#   redacted as a template of its own, with every literal masked if it
+#   holds a tag. A tag that never closes masks the rest of the script.
 # -----------------------------------------------------------------------------
 
 #: A variable name containing one of these is treated as holding a secret.
@@ -75,7 +88,9 @@ _SECRET_NAME_HINTS = (
     "community",
     "credential",
 )
-_SECRET_NAME = rf"[\w.]*(?:{'|'.join(_SECRET_NAME_HINTS)})[\w.]*"
+# The lookbehind pins a name to its first character: without it, a long
+# identifier is retried from every position inside it (quadratic).
+_SECRET_NAME = rf"(?<![\w.])[\w.]*?(?:{'|'.join(_SECRET_NAME_HINTS)})[\w.]*"
 _JINJA_SECRET_LITERAL = re.compile(
     rf"(?P<key>(?P<q>[\"']?)(?i:{_SECRET_NAME})(?P=q)\s*(?:==|!=|[:=])\s*)"
     r"(?P<lq>[\"'])(?:\\.|(?!(?P=lq)).)*(?P=lq)",
@@ -85,48 +100,109 @@ _JINJA_SECRET_LITERAL = re.compile(
 #: A Jinja tag opener, with optional whitespace control; group 1 is the kind.
 _TAG_OPEN = re.compile(r"\{([{%#])[-+]?")
 _TAG_CLOSE = {"{": "}}", "%": "%}", "#": "#}"}
-#: A FortiOS "set <directive>" anywhere in template text. The value follows
-#: the blanks after the directive, or starts in the next token when a tag
-#: follows the directive directly.
-_SET_DIRECTIVE = re.compile(r"(?<![\w-])set[ \t]+(?P<directive>[\w+.-]+)(?:[ \t]+|\Z)", re.I)
-#: Text right after a tag that starts a new "set" ends an unquoted value.
-_SET_START = re.compile(r"[ \t]*set[ \t]", re.I)
-_ENC_VALUE = re.compile(r"^[\"']?ENC\s")
-_METAVAR_REFERENCE = re.compile(r"\s*\$\([A-Za-z_]\w*\)\s*\Z")
-_BARE_EXPRESSION = re.compile(
-    r"\{\{[-+]?\s*(?P<name>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*[-+]?\}\}\Z"
+_TAG_KINDS = frozenset("{%#")
+#: A tag that strips the whitespace (newlines included) before it.
+_TRIM_OPEN = re.compile(r"\{[{%#]-")
+
+#: FortiOS CLI keywords that start a line of their own.
+_CLI_KEYWORDS = (
+    "set",
+    "unset",
+    "config",
+    "edit",
+    "next",
+    "end",
+    "append",
+    "select",
+    "unselect",
+    "purge",
+    "execute",
+    "delete",
+    "rename",
+    "clone",
+    "show",
+    "get",
 )
+_CLI_LINE = re.compile(r"[^\S\n]*(?:" + "|".join(_CLI_KEYWORDS) + r")(?![\w-])", re.I)
+_CONFIG_LINE = re.compile(r"[^\S\n]*config(?![\w-])(?P<path>.*)", re.I)
+_END_LINE = re.compile(r"[^\S\n]*end(?![\w-])", re.I)
+_SET_WORD = re.compile(r"(?<![\w-])set(?![\w-])", re.I)
+_DIRECTIVE = re.compile(r"(?P<q>[\"']?)(?P<directive>[\w+.-]+)(?P=q)")
+_LEADING_DIRECTIVE = re.compile(r"[^\S\n]*" + _DIRECTIVE.pattern)
+_BLANKS = re.compile(r"[^\S\n]*")
+_NEWLINES = re.compile(r"(\n+)")
+_ENC_VALUE = re.compile(r"[\"']?ENC(?:\s|\Z)")
+
+#: Precise values: one closed quoted string, or a bare reference alone.
+_QUOTED_ALONE = re.compile(r"(?P<q>[\"'])(?:\\.|(?!(?P=q))[^\\])*(?P=q)(?P<tail>[^\S\n]*)")
+_METAVAR_ALONE = re.compile(r"(?P<q>[\"']?)[^\S\n]*\$\([A-Za-z_]\w*\)[^\S\n]*(?P=q)[^\S\n]*")
+_QUOTE_OPEN = re.compile(r"(?P<q>[\"']?)[^\S\n]*")
+#: A bare reference; no right trim, which would pull the next line in.
+_BARE_REFERENCE = re.compile(r"\{\{[-+]?\s*(?P<name>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*\+?\}\}\Z")
+
 _STATEMENT = re.compile(r"\{%[-+]?\s*(?P<keyword>\w*)")
 _STATEMENT_TAIL = re.compile(r"\s*[-+]?%\}\Z")
-_NUMBER = re.compile(r"\d[\w.]*")
-_WORD_BEFORE_NUMBER = re.compile(r"[\w.]")
+_LITERAL = re.compile(r"'(?:\\.|[^'\\])*'?|\"(?:\\.|[^\"\\])*\"?|(?<![\w.])\d[\w.]*", re.DOTALL)
+_WORD = re.compile(r"\w+")
 #: Statements whose body is captured rather than rendered in place.
 _CAPTURING = frozenset({"set", "macro", "call", "block"})
+#: Statements that open a block closed by "end<keyword>".
+_BLOCK_OPENERS = _CAPTURING | {"if", "for", "filter", "with", "autoescape", "raw", "trans"}
+
+_Token = tuple[str, str]
 
 
 @dataclass
 class _Tag:
     kind: str  # "{", "%" or "#"
     text: str
+    #: (start, end) of every string and number literal.
+    spans: list[tuple[int, int]] = field(default_factory=list)
+    #: ``text`` with every literal blanked out, so only code is left.
+    blank: str = ""
     #: Index of the "=" of an inline "{% set %}" of a secret-looking name.
     secret_assign: int = -1
+    #: The tag's code spells a secret "set" directive (CLI text that a brace
+    #: made look like Jinja): the whole tag is masked.
+    code_directive: bool = False
 
 
 @dataclass
 class _Text:
     text: str
-    #: 0 rendered in place, 1 inside a capturing block, 2 inside a
-    #: "{% set %}" block of a secret-looking name.
-    capture: int
+    #: 0 rendered in place, 1 inside a capturing block, 2 always masked
+    #: (a "{% call %}" body, a "{% set %}" block of a secret-looking name).
+    capture: int = 0
+    #: On a line starting with "#" or "%": a comment, or a line statement.
+    line_statement: bool = False
 
 
 @dataclass
 class _Value:
-    """The value of a secret "set" directive: text pieces and the tags between them."""
+    """What follows a secret "set" directive: text pieces and tags."""
 
-    quote: str
     items: list[str | _Tag] = field(default_factory=list)
-    closed: bool = False
+    #: "keep" (a bare reference), "mask" (one quoted literal) or "" (opaque).
+    precise: str = ""
+    #: Blanks after the closing quote of a "mask" value.
+    tail: str = ""
+    #: Statement depth the directive started at.
+    depth: int = 0
+    #: Opening quote of an opaque value still waiting for its close.
+    quote: str = ""
+
+
+def _is_plain_cli_type(template_type: Any) -> bool:
+    """Whether a CLI template ``type`` says plain FortiOS CLI rather than Jinja.
+
+    Only an explicit "cli" (0) counts. A missing or unrecognised type is
+    read as Jinja, whose redaction is the stricter of the two.
+    """
+    if isinstance(template_type, bool):
+        return False
+    if isinstance(template_type, int):
+        return template_type == 0
+    return isinstance(template_type, str) and template_type.strip().lower() in ("0", "cli")
 
 
 def _is_secret_name(name: str) -> bool:
@@ -134,44 +210,125 @@ def _is_secret_name(name: str) -> bool:
     return any(hint in lowered for hint in _SECRET_NAME_HINTS)
 
 
-def _is_secret_directive(directive: str, value: str) -> bool:
-    return directive.lower() in CONFIG_TEXT_SECRET_DIRECTIVES or bool(_ENC_VALUE.match(value))
+def _is_secret_directive(directive: str, community: bool, text: str = "", value: int = 0) -> bool:
+    """A secret directive by name, or one whose value (``text[value:]``) is an ENC blob."""
+    name = directive.lower().replace("_", "-")
+    return (
+        name in CONFIG_TEXT_SECRET_DIRECTIVES
+        or (community and name == "name")
+        or bool(_ENC_VALUE.match(text, value))
+    )
+
+
+def _skip_blanks(text: str, i: int) -> int:
+    """Index of the first non-blank at or after ``i`` on the line."""
+    match = _BLANKS.match(text, i)
+    return match.end() if match else i
+
+
+def _secret_value_start(text: str, after_tag: bool, tag_follows: bool, community: bool) -> int:
+    """Where the value of the first secret directive in ``text`` starts, or -1.
+
+    ``text`` is one line, or the part of one between tags. A directive that
+    is not a plain word (a tag or metavariable supplies it, or is glued to
+    it) is taken to be a secret one. ``after_tag``: ``text`` directly follows
+    a tag, which may have written the "set". ``tag_follows``: a tag follows
+    ``text`` directly, so what ends ``text`` continues there.
+    """
+    if after_tag:
+        match = _LEADING_DIRECTIVE.match(text)
+        if match and _is_secret_directive(match.group("directive"), community):
+            end = match.end()
+            if end == len(text) or not text[end].isspace():
+                return end
+            return _skip_blanks(text, end)
+    for match in _SET_WORD.finditer(text):
+        start = _skip_blanks(text, match.end())
+        if start == len(text):
+            if tag_follows:
+                return start
+            continue
+        if start == match.end() and text[start] not in "\"'":
+            continue  # "set," / "set:" in prose
+        directive = _DIRECTIVE.match(text, start)
+        if directive is None:
+            return start  # "set $(field)", "set (..."
+        end = directive.end()
+        name = directive.group("directive")
+        if end == len(text):
+            if tag_follows or _is_secret_directive(name, community):
+                return end
+            continue
+        if not text[end].isspace():
+            return end  # glued: "set pass$(x)"
+        value = _skip_blanks(text, end)
+        if _is_secret_directive(name, community, text, value):
+            return value
+    return -1
+
+
+def _holds_directive(content: str) -> bool:
+    """Whether a string literal spells a secret directive, or one left open."""
+    return any(_secret_value_start(line, False, True, False) >= 0 for line in content.split("\n"))
 
 
 def _tag_end(script: str, i: int, kind: str) -> int:
-    """Index just past the tag closer, skipping quoted strings; -1 if none."""
+    """Index just past the tag closer, or -1 if none.
+
+    As in Jinja's lexer, quoted strings are skipped and the closer only
+    counts outside brackets, so ``{{ f({'a': {'b': 1}}) }}`` is one tag.
+    """
+    if kind == "#":
+        end = script.find("#}", i)
+        return end + 2 if end >= 0 else -1
     close = _TAG_CLOSE[kind]
     quote = ""
-    while i < len(script):
+    depth = 0
+    n = len(script)
+    while i < n:
         char = script[i]
         if quote:
             if char == "\\":
                 i += 1
             elif char == quote:
                 quote = ""
-        elif char in "'\"" and kind != "#":
+        elif char in "'\"":
             quote = char
-        elif script.startswith(close, i):
-            return i + len(close)
+        elif depth == 0 and char == close[0] and script.startswith(close, i):
+            return i + 2
+        elif char in "([{":
+            depth += 1
+        elif char in ")]}" and depth:
+            depth -= 1
         i += 1
     return -1
 
 
-def _tokenize(script: str) -> list[tuple[str, str]]:
-    """Split a template into ("text", s), (kind, tag) and ("unterminated", rest).
+def _tokenize(script: str, plain: bool) -> list[_Token]:
+    """Split a template into text, "nl", tag ("{", "%", "#") and "unterminated" tokens.
 
-    A quoted string inside a ``{{ }}`` or ``{% %}`` tag is skipped, as
-    Jinja's lexer does, so a ``%}`` inside it does not end the tag.
+    Text tokens never hold a newline; each run of newlines is one "nl"
+    token (no rule depends on an empty line). A plain CLI template is text
+    and newlines only.
     """
-    tokens: list[tuple[str, str]] = []
+    tokens: list[_Token] = []
+
+    def add_text(text: str) -> None:
+        for k, piece in enumerate(_NEWLINES.split(text)):
+            if piece:
+                tokens.append(("nl" if k % 2 else "text", piece))
+
+    if plain:
+        add_text(script)
+        return tokens
     pos = 0
     while pos < len(script):
         match = _TAG_OPEN.search(script, pos)
         if match is None:
-            tokens.append(("text", script[pos:]))
+            add_text(script[pos:])
             break
         if match.start() > pos:
-            tokens.append(("text", script[pos : match.start()]))
+            add_text(script[pos : match.start()])
         end = _tag_end(script, match.end(), match.group(1))
         if end < 0:
             tokens.append(("unterminated", script[match.start() :]))
@@ -181,33 +338,318 @@ def _tokenize(script: str) -> list[tuple[str, str]]:
     return tokens
 
 
-def _literal_spans(text: str) -> list[tuple[int, int]]:
-    """(start, end) of every string and number literal in a tag."""
-    spans: list[tuple[int, int]] = []
-    i = 0
-    while i < len(text):
-        char = text[i]
-        if char in "'\"":
-            j = i + 1
-            while j < len(text) and text[j] != char:
-                j += 2 if text[j] == "\\" else 1
-            spans.append((i, min(j + 1, len(text))))
-            i = j + 1
-        elif char.isdigit() and not (i and _WORD_BEFORE_NUMBER.match(text[i - 1])):
-            number = _NUMBER.match(text, i)
-            end = number.end() if number else i + 1
-            spans.append((i, end))
-            i = end
-        else:
-            i += 1
-    return spans
+def _lines(tokens: list[_Token]) -> list[list[_Token]]:
+    """Group tokens into lines, each ending with its "nl" token (the last may not)."""
+    lines: list[list[_Token]] = []
+    line: list[_Token] = []
+    for token in tokens:
+        line.append(token)
+        if token[0] == "nl":
+            lines.append(line)
+            line = []
+    if line:
+        lines.append(line)
+    return lines
 
 
-def _blank_literals(text: str) -> str:
-    """``text`` with every literal replaced by spaces, so only code is left."""
-    for start, end in _literal_spans(text):
-        text = text[:start] + " " * (end - start) + text[end:]
-    return text
+def _significant(line: list[_Token]) -> _Token | None:
+    """The first token of a line that is not blank."""
+    for token in line:
+        if token[0] != "nl" and (token[0] != "text" or token[1].strip()):
+            return token
+    return None
+
+
+def _line_shape(line: list[_Token]) -> str:
+    """Classify a line.
+
+    "cli" (starts with a CLI keyword), "tags" (statement and comment tags
+    only), "blank", or "other".
+    """
+    first = _significant(line)
+    if first is None:
+        return "blank"
+    if first[0] == "text":
+        return "cli" if _CLI_LINE.match(first[1]) else "other"
+    if all(
+        kind in ("%", "#", "nl") or (kind == "text" and not text.strip()) for kind, text in line
+    ):
+        return "tags"
+    return "other"
+
+
+def _precise(body: list[_Token]) -> tuple[str, str] | None:
+    """("keep" | "mask", tail) if a value on its line is precise, else None."""
+    tags = [token for token in body if token[0] != "text"]
+    if not tags:
+        text = "".join(t for _, t in body)
+        if _METAVAR_ALONE.fullmatch(text):
+            return ("keep", "")
+        quoted = _QUOTED_ALONE.fullmatch(text)
+        return ("mask", quoted.group("tail")) if quoted else None
+    if len(tags) != 1 or tags[0][0] != "{" or not _BARE_REFERENCE.match(tags[0][1]):
+        return None
+    at = body.index(tags[0])
+    before = "".join(t for _, t in body[:at])
+    after = "".join(t for _, t in body[at + 1 :])
+    opened = _QUOTE_OPEN.fullmatch(before)
+    if opened and re.fullmatch(rf"[^\S\n]*{re.escape(opened.group('q'))}[^\S\n]*", after):
+        return ("keep", "")
+    return None
+
+
+class _Scanner:
+    """Walk a tokenized template line by line; see the comment block above."""
+
+    def __init__(self, tokens: list[_Token]):
+        self.lines = _lines(tokens)
+        self.parts: list[_Text | _Tag | _Value] = []
+        self.values: list[_Value] = []
+        self.tags: list[_Tag] = []
+        self.statement_texts: list[str] = []
+        self.blocks: list[tuple[str, bool]] = []  # open capturing blocks
+        self.secret_blocks = 0
+        self.depth = 0
+        self.communities: list[bool] = []  # open config blocks
+        self.in_community = 0
+        self.builds_directive = False
+
+    @property
+    def capture(self) -> int:
+        return 2 if self.secret_blocks else int(bool(self.blocks))
+
+    # -- tags ------------------------------------------------------------
+
+    def _tag(self, kind: str, text: str) -> _Tag:
+        tag = _Tag(kind, text)
+        self.tags.append(tag)
+        if kind == "#":
+            return tag
+        tag.spans = [m.span() for m in _LITERAL.finditer(text, 2, len(text) - 2)]
+        pieces: list[str] = []
+        last = 0
+        for start, end in tag.spans:
+            pieces += [text[last:start], " " * (end - start)]
+            last = end
+        pieces.append(text[last:])
+        tag.blank = "".join(pieces)
+        statement = _STATEMENT.match(text)
+        code_start = statement.end() if statement else 2
+        tag.code_directive = any(
+            _secret_value_start(line, False, False, False) >= 0
+            for line in tag.blank[code_start:-2].split("\n")
+        )
+        if tag.code_directive or any(
+            text[s] in "'\"" and _holds_directive(text[s + 1 : e - 1]) for s, e in tag.spans
+        ):
+            self.builds_directive = True
+        if kind == "%":
+            self._track_statement(tag, statement)
+        return tag
+
+    def _track_statement(self, tag: _Tag, statement: re.Match[str] | None) -> None:
+        """Follow block depth and capturing blocks; flag sets of secret-looking names."""
+        keyword = statement.group("keyword").lower() if statement else ""
+        if statement and keyword == "set":
+            tail = _STATEMENT_TAIL.search(tag.text)
+            end = tail.start() if tail else len(tag.text)
+            assign = _top_level_assign(tag.blank, statement.end(), end)
+            target = tag.blank[statement.end() : assign if assign >= 0 else end].split("|")[0]
+            if assign < 0:
+                self._open_block("set", _is_secret_name(target))
+            elif _is_secret_name(target):
+                tag.secret_assign = assign
+        elif keyword in _CAPTURING:
+            self._open_block(keyword, keyword == "call")
+        elif keyword in _BLOCK_OPENERS:
+            self.depth += 1
+        elif keyword.startswith("end"):
+            self.depth = max(0, self.depth - 1)
+            if self.blocks and self.blocks[-1][0] == keyword[3:]:
+                self.secret_blocks -= self.blocks.pop()[1]
+
+    def _open_block(self, keyword: str, secret: bool) -> None:
+        self.depth += 1
+        self.blocks.append((keyword, secret))
+        self.secret_blocks += secret
+
+    def _take(self, line: list[_Token]) -> list[_Text | _Tag]:
+        """A line's tokens as parts, tags tracked."""
+        out: list[_Text | _Tag] = []
+        for kind, text in line:
+            if kind in _TAG_KINDS:
+                out.append(self._tag(kind, text))
+            elif kind == "unterminated":
+                out.append(_Text(MASK_VALUE))
+            else:
+                out.append(_Text(text, self.capture))
+        return out
+
+    # -- values ----------------------------------------------------------
+
+    def _extend(self, value: _Value, tokens: list[_Token]) -> None:
+        """Add tokens to an opaque value, watching for its closing quote."""
+        for kind, text in tokens:
+            if kind in _TAG_KINDS:
+                value.items.append(self._tag(kind, text))
+            elif kind == "unterminated":
+                value.items.append(MASK_VALUE)
+            else:
+                if value.quote and _closing_quote(text, 0, value.quote) >= 0:
+                    value.quote = ""
+                value.items.append(text)
+
+    def _trim_follows(self, index: int) -> bool:
+        """Whether the next non-blank token after line ``index`` strips the newline."""
+        for j in range(index + 1, len(self.lines)):
+            first = _significant(self.lines[j])
+            if first is not None:
+                return first[0] in _TAG_KINDS and _TRIM_OPEN.match(first[1]) is not None
+        return False
+
+    def _open(self, index: int, line: list[_Token], k: int, start: int) -> _Value | None:
+        """Start the value at ``line[k][1][start:]``; return it if it stays open."""
+        first = line[k][1][start:]
+        rest = line[k + 1 :]
+        newline = rest[-1:] if rest and rest[-1][0] == "nl" else []
+        body = ([("text", first)] if first else []) + [t for t in rest if t[0] != "nl"]
+        precise = _precise(body)
+        value = _Value(depth=self.depth)
+        self.parts.append(value)
+        self.values.append(value)
+        if precise and not self._trim_follows(index):
+            value.precise, value.tail = precise
+            for kind, text in body:
+                value.items.append(self._tag(kind, text) if kind in _TAG_KINDS else text)
+            self.parts.extend(_Text(text) for _, text in newline)
+            return None
+        if first[:1] in ("'", '"'):
+            value.quote = first[0]
+            value.items.append(first[0])
+            body[0] = ("text", first[1:])
+        self._extend(value, body + newline)
+        return value
+
+    # -- lines -----------------------------------------------------------
+
+    def _track_config(self, line: list[_Token]) -> None:
+        """Follow config/end, also behind tags that open the line."""
+        at = next((k for k, (kind, text) in enumerate(line) if kind == "text" and text.strip()), -1)
+        if at < 0:
+            return
+        match = _CONFIG_LINE.match(line[at][1])
+        if match:
+            # A path a tag writes could be a community table.
+            unknown = any(kind in _TAG_KINDS for kind, _ in line[at + 1 :])
+            community = unknown or is_snmp_community_block(match.group("path"))
+            self.communities.append(community)
+            self.in_community += community
+        elif _END_LINE.match(line[at][1]) and self.communities:
+            self.in_community -= self.communities.pop()
+
+    def _line(self, index: int, line: list[_Token]) -> _Value | None:
+        """Render a line of plain text and tags; return a value it leaves open."""
+        first = _significant(line)
+        statement = first is not None and first[0] == "text" and first[1].lstrip()[:1] in ("#", "%")
+        self._track_config(line)
+        for k, (kind, text) in enumerate(line):
+            if kind == "text":
+                start = _secret_value_start(
+                    text,
+                    k > 0 and line[k - 1][0] in _TAG_KINDS,
+                    k + 1 < len(line) and line[k + 1][0] not in ("text", "nl"),
+                    self.in_community > 0,
+                )
+                head = text if start < 0 else text[:start]
+                if head:
+                    self.parts.append(_Text(head, self.capture, statement))
+                    if statement:
+                        self.statement_texts.append(head)
+                if start >= 0:
+                    return self._open(index, line, k, start)
+            elif kind == "nl":
+                self.parts.append(_Text(text))
+            elif kind == "unterminated":
+                self.parts.append(_Text(MASK_VALUE))
+            else:
+                self.parts.append(self._tag(kind, text))
+        return None
+
+    def scan(self) -> None:
+        value: _Value | None = None
+        pending = False
+        for index, line in enumerate(self.lines):
+            if value is not None:
+                if value.quote:
+                    self._extend(value, line)
+                    continue
+                shape = _line_shape(line)
+                if shape == "tags":
+                    taken = self._take(line)
+                    if self.depth <= value.depth:
+                        self.parts.extend(taken)
+                        value, pending = None, True
+                    else:
+                        value.items.extend(t.text if isinstance(t, _Text) else t for t in taken)
+                    continue
+                if shape != "cli":
+                    self._extend(value, line)
+                    continue
+                value = None
+            elif pending:
+                shape = _line_shape(line)
+                if shape in ("tags", "blank"):
+                    self.parts.extend(self._take(line))
+                    continue
+                pending = False
+                if shape != "cli":
+                    value = _Value(depth=self.depth)
+                    self.parts.append(value)
+                    self.values.append(value)
+                    self._extend(value, line)
+                    continue
+            value = self._line(index, line)
+
+    # -- result ----------------------------------------------------------
+
+    def mask_all(self) -> bool:
+        """Whether a secret value could be built from the template's own literals."""
+        if self.builds_directive:
+            return True
+        names: set[str] = set()
+        bare: set[int] = set()
+        for value in self.values:
+            for item in value.items:
+                if not isinstance(item, _Tag) or item.kind == "#":
+                    continue
+                match = _BARE_REFERENCE.match(item.text)
+                if match is None:
+                    return True
+                names.add(match.group("name").split(".")[0])
+                bare.add(id(item))
+        if not names:
+            return False
+        return any(
+            tag.kind != "#"
+            and id(tag) not in bare
+            and not names.isdisjoint(_WORD.findall(tag.blank))
+            for tag in self.tags
+        ) or any(not names.isdisjoint(_WORD.findall(text)) for text in self.statement_texts)
+
+    def render(self, mask_all: bool) -> str:
+        out: list[str] = []
+        for part in self.parts:
+            if isinstance(part, _Value):
+                out.append(_render_value(part))
+            elif isinstance(part, _Tag):
+                out.append(_render_tag(part, mask_all))
+            elif part.text.strip() and (
+                part.capture == 2 or (mask_all and (part.capture or part.line_statement))
+            ):
+                out.append(MASK_VALUE)
+            else:
+                out.append(part.text)
+        return "".join(out)
 
 
 def _top_level_assign(blank: str, start: int, end: int) -> int:
@@ -229,26 +671,6 @@ def _top_level_assign(blank: str, start: int, end: int) -> int:
     return -1
 
 
-def _track_statement(tag: _Tag, stack: list[tuple[str, bool]]) -> None:
-    """Follow capturing blocks and flag inline sets of secret-looking names."""
-    match = _STATEMENT.match(tag.text)
-    keyword = match.group("keyword") if match else ""
-    if match and keyword == "set":
-        blank = _blank_literals(tag.text)
-        tail = _STATEMENT_TAIL.search(tag.text)
-        end = tail.start() if tail else len(tag.text)
-        assign = _top_level_assign(blank, match.end(), end)
-        target = blank[match.end() : assign if assign >= 0 else end].split("|")[0]
-        if assign < 0:
-            stack.append(("set", _is_secret_name(target)))
-        elif _is_secret_name(target):
-            tag.secret_assign = assign
-    elif keyword in _CAPTURING:
-        stack.append((keyword, False))
-    elif keyword.startswith("end") and stack and stack[-1][0] == keyword[3:]:
-        stack.pop()
-
-
 def _closing_quote(text: str, i: int, quote: str) -> int:
     """Index of the first ``quote`` at or after ``i`` not escaped by a backslash."""
     while i < len(text):
@@ -261,103 +683,13 @@ def _closing_quote(text: str, i: int, quote: str) -> int:
     return -1
 
 
-def _scan_text(
-    text: str,
-    capture: int,
-    parts: list[_Text | _Tag | _Value],
-    values: list[_Value],
-    value: _Value | None,
-) -> _Value | None:
-    """Split template text into plain text and secret values; return the open value."""
-    if value is not None and not value.quote and _SET_START.match(text):
-        value = None
-    i = 0
-    while True:
-        if value is not None:
-            end = _closing_quote(text, i, value.quote) if value.quote else text.find("\n", i)
-            value.items.append(text[i:] if end < 0 else text[i:end])
-            if end < 0:
-                return value
-            value.closed = bool(value.quote)
-            i = end + 1 if value.quote else end
-            value = None
-        match = _SET_DIRECTIVE.search(text, i)
-        if match is None:
-            if i < len(text):
-                parts.append(_Text(text[i:], capture))
-            return None
-        parts.append(_Text(text[i : match.end()], capture))
-        i = match.end()
-        if not _is_secret_directive(match.group("directive"), text[i:]):
-            continue
-        quote = text[i : i + 1] if text[i : i + 1] in ("'", '"') else ""
-        value = _Value(quote)
-        i += len(quote)
-        parts.append(value)
-        values.append(value)
-
-
-def _parse(script: str) -> tuple[list[_Text | _Tag | _Value], list[_Value]]:
-    parts: list[_Text | _Tag | _Value] = []
-    values: list[_Value] = []
-    stack: list[tuple[str, bool]] = []
-    value: _Value | None = None
-    for kind, token in _tokenize(script):
-        if kind == "text":
-            capture = 2 if any(secret for _, secret in stack) else int(bool(stack))
-            value = _scan_text(token, capture, parts, values, value)
-        elif kind == "unterminated":
-            parts.append(_Text(MASK_VALUE, 0))
-        else:
-            tag = _Tag(kind, token)
-            if kind == "%":
-                _track_statement(tag, stack)
-            (value.items if value is not None else parts).append(tag)
-    return parts, values
-
-
-def _literals_reach_a_secret(parts: list[_Text | _Tag | _Value], values: list[_Value]) -> bool:
-    """Whether a secret value could be built from the template's own literals.
-
-    True when a secret value holds a tag that is not a bare ``{{ name }}``,
-    or reads a name that any other tag mentions (and so may assign).
-    """
-    names: set[str] = set()
-    bare: list[_Tag] = []
-    for value in values:
-        for item in value.items:
-            if not isinstance(item, _Tag) or item.kind == "#":
-                continue
-            match = _BARE_EXPRESSION.match(item.text)
-            if match is None:
-                return True
-            names.add(match.group("name").split(".")[0])
-            bare.append(item)
-    if not names:
-        return False
-    mention = re.compile(r"(?<!\w)(?:" + "|".join(map(re.escape, names)) + r")(?!\w)")
-    tags = [p for p in parts if isinstance(p, _Tag)] + [
-        item for value in values for item in value.items if isinstance(item, _Tag)
-    ]
-    return any(
-        tag.kind != "#"
-        and not any(tag is b for b in bare)
-        and mention.search(_blank_literals(tag.text))
-        for tag in tags
-    )
-
-
-def _holds_secret_directive(literal: str) -> bool:
-    return any(
-        _is_secret_directive(m.group("directive"), literal[1:-1][m.end() :])
-        for m in _SET_DIRECTIVE.finditer(literal[1:-1])
-    )
-
-
 def _render_tag(tag: _Tag, mask_all: bool) -> str:
     text = tag.text
     if tag.kind == "#":
-        return text[:2] + redact_cli_template_script(text[2:-2]) + text[-2:]
+        body = text[2:-2]
+        return text[:2] + _redact(body, False, "{%" in body or "{{" in body) + text[-2:]
+    if tag.code_directive:
+        return text[:2] + MASK_VALUE + text[-2:]
     if tag.secret_assign >= 0:
         rest = text[tag.secret_assign + 1 :]
         start = len(text) - len(rest.lstrip())
@@ -365,10 +697,10 @@ def _render_tag(tag: _Tag, mask_all: bool) -> str:
         return text[:start] + MASK_VALUE + text[tail.start() if tail else len(text) :]
     out: list[str] = []
     last = 0
-    for start, end in _literal_spans(text):
+    for start, end in tag.spans:
         literal = text[start:end]
         quoted = literal[0] in "'\""
-        if not (mask_all or (quoted and _holds_secret_directive(literal))):
+        if not (mask_all or (quoted and _holds_directive(literal[1:-1]))):
             continue
         out.append(text[last:start])
         out.append(f"{literal[0]}{MASK_VALUE}{literal[0]}" if quoted else MASK_VALUE)
@@ -379,46 +711,36 @@ def _render_tag(tag: _Tag, mask_all: bool) -> str:
     )
 
 
-def _render_value(value: _Value, mask_all: bool) -> str:
-    if value.quote and not any(isinstance(item, _Tag) for item in value.items):
-        body = "".join(str(item) for item in value.items)
-        if body and not _METAVAR_REFERENCE.match(body):
-            return MASK_VALUE
-        return value.quote + body + (value.quote if value.closed else "")
-    pieces = [
-        _render_tag(item, mask_all)
-        if isinstance(item, _Tag)
-        else item
-        if not item.strip() or _METAVAR_REFERENCE.match(item)
-        else MASK_VALUE
-        for item in value.items
-    ]
-    return value.quote + "".join(pieces) + (value.quote if value.closed else "")
+def _render_value(value: _Value) -> str:
+    if value.precise == "keep":
+        return "".join(item if isinstance(item, str) else item.text for item in value.items)
+    if value.precise == "mask":
+        return MASK_VALUE + value.tail
+    if all(isinstance(item, str) and not item.strip() for item in value.items):
+        return "".join(str(item) for item in value.items)
+    if not str(value.items[-1]).endswith("\n"):
+        return MASK_VALUE
+    before = value.items[-2] if len(value.items) > 1 else ""
+    return MASK_VALUE + ("\r\n" if isinstance(before, str) and before.endswith("\r") else "\n")
 
 
-def redact_cli_template_script(script: str) -> str:
-    """Mask secrets in a CLI template body (FortiOS CLI or Jinja).
+def _redact(script: str, plain: bool, mask_all: bool) -> str:
+    scanner = _Scanner(_tokenize(script, plain))
+    scanner.scan()
+    return scanner.render(mask_all or scanner.mask_all())
 
+
+def redact_cli_template_script(script: str, template_type: Any = None) -> str:
+    """Mask secrets in a CLI template body.
+
+    ``template_type`` is the template's ``type`` ("cli"/0 or "jinja"/1); a
+    plain CLI template is scanned as CLI text, anything else as Jinja.
     Keeps the directive or variable name visible, so the result still shows
     that a template sets a password and, for a bare ``{{ var }}`` or
     ``$(var)`` reference, which variable it comes from. See the comment
     block above for what is masked when.
     """
-    parts, values = _parse(script)
-    mask_all = _literals_reach_a_secret(parts, values)
-    out: list[str] = []
-    for part in parts:
-        if isinstance(part, _Value):
-            out.append(_render_value(part, mask_all))
-        elif isinstance(part, _Tag):
-            out.append(_render_tag(part, mask_all))
-        elif part.text.strip() and (part.capture == 2 or (part.capture == 1 and mask_all)):
-            out.append(MASK_VALUE)
-        else:
-            out.append(part.text)
-    # What only block context shows: an SNMP community's ``set name`` is its
-    # community string.
-    return redact_snmp_community_names("".join(out))
+    return _redact(script, _is_plain_cli_type(template_type), False)
 
 
 # =============================================================================
@@ -743,10 +1065,13 @@ async def get_cli_template(
     ``get_cli_template_group`` lists a group's members only; this returns what
     a member pushes. Secrets in the script are redacted, so the result shows
     that a template sets a password, not the value: ``set <secret>`` values
-    and ENC blobs (also after a Jinja tag on the same line), secret-named
-    Jinja ``{% set %}`` assignments, and secret-keyed string literals inside
-    Jinja tags. A bare variable reference (``set psksecret {{ psk }}``,
-    ``$(psk)``) is kept, since it names where the value comes from.
+    and ENC blobs, SNMP community names, secret-named Jinja ``{% set %}``
+    assignments, and secret-keyed string literals inside Jinja tags. A bare
+    variable reference (``set psksecret {{ psk }}``, ``$(psk)``) is kept,
+    since it names where the value comes from. Any other value is masked up
+    to the next CLI line, and if a Jinja template could compute a secret
+    from its own constants, those constants are masked too. A template whose
+    ``type`` is "cli" is read as plain CLI; any other type as Jinja.
 
     Args:
         adom: ADOM name
@@ -770,7 +1095,11 @@ async def get_cli_template(
                 "type": _CLI_TEMPLATE_TYPES.get(template.get("type"), template.get("type")),
                 "description": template.get("description"),
                 "variables": template.get("variables"),
-                "script": redact_cli_template_script(script) if isinstance(script, str) else script,
+                "script": (
+                    redact_cli_template_script(script, template.get("type"))
+                    if isinstance(script, str)
+                    else script
+                ),
             }
         }
     except Exception as e:
