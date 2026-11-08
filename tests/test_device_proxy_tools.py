@@ -377,3 +377,206 @@ class TestSnmpCommunities:
         client = _client(_envelope([{"name": "srv-web", "subnet": "192.0.2.10 255.255.255.255"}]))
         result = await _query(client, "/api/v2/cmdb/firewall/address")
         assert result["results"][0]["name"] == "srv-web"
+
+
+class TestPathIsAscii:
+    """Case-insensitive matching must not fold non-ASCII letters (L12).
+
+    Under ``re.I`` alone ``[A-Za-z]`` also matches the Kelvin sign, the
+    dotless i and the long s, which case-fold onto k, i and s.
+    """
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/api/v2/monitor/networK/arp",
+            "/api/v2/monitor/lıcense/status",
+            "/api/v2/cmdb/ſystem/interface",
+        ],
+    )
+    def test_a_non_ascii_letter_is_refused(self, path: str) -> None:
+        with pytest.raises(device_proxy_tools.ValidationError):
+            device_proxy_tools._validate_path(path)
+
+
+class TestManagedSwitchMonitor:
+    """Only the documented read below managed-switch is allowed (L13).
+
+    Some GETs below ``monitor/switch-controller/managed-switch`` act on the
+    switch, such as cable-status, which runs a cable diagnostic on a port.
+    """
+
+    def test_status_is_allowed(self) -> None:
+        path = "/api/v2/monitor/switch-controller/managed-switch/status"
+        assert device_proxy_tools._validate_path(path) == path
+
+    @pytest.mark.parametrize(
+        "child", ["cable-status", "port-stats-reset", "restart", "poe-reset", "faceplate-xml"]
+    )
+    def test_other_children_are_refused(self, child: str) -> None:
+        with pytest.raises(device_proxy_tools.ValidationError):
+            device_proxy_tools._validate_path(
+                f"/api/v2/monitor/switch-controller/managed-switch/{child}"
+            )
+
+
+class TestCommunityTables:
+    """Any table that can hold an SNMP community is redacted as one (M10)."""
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/api/v2/cmdb/system.snmp/community",
+            "/api/v2/cmdb/system.snmp/community/1",
+            "/api/v2/cmdb/system.snmp/user",
+            "/api/v2/cmdb/system.snmp/sysinfo",
+            "/api/v2/cmdb/System.SNMP/Community",
+            "/api/v2/cmdb/switch-controller/snmp-community",
+            "/api/v2/cmdb/switch-controller/managed-switch/S108EP0000000001/snmp-community",
+            "/api/v2/cmdb/switch-controller/managed-switch/S108EP0000000001/snmp-community/1",
+            "/api/v2/cmdb/wireless-controller/snmp/community",
+            "/api/v2/cmdb/wireless-controller/snmp/community/1",
+        ],
+    )
+    def test_the_path_is_a_community_table(self, path: str) -> None:
+        assert device_proxy_tools._is_community_table(path)
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/api/v2/cmdb/firewall/address",
+            "/api/v2/cmdb/switch-controller/managed-switch",
+            "/api/v2/cmdb/wireless-controller/wtp-profile",
+        ],
+    )
+    def test_other_paths_are_not(self, path: str) -> None:
+        assert not device_proxy_tools._is_community_table(path)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/api/v2/cmdb/switch-controller/managed-switch/S108EP0000000001/snmp-community",
+            "/api/v2/cmdb/wireless-controller/snmp/community",
+        ],
+    )
+    async def test_a_child_community_table_has_its_names_masked(self, path: str) -> None:
+        client = _client(_envelope([{"id": 1, "q_origin_key": 1, "name": "s3cret-community"}]))
+        result = await _query(client, path)
+
+        assert result["results"][0]["name"] == MASK_VALUE
+        assert result["results"][0]["id"] == 1
+        assert "s3cret-community" not in str(result)
+
+    def test_bare_entries_are_masked(self) -> None:
+        """A community entry that is not a dict, or a list of them, still masks."""
+        redacted = device_proxy_tools._redact(
+            ["s3cret-a", ["s3cret-b", {"name": "s3cret-c", "mkey": "s3cret-c"}], 7],
+            community=True,
+        )
+        assert "s3cret" not in str(redacted)
+        assert redacted[2] == 7
+
+    def test_a_string_key_copy_of_the_name_is_masked(self) -> None:
+        redacted = device_proxy_tools._redact(
+            {"name": "s3cret", "q_origin_key": "s3cret", "mkey": "s3cret"}, community=True
+        )
+        assert redacted == {"name": MASK_VALUE, "q_origin_key": MASK_VALUE, "mkey": MASK_VALUE}
+
+
+class TestQueryOracles:
+    """Selectors that would reveal what the redaction or the masking hides (M9)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("name", ["filter", "key", "pattern", "sort"])
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/api/v2/cmdb/system.snmp/community",
+            "/api/v2/cmdb/switch-controller/managed-switch/sw1/snmp-community",
+            "/api/v2/cmdb/wireless-controller/snmp/community",
+        ],
+    )
+    async def test_selectors_are_refused_on_community_tables(self, path: str, name: str) -> None:
+        client = _client(_envelope([]))
+        result = await _query(client, path, params={name: "name"})
+
+        assert result["error_code"] == "validation_error"
+        client.proxy_call.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "params",
+        [
+            {"filter": "password=@a"},
+            {"filter": "name==a,psksecret=@x"},
+            {"filter": " Passwd ==x"},
+            {"filter": "community==public"},
+            {"filter": "ppp.password=@a"},
+            {"key": "password", "pattern": "a"},
+            {"key": "private-key"},
+            {"sort": "psksecret"},
+            {"sort": "name,-password"},
+        ],
+    )
+    async def test_a_selector_on_a_secret_field_is_refused(self, params: dict[str, Any]) -> None:
+        client = _client(_envelope([]))
+        result = await _query(client, "/api/v2/cmdb/system/interface", params=params)
+
+        assert result["error_code"] == "validation_error"
+        client.proxy_call.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", ["name", "=@x", "name~x", "name==a,b", "a b==c", ""])
+    async def test_an_unreadable_filter_is_refused(self, value: str) -> None:
+        """Fail closed: a clause whose field cannot be read cannot be checked."""
+        client = _client(_envelope([]))
+        result = await _query(client, "/api/v2/cmdb/firewall/address", params={"filter": value})
+
+        assert result["error_code"] == "validation_error"
+        client.proxy_call.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "params",
+        [
+            {"filter": "name==srv-web"},
+            {"filter": "name=@web,comment!@test"},
+            {"filter": "q_ref>=1"},
+            {"key": "name", "pattern": "srv"},
+            {"sort": "name"},
+        ],
+    )
+    async def test_ordinary_selectors_are_forwarded(self, params: dict[str, Any]) -> None:
+        client = _client(_envelope([]))
+        result = await _query(client, "/api/v2/cmdb/firewall/address", params=params)
+
+        assert "error" not in result
+        client.proxy_call.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "params",
+        [{"filter": "name==srv-web"}, {"key": "name", "pattern": "a"}, {"sort": "ip"}],
+    )
+    async def test_selectors_are_refused_when_masking_is_on(self, params: dict[str, Any]) -> None:
+        client = _client(_envelope([]))
+        with patch.object(device_proxy_tools, "_masking_enabled", return_value=True):
+            result = await _query(client, "/api/v2/cmdb/firewall/address", params=params)
+
+        assert result["error_code"] == "validation_error"
+        assert "masking" in result["error"].lower()
+        client.proxy_call.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_exact_address_lookup_still_works_when_masking_is_on(self) -> None:
+        client = _client(_envelope([]))
+        with patch.object(device_proxy_tools, "_masking_enabled", return_value=True):
+            result = await _query(
+                client,
+                "/api/v2/monitor/firewall/session",
+                params={"ip_version": "ipv4", "source": "10.1.0.101", "count": 5},
+            )
+
+        assert "error" not in result
+        client.proxy_call.assert_awaited_once()
