@@ -23,7 +23,9 @@ Two things happen at the boundary:
    nesting depth, and composite keys are parsed so only the identifying
    part masks. On the passthrough tools (``fields.PASSTHROUGH_TOOLS``),
    whose keys are whatever the device API uses, unnamed keys are also
-   masked by value shape: addresses and MACs, never names or free text.
+   masked by value shape: addresses and MACs, never free text, and a name
+   only when it is wholly an address. Dict keys shaped like an address
+   are masked there too.
 
 Fail-closed by construction. A value that cannot be masked (outside the
 cipher alphabet, malformed) becomes an irreversible keyed placeholder,
@@ -90,8 +92,11 @@ _PASSTHROUGH: contextvars.ContextVar[bool] = contextvars.ContextVar(
 )
 
 #: A dotted quad anywhere in a string, not part of a longer dotted run
-#: (so a ``7.4.12.2795`` build string does not count).
-_IPV4_IN_TEXT = re.compile(r"(?<![\d.])\d{1,3}(?:\.\d{1,3}){3}(?![\d.])")
+#: (so a ``7.4.12.2795`` build string or an SNMP OID does not count). A
+#: dot only extends the run when a digit sits beyond it: refusing any dot
+#: let the full stop in ``cannot reach 10.4.4.4.`` and the label in
+#: ``x.10.3.3.3`` keep the address in clear.
+_IPV4_IN_TEXT = re.compile(r"(?<!\d)(?<!\d\.)\d{1,3}(?:\.\d{1,3}){3}(?!\d)(?!\.\d)")
 _TEXT_SEPARATORS = re.compile(r"[\s,;\"'()\[\]<>=]+")
 _MAC_SHAPE = re.compile(r"[0-9A-Fa-f]{2}(?:[:-][0-9A-Fa-f]{2}){5}")
 
@@ -319,14 +324,17 @@ class OutputMasker:
         for word in _TEXT_SEPARATORS.split(text):
             if ":" not in word:
                 continue
-            try:
-                ipaddress.IPv6Address(word.partition("/")[0].partition("%")[0])
-            except ValueError:
-                continue
-            return True
+            # The word as split, then without the punctuation a sentence
+            # puts around it (``via 2001:db8::5.``, ``2001:db8::5: down``).
+            for candidate in (word, word.strip(".:")):
+                try:
+                    ipaddress.IPv6Address(candidate.partition("/")[0].partition("%")[0])
+                except ValueError:
+                    continue
+                return True
         return False
 
-    def _mask_if_address(self, value: str) -> str:
+    def _mask_if_address(self, value: str, *, embedded: bool = True) -> str:
         """Mask a string shaped like an address; leave anything else alone.
 
         Shapes: a bare address, ``ip/len`` or ``ip mask`` (through the
@@ -335,6 +343,11 @@ class OutputMasker:
         range and a MAC. A string that carries an address in any other form
         becomes a placeholder: under an address-or-name key that is not a
         name, and keeping it would publish the address.
+
+        ``embedded=False`` drops that last rule, for a routing name: a name
+        that IS an address is masked, one that only contains one
+        (``srv-192.0.2.10``) stays, as names do everywhere else (see the
+        ``fields`` module docstring).
         """
         candidate = value.strip()
         if candidate.lower() in SKIP_VALUES:
@@ -350,9 +363,23 @@ class OutputMasker:
         start, found, end = candidate.partition("-")
         if found and self._is_ip(start) and self._is_ip(end):
             return str(self._mask_range(candidate))
-        if self._carries_address(candidate):
+        if embedded and self._carries_address(candidate):
             return self.placeholder(value)
         return value
+
+    def _mask_routing_name(self, value: str) -> str:
+        return self._mask_if_address(value, embedded=False)
+
+    def _mask_key(self, key: Any) -> Any:
+        """A passthrough dict key shaped like an address, masked like a value.
+
+        FortiOS keys some monitor answers by address (a peer, a prefix, a
+        MAC), so the key carried what the value beside it no longer did.
+        A key is not a routing name, so an embedded address fails closed.
+        """
+        if not isinstance(key, str):
+            return key
+        return self._mask_if_address(key)
 
     def _mask_address_or_name(self, value: Any) -> Any:
         """Address-or-name handler, through whatever container it arrived in.
@@ -442,11 +469,14 @@ class OutputMasker:
             return self._mask_address_or_name(value)
         vtype = FIELD_TYPES.get(ckey)
         if vtype is None:
-            if (
-                _PASSTHROUGH.get()
-                and ckey not in ROUTING_KEYS_NEVER_MASK
-                and ckey not in FREE_TEXT_KEYS
-            ):
+            if _PASSTHROUGH.get() and ckey not in FREE_TEXT_KEYS:
+                if ckey in ROUTING_KEYS_NEVER_MASK:
+                    # FortiOS keys some tables by address, so ``name``,
+                    # ``q_origin_key`` and ``mkey`` repeat the very address
+                    # (a BGP neighbor's peer IP) the ``ip`` beside them
+                    # masks. A name that is an address is masked; any other
+                    # name stays.
+                    return self._each(self._mask_routing_name, value)
                 return self._mask_address_or_name(value)
             return self.mask_result(value)
         # Same container walk the composites use. The scalar route had the
@@ -456,8 +486,15 @@ class OutputMasker:
         return self._each(lambda v: self._mask_scalar(vtype, v), value)
 
     def mask_result(self, obj: Any) -> Any:
-        """Mask allowlisted and composite keys at any nesting depth."""
+        """Mask allowlisted and composite keys at any nesting depth.
+
+        On a passthrough tool an address-shaped dict key is masked too.
+        """
         if isinstance(obj, dict):
+            if _PASSTHROUGH.get():
+                return {
+                    self._mask_key(key): self._mask_entry(key, value) for key, value in obj.items()
+                }
             return {key: self._mask_entry(key, value) for key, value in obj.items()}
         if isinstance(obj, list):
             return [self.mask_result(item) for item in obj]

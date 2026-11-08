@@ -1558,3 +1558,106 @@ class TestInstallOn:
     def test_bad_targets_are_refused(self, bad):
         with pytest.raises(ValidationError):
             validate_install_on(bad)
+
+
+class TestDeviceNameVdomSuffix:
+    """``name[vdom]`` is one shape, checked whole (security audit M1, L10).
+
+    The old check split on the first ``[`` and looked only at the part
+    after it, so a second bracket smuggled a path past it.
+    """
+
+    @pytest.mark.parametrize(
+        "device",
+        [
+            "dev[root[/../../group/All_FortiGate",
+            "dev[root]/../../group/All_FortiGate",
+            "dev[root]]",
+            "dev[root",
+            "dev[]",
+            "[root]",
+            "dev[root]x",
+            "dev[ro.ot]",
+            "dev[root\n]",
+            "dev\n[root]",
+            "dev/x[root]",
+        ],
+    )
+    def test_a_malformed_suffix_is_refused(self, device):
+        with pytest.raises(ValidationError):
+            validate_device_name(device)
+
+    @pytest.mark.parametrize(
+        "device",
+        ["FGT-01[root]", "fw.01[vd_1]", "site.a-fw_2[VDOM-2]", "a" * 64 + "[" + "b" * 64 + "]"],
+    )
+    def test_a_well_formed_suffix_passes(self, device):
+        assert validate_device_name(device) == device
+
+
+class TestPatternsAreAnchoredAtTheEnd:
+    """``$`` matches before a trailing newline; the patterns must not (L10).
+
+    The constants are imported by other modules and used with ``.match``,
+    so the anchor has to hold for ``.match`` too, not only for fullmatch.
+    """
+
+    @pytest.mark.parametrize(
+        ("pattern", "value"),
+        [
+            ("ADOM_PATTERN", "root"),
+            ("DEVICE_NAME_PATTERN", "FGT-01"),
+            ("DEVICE_SERIAL_PATTERN", "FGT60F0000000001"),
+            ("OBJECT_NAME_PATTERN", "srv-web"),
+            ("PACKAGE_NAME_PATTERN", "default"),
+            ("POLICY_NAME_PATTERN", "allow-web"),
+            ("INTERFACE_NAME_PATTERN", "port1"),
+            ("FQDN_PATTERN", "example.com"),
+            ("IPV4_PATTERN", "192.0.2.1"),
+            ("IPV4_CIDR_PATTERN", "192.0.2.0/24"),
+            ("PORT_RANGE_PATTERN", "80-443"),
+        ],
+    )
+    def test_a_trailing_newline_does_not_match(self, pattern, value):
+        from fortimanager_mcp.utils import validation
+
+        compiled = getattr(validation, pattern)
+        assert compiled.match(value)
+        assert compiled.match(value + "\n") is None
+
+    def test_a_port_range_takes_ascii_digits_only(self):
+        """``\\d`` is Unicode-aware: Arabic-Indic digits passed, and int() read them."""
+        with pytest.raises(ValidationError):
+            validate_port_range("٨٠")
+
+    def test_install_scope_refuses_a_newline_inside_a_vdom_suffix(self):
+        with pytest.raises(ValidationError):
+            validate_install_scope([{"name": "branch1[root\n]"}])
+
+    def test_install_scope_never_sends_a_trailing_newline(self):
+        """The vdom is stripped and stored back, so the newline never leaves."""
+        scope = validate_install_scope([{"name": "branch1", "vdom": "root\n"}])
+        assert scope == [{"name": "branch1", "vdom": "root"}]
+
+    def test_install_on_refuses_a_trailing_newline_in_a_vdom(self):
+        with pytest.raises(ValidationError):
+            validate_install_on([{"name": "branch1", "vdom": "root\n"}])
+
+
+class TestInstallScopeShape:
+    """Only name and vdom reach FortiManager, and they reach it stripped (M5)."""
+
+    @pytest.mark.parametrize("extra", ["oid", "flags", "NAME"])
+    def test_an_unknown_key_is_refused(self, extra):
+        with pytest.raises(ValidationError, match="unknown keys"):
+            validate_install_scope([{"name": "branch1", "vdom": "root", extra: "x"}])
+
+    def test_values_are_returned_stripped(self):
+        assert validate_install_scope([{"name": " branch1 ", "vdom": " root "}]) == [
+            {"name": "branch1", "vdom": "root"}
+        ]
+
+    def test_the_caller_list_is_not_mutated(self):
+        scope = [{"name": " branch1 "}]
+        assert validate_install_scope(scope) == [{"name": "branch1"}]
+        assert scope == [{"name": " branch1 "}]

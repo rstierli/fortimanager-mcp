@@ -188,6 +188,21 @@ FIELD_TYPES: dict[str, str] = {
     "next_hop": IP,  # static: sdwan_tools.py _summarize_bgp_status
     "remote_gateway": IP,  # static: sdwan_tools.py _condense_tunnel
     "rgwy": IP,  # live: 8.0.2 proxy monitor/vpn/ipsec, raw via query_device_api
+    # ---------------------------------------------------------------- #
+    # Account and client names (security audit 2026-11-08, L14). An account is an
+    # identifier like an address, and none of these routes a call: no tool
+    # takes a user name it read back (fmg_ops_tools' ``username`` is a
+    # remote-server login typed in). The REDACT_KEYS note used to decline
+    # ``username`` as too common to mask at any depth; it is masked
+    # reversibly, never redacted, so the cost of an over-match is a token
+    # where a name was, not a lost value.
+    # ---------------------------------------------------------------- #
+    "username": USERNAME,  # static: system/interface PPPoE (tests/test_dvm_tools.py)
+    "user": USERNAME,  # static: interface l2tp-client-settings (tests/test_dvm_tools.py)
+    "user_name": USERNAME,  # audit: FortiOS user monitor spelling, not observed here
+    # Listed by the audit with the account names, but FortiOS uses it for
+    # the source HOST's name (device identification), so it masks as one.
+    "srcname": HOSTNAME,  # audit: FortiOS session/log spelling, not observed here
 }
 
 #: Subnet-shaped keys. FortiManager returns these as a two-element
@@ -348,10 +363,8 @@ COMPOSITE_RANGE: tuple[str, ...] = ("iprange",)  # live: 7.6.7 list_services
 #: this is not claimed as measured. Redacting a key that turns out never
 #: to appear costs nothing; the reverse is a credential in clear.
 #:
-#: Deliberately NOT ``username``. A PPPoE account is an identifier and
-#: belongs in FIELD_TYPES rather than here, but the name is far too
-#: common to mask at any depth without parent-key scoping the walk does
-#: not have. Raised on the PR instead of guessed at.
+#: Deliberately NOT ``username``. A PPPoE account is an identifier, not a
+#: secret, so it is a USERNAME carrier in FIELD_TYPES rather than here.
 #: ``private_key`` and ``psk`` are defence in depth, explicitly not a
 #: leak being closed. Measured by the maintainer on a live FMG: the
 #: device record already returns ``private_key`` as ``******`` and
@@ -394,7 +407,10 @@ SKIP_VALUES: frozenset[str] = frozenset(
     }
 )
 
-#: Routing keys. Documentation and a test guard, never masked.
+#: Routing keys. Documentation and a test guard, never masked, with one
+#: exception: on PASSTHROUGH_TOOLS a routing key whose whole value is an
+#: address is masked, since FortiOS keys some tables by address (a BGP
+#: neighbor's ``q_origin_key`` is its peer IP).
 ROUTING_KEYS_NEVER_MASK: frozenset[str] = frozenset(
     {
         "name",
@@ -428,6 +444,8 @@ FREE_TEXT_KEYS: frozenset[str] = frozenset({"comment", "comments", "description"
 #: name is masked by SHAPE: an address, ``ip/len``, ``ip mask``, an
 #: ``[ip, mask]`` pair, a range or a MAC is masked, a string that carries
 #: an address in any other form becomes a placeholder, and everything
-#: else passes. Names (ROUTING_KEYS_NEVER_MASK) and free text stay clear
-#: as everywhere else.
+#: else passes. Free text stays clear as everywhere else; a name
+#: (ROUTING_KEYS_NEVER_MASK) stays clear unless it is wholly an address.
+#: A dict key shaped like an address is masked too, since some monitor
+#: answers are keyed by address.
 PASSTHROUGH_TOOLS: frozenset[str] = frozenset({"query_device_api"})
