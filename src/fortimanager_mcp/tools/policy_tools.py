@@ -14,12 +14,11 @@ from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_settings
 from fortimanager_mcp.utils.errors import ResourceNotFoundError, client_safe_error
-from fortimanager_mcp.utils.install_gate import package_revision, record_preview, task_state
+from fortimanager_mcp.utils.install_gate import task_state
 from fortimanager_mcp.utils.install_preview import (
     DEFAULT_PREVIEW_TIMEOUT,
-    PreviewFailed,
     parse_preview_message,
-    run_install_preview,
+    preview_install_response,
     summarize_task_lines,
     wait_task_terminal,
 )
@@ -1549,15 +1548,24 @@ async def preview_install(
 ) -> dict[str, Any]:
     """Preview what installing a policy package (or device settings) would push.
 
-    Runs FortiManager's full Install Preview and returns the result in one
-    call: stages the install (nothing reaches the device), renders the CLI
-    it would push, then discards the staged copy. Staging is also where an
-    uninstallable package fails -- e.g. a normalized interface with no
-    mapping for a device -- so a failed preview returns the FMG task lines
-    explaining why.
+    On FortiManager 7.6.7+ and 8.0.2+ this runs the full Install Preview and
+    returns its result in one call: it stages the install (nothing reaches
+    the device), renders the CLI it would push, then releases the staged
+    copy. Staging is also where an uninstallable package fails -- e.g. a
+    normalized interface with no mapping for a device -- so a failed preview
+    returns the FortiManager task lines explaining why.
+
+    Changed in 1.13.0: the call now blocks until the preview is finished
+    (up to ``timeout``, default 300 s) and returns the per-device CLI
+    directly; it used to return a task id at once, to be followed by
+    wait_for_task and get_preview_result. On older builds (7.0-7.6.6,
+    8.0.0-8.0.1) it still works that way, with a ``warning``: those builds
+    cannot tie the preview to the named package without risking another
+    administrator's install wizard (see ``utils/install_preview.py``).
 
     A successful package preview also authorizes one install_package of the
-    same ADOM/package/devices (FMG_INSTALL_SAFETY gate).
+    same ADOM/package/devices (FMG_INSTALL_SAFETY gate). A preview that
+    finds nothing to install does not: there is nothing to push.
 
     Args:
         adom: ADOM name
@@ -1565,14 +1573,18 @@ async def preview_install(
             settings (what install_device_settings would push)
         devices: Target devices [{"name": "FGT1", "vdom": "root"}, ...]
         timeout: Wall-clock budget in seconds for the whole preview
-            (default 300, max 900)
+            (default 300, min 30, max 900)
 
     Returns:
-        dict: status, task_id (the render task), staging_task_id, and
-        devices: [{"name", "has_changes", "preview"}] where preview is the
-        FortiOS CLI the install would send (credentials redacted). On a
-        failed step: status "error", error "preview_failed", step, and
-        task_lines with FortiManager's reason.
+        dict: status; staged (whether the full preview ran); task_id (the
+        render task); staging_task_id; devices: [{"name", "has_changes",
+        "preview"}] where preview is the FortiOS CLI the install would send
+        (credentials redacted); message. ``task_lines`` when FortiManager
+        found nothing to install. ``warning`` when the staged copy could not
+        be released (the devices may stay held; it says how to release
+        them) or on an older build. On a failed step: status "error",
+        error "preview_failed", step, task_lines with FortiManager's reason,
+        and release_warning if the release failed too.
 
     Example:
         >>> result = await preview_install(
@@ -1589,49 +1601,8 @@ async def preview_install(
             package = validate_package_name(package)
         devices = validate_install_scope(devices)
         client = _get_client()
-
-        # Capture the package revision BEFORE submitting the preview (#25):
-        # if the package changes between this read and the preview task's own
-        # read, the recorded revision is older and the install gate fails
-        # safe (forces a re-preview) instead of passing a stale one. None
-        # (fetch failed / field absent) degrades the gate to TTL + single-use.
-        revision = await package_revision(client, adom, package) if package else None
-
-        result = await run_install_preview(client, adom, package, devices, timeout)
-
-        if package is not None:
-            # Record for the preview-before-install gate: install_package
-            # verifies this task finished — and the package is unchanged —
-            # before installing the same target.
-            record_preview(adom, package, devices, result["preview_task_id"], revision=revision)
-        response: dict[str, Any] = {
-            "status": "success",
-            "task_id": result["preview_task_id"],
-            "staging_task_id": result["staging_task_id"],
-            "package": package,
-        }
-        if "devices" in result:
-            response["devices"] = result["devices"]
-            changed = [d["name"] for d in result["devices"] if d["has_changes"]]
-            response["message"] = (
-                f"Install would change {', '.join(map(str, changed))}"
-                if changed
-                else "Install would push no changes"
-            )
-        else:
-            response["preview"] = result["raw"]
-            response["message"] = "Preview finished (unrecognized result envelope, returned raw)"
-        return response
-    except PreviewFailed as e:
-        return error_response(
-            error="preview_failed",
-            message=e,
-            operation="preview_install",
-            adom=adom,
-            package=package,
-            step=e.step,
-            task_id=e.task_id,
-            task_lines=e.lines,
+        return await preview_install_response(
+            client, adom, package, devices, timeout, operation="preview_install"
         )
     except TaskSlotsExhausted as e:
         return error_response(
@@ -1653,17 +1624,22 @@ async def get_preview_result(
     devices: list[dict[str, str]],
     preview_taskid: int | None = None,
 ) -> dict[str, Any]:
-    """Re-fetch the result of an installation preview.
+    """Fetch the result of an installation preview.
 
-    preview_install already returns its result; this is for reading a
-    preview staged elsewhere (e.g. the GUI install wizard).
+    On FortiManager 7.6.7+ / 8.0.2+ preview_install already returns its
+    result and then discards the staged copy, so re-reading that preview
+    here returns "=== No preview result ===" (measured on 8.0.2); this is
+    for a preview staged elsewhere, e.g. the GUI install wizard. On older
+    builds it is the second half of preview_install: call it once that
+    preview's task has finished (wait_for_task).
 
     Args:
         adom: ADOM name
         devices: Target devices [{"name": "FGT1", "vdom": "root"}, ...]
         preview_taskid: Staging task id of the preview (staging_task_id from
-            preview_install). Omitted, FortiManager uses its last install
-            task, which may not be the preview you mean.
+            preview_install; FMG 7.6.7+ / 8.0.2+ only). Omitted, FortiManager
+            uses its last install task, which may not be the preview you
+            mean. An id with no preview returns "=== No preview result ===".
 
     Returns:
         dict: Preview results with keys:
@@ -1673,6 +1649,7 @@ async def get_preview_result(
     """
     try:
         adom = validate_adom(adom)
+        devices = validate_install_scope(devices)
         if preview_taskid is not None:
             preview_taskid = validate_task_id(preview_taskid)
         client = _get_client()

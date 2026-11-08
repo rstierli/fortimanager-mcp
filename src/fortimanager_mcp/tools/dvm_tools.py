@@ -14,6 +14,7 @@ from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_default_adom, get_default_device
 from fortimanager_mcp.utils.errors import ResourceNotFoundError, client_safe_error
+from fortimanager_mcp.utils.install_gate import task_state
 from fortimanager_mcp.utils.responses import (
     DEVICE_CREDENTIAL_KEYS,
     strip_device_credentials,
@@ -678,20 +679,6 @@ async def add_device(
         return {"status": "error", "message": msg, "error_code": code}
 
 
-#: /task/task ``state`` values (8.0 task syntax).
-_TASK_STATES = {
-    0: "pending",
-    1: "running",
-    2: "cancelling",
-    3: "cancelled",
-    4: "done",
-    5: "error",
-    6: "aborting",
-    7: "aborted",
-    8: "warning",
-    9: "to_continue",
-    10: "unknown",
-}
 _TASK_RUNNING = frozenset({"pending", "running", "cancelling", "aborting"})
 _ADD_TASK_TIMEOUT = 180.0
 _ADD_TASK_POLL = 2.0
@@ -707,12 +694,7 @@ async def _wait_add_task(client: FortiManagerClient, task_id: int) -> tuple[str,
     deadline = loop.time() + _ADD_TASK_TIMEOUT
     while True:
         task = await client.get_task(task_id)
-        raw_state = task.get("state")
-        state = (
-            _TASK_STATES.get(raw_state, str(raw_state))
-            if isinstance(raw_state, int)
-            else str(raw_state)
-        )
+        state = task_state(task)
         if state not in _TASK_RUNNING:
             break
         if loop.time() >= deadline:

@@ -51,6 +51,8 @@ def _preview_flow() -> dict[str, Any]:
         "get_task": {"return_value": {"state": 4}},
         "get_preview_result": {"return_value": {"message": "[]"}},
         "cancel_install": {"return_value": {}},
+        # A build with the staged preview (preview_taskid scopes the release).
+        "_detect_version": {"return_value": (8, 0, 2)},
     }
 
 
