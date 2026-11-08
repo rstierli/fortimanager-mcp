@@ -272,3 +272,80 @@ def test_full_mode_imports_every_tool_module() -> None:
         for alias in node.names
     }
     assert imported == set(_decorated_tools_by_module())
+
+
+# ---------------------------------------------------------------------------
+# Documentation counts. README and docs/SETUP_GUIDE.md state the tool count
+# and a per-category table by hand; both drifted on every release that added
+# tools (#112 fixed SETUP_GUIDE at 232 after it had sat at an older count).
+# ---------------------------------------------------------------------------
+
+REPO = SRC.parents[1]
+
+
+def _readme_tool_sections() -> tuple[int, list[tuple[str, int, list[str]]]]:
+    import re
+
+    text = (REPO / "README.md").read_text()
+    start = text.index("## Available Tools")
+    end = text.index("\n## ", start + 1)
+    section = text[start:end]
+    header = re.match(r"## Available Tools \((\d+) tools\)", section)
+    assert header, "README 'Available Tools (N tools)' header not found"
+    sections = [
+        (m.group(1), int(m.group(2)), re.findall(r"^\| `([a-z0-9_]+)` \|", m.group(3), re.M))
+        for m in re.finditer(
+            r"^### (.*?) \((\d+) tools?\)\n(.*?)(?=^### |\Z)", section, re.M | re.S
+        )
+    ]
+    return int(header.group(1)), sections
+
+
+def test_readme_lists_every_tool_once_with_matching_counts() -> None:
+    total, sections = _readme_tool_sections()
+    listed = [tool for _, _, tools in sections for tool in tools]
+    defined = _decorated_tool_names()
+
+    assert total == len(defined)
+    assert sorted(set(listed)) == sorted(defined), {
+        "missing": sorted(defined - set(listed)),
+        "phantom": sorted(set(listed) - defined),
+    }
+    assert len(listed) == len(set(listed)), "a tool is listed in two README sections"
+    wrong = {
+        name: (claimed, len(tools)) for name, claimed, tools in sections if claimed != len(tools)
+    }
+    assert not wrong, f"README section header count != rows: {wrong}"
+
+
+def test_readme_sections_follow_the_modules() -> None:
+    """One README section per tool module, as in SETUP_GUIDE and dynamic mode."""
+    by_tool = {
+        tool: module for module, tools in _decorated_tools_by_module().items() for tool in tools
+    }
+    _, sections = _readme_tool_sections()
+    mixed = {
+        name: sorted({by_tool[t] for t in tools})
+        for name, _, tools in sections
+        if len({by_tool[t] for t in tools}) != 1
+    }
+    assert not mixed, f"README sections spanning several modules: {mixed}"
+    assert len(sections) == len(_decorated_tools_by_module())
+
+
+def test_setup_guide_counts_match_the_modules() -> None:
+    import re
+
+    text = (REPO / "docs" / "SETUP_GUIDE.md").read_text()
+    section = text[text.index("## Available Tools") :]
+    section = section[: section.index("\n### ")]
+    total = re.search(r"\*\*(\d+) tools\*\* across (\d+) categories", section)
+    assert total, "SETUP_GUIDE tool-count sentence not found"
+    rows = [int(n) for n in re.findall(r"^\| [^|]+ \| (\d+) \|", section, re.M)]
+    modules = _decorated_tools_by_module()
+
+    assert int(total.group(1)) == len(_decorated_tool_names())
+    assert int(total.group(2)) == len(modules) == len(rows)
+    assert sorted(rows) == sorted(len(tools) for tools in modules.values())
+    assert sum(rows) == len(_decorated_tool_names())
+    assert f"(all {len(_decorated_tool_names())} tools)" in text
