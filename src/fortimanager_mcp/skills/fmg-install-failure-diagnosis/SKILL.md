@@ -33,7 +33,7 @@ Anything else: quote the exact line. Do not guess a cause from a message you do 
 Read an object before proposing to remove it, and name it by id and interface so the right one goes: two DHCP servers on one device look alike. A device can hold objects a template no longer manages.
 
 ## 4. Retry safely
-Once the user approved the fix and it is applied, run `preview_install` before any install. `install_package` needs a fresh preview, and each successful preview allows one install of the same package and devices. Install only when the user approves the preview. A change that moves values between devices, such as an id or a loopback, needs all of them installed together, or they clash during the gap.
+Once the user approved the fix and it is applied, run `preview_install` before any install. `install_package` needs a fresh preview, and each successful preview allows one install of the same package and devices; `install_device_settings` likewise needs a `preview_install` run with `package=None`. Install only when the user approves the preview. A change that moves values between devices, such as an id or a loopback, needs all of them installed together, or they clash during the gap.
 
 ## Report
 Give the exact message, the cause, the proposed fix and which side it applies to: FortiManager or the device.

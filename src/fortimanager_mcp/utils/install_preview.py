@@ -76,19 +76,24 @@ import asyncio
 import json
 import logging
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from typing import Any
 
 from fortimanager_mcp.utils.errors import client_safe_error
 from fortimanager_mcp.utils.install_gate import (
     TERMINAL_TASK_STATES,
-    package_revision,
+    consume_preview,
+    preview_fingerprint,
     record_preview,
     task_state,
 )
 from fortimanager_mcp.utils.responses import error_response, redact
 from fortimanager_mcp.utils.task_guard import mark_task_done, spawn_guarded
-from fortimanager_mcp.utils.validation import redact_config_text_secrets
+from fortimanager_mcp.utils.validation import (
+    CONFIG_TEXT_SECRET_DIRECTIVES,
+    MASK_VALUE,
+    redact_config_text_secrets,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -134,19 +139,45 @@ class PreviewFailed(Exception):
         self.release_warning: str | None = None
 
 
+#: A secret directive quoted inside a line of task text ("failed at: set
+#: psksecret ENC ..."). redact_config_text_secrets only matches a directive
+#: at the start of a line; in a task message it can sit anywhere, so the
+#: rest of that line is masked.
+_INLINE_SECRET_DIRECTIVE = re.compile(
+    r"(?P<prefix>\bset\s+(?:"
+    + "|".join(re.escape(d) for d in sorted(CONFIG_TEXT_SECRET_DIRECTIVES))
+    + r")\s+)[^\n]*"
+)
+_INLINE_ENC_VALUE = re.compile(r'(?P<prefix>\bset\s+\S+\s+)"?ENC\s[^\n]*')
+
+
+def redact_task_text(text: str) -> str:
+    """Redact FortiManager's free text about a task: CLI form and key=value form.
+
+    Task-line detail and history describe the object a step failed on and
+    can quote it as CLI (``set psksecret ENC ...``), which the key=value
+    redactor does not see, as well as ``password=...`` pairs, which the CLI
+    redactor does not.
+    """
+    text = redact_config_text_secrets(text)
+    text = _INLINE_SECRET_DIRECTIVE.sub(lambda m: m.group("prefix") + MASK_VALUE, text)
+    text = _INLINE_ENC_VALUE.sub(lambda m: m.group("prefix") + MASK_VALUE, text)
+    return redact(text)
+
+
 def summarize_task_lines(lines: Any) -> list[dict[str, Any]]:
     """Reduce FMG task lines to what explains an outcome: name, state, detail, history.
 
     The detail and history are FortiManager's own text about the object a
     step failed on and can quote the offending value, so they go through
-    the free-text redactor here, before any caller returns them.
+    :func:`redact_task_text` here, before any caller returns them.
     """
     out: list[dict[str, Any]] = []
     for line in lines if isinstance(lines, list) else []:
         if not isinstance(line, dict):
             continue
         history = [
-            redact(str(h.get("detail")))
+            redact_task_text(str(h.get("detail")))
             for h in line.get("history") or []
             if isinstance(h, dict) and h.get("detail")
         ]
@@ -154,7 +185,7 @@ def summarize_task_lines(lines: Any) -> list[dict[str, Any]]:
             {
                 "name": line.get("name"),
                 "state": task_state(line),
-                "detail": redact(d) if isinstance(d := line.get("detail"), str) else d,
+                "detail": redact_task_text(d) if isinstance(d := line.get("detail"), str) else d,
                 "history": history,
             }
         )
@@ -255,6 +286,18 @@ def parse_preview_message(result: Any) -> list[dict[str, Any]] | None:
     return decoded
 
 
+def _decode_json(text: str) -> Any:
+    """``text`` decoded if it is a JSON object or array, else ``text`` itself."""
+    stripped = text.strip()
+    if not stripped or stripped[0] not in "[{":
+        return text
+    try:
+        decoded = json.loads(stripped)
+    except ValueError:
+        return text
+    return decoded if isinstance(decoded, dict | list) else text
+
+
 def redact_preview(value: Any) -> Any:
     """Run the CLI-text redactor over every string in a preview result.
 
@@ -270,11 +313,23 @@ def redact_preview(value: Any) -> Any:
     "set <secret-directive>", so running it over an unrelated string is a
     no-op rather than damage.
 
+    A string holding a JSON object or array is decoded and walked like the
+    rest, and comes back decoded: FMG 8.0 wraps the per-device CLI in a JSON
+    text, where every newline is still a ``\\n`` escape and no line starts
+    with ``set``, so redacting the encoded text matched nothing. A string
+    that looks like JSON but does not parse (e.g. a truncated envelope) is
+    redacted with those escapes read as line breaks, for the same reason.
+
     Not measured against a preview that actually contains a credential --
     that needs a pending change carrying one, which is why the finding was
     filed unmeasured. The redactor itself is pinned by its own tests.
     """
     if isinstance(value, str):
+        decoded = _decode_json(value)
+        if decoded is not value:
+            return redact_preview(decoded)
+        if value.lstrip()[:1] in ("[", "{") and "\\n" in value:
+            return redact_config_text_secrets(value.replace("\\n", "\n"))
         return redact_config_text_secrets(value)
     if isinstance(value, dict):
         return {k: redact_preview(v) for k, v in value.items()}
@@ -301,7 +356,8 @@ def _redact_preview_list(value: list[Any]) -> list[Any]:
 
     Only CONTIGUOUS runs are joined. A non-string element belongs to a
     different part of the envelope, so an unterminated quote must not
-    reach across it and eat the far side.
+    reach across it and eat the far side. A string holding JSON is such an
+    element too: it is decoded and walked on its own.
     """
     out: list[Any] = []
     run: list[str] = []
@@ -314,7 +370,7 @@ def _redact_preview_list(value: list[Any]) -> list[Any]:
         run.clear()
 
     for item in value:
-        if isinstance(item, str):
+        if isinstance(item, str) and _decode_json(item) is item:
             run.append(item)
             continue
         flush()
@@ -328,13 +384,30 @@ def _redact_preview_list(value: list[Any]) -> list[Any]:
 _PREVIEW_BANNER = re.compile(r"^=== .* ===$", re.MULTILINE)
 
 
+def _strings(value: Any) -> Iterator[str]:
+    """Every string in a decoded JSON value, depth first."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _strings(item)
+
+
 def _device_previews(decoded: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Per-device preview CLI, redacted, with a has_changes flag."""
+    """Per-device preview CLI, redacted, with a has_changes flag.
+
+    ``result`` is a string on the builds measured; whatever else it turns
+    out to be (a list of lines, a nested object) goes through the same
+    structural redactor rather than back to the caller raw.
+    """
     devices = []
     for entry in decoded:
-        cli = entry.get("result")
-        cli = redact_config_text_secrets(cli) if isinstance(cli, str) else cli
-        body = _PREVIEW_BANNER.sub("", cli).strip() if isinstance(cli, str) else ""
+        cli = redact_preview(entry.get("result"))
+        text = cli if isinstance(cli, str) else "\n".join(_strings(cli))
+        body = _PREVIEW_BANNER.sub("", text).strip()
         devices.append(
             {
                 "name": entry.get("name"),
@@ -534,12 +607,16 @@ async def preview_install_response(
     ``adom``, ``package`` and ``devices`` must already be validated.
     Raises ``TaskSlotsExhausted`` and API errors for the tool to report.
     """
-    # Capture the package revision BEFORE submitting the preview (#25): if
-    # the package changes between this read and the preview's own read,
-    # the recorded revision is older and the install gate fails safe (forces
+    # A new attempt supersedes any earlier preview of this target, whether
+    # or not it succeeds: a failed re-preview must not leave the older one
+    # authorizing the install.
+    consume_preview(adom, package, devices)
+    # Capture the fingerprint BEFORE submitting the preview (#25): if the
+    # package changes between this read and the preview's own read, the
+    # recorded fingerprint is older and the install gate fails safe (forces
     # a re-preview) instead of passing a stale one. None (fetch failed /
-    # field absent) degrades the gate to TTL + single-use.
-    revision = await package_revision(client, adom, package) if package else None
+    # field absent / device settings) degrades the gate to TTL + single-use.
+    fingerprint = await preview_fingerprint(client, adom, package)
     version = await client._detect_version()
 
     if not staged_preview_supported(version):
@@ -548,9 +625,9 @@ async def preview_install_response(
             lambda: client.install_preview(adom=adom, scope=devices, flags=["json"]),
         )
         task_id = result.get("task") if isinstance(result, dict) else None
-        if package is not None and task_id is not None:
+        if task_id is not None:
             # The gate verifies at install time that this task finished.
-            record_preview(adom, package, devices, task_id, revision=revision)
+            record_preview(adom, package, devices, task_id, fingerprint=fingerprint)
         return {
             "status": "success",
             "staged": False,
@@ -581,12 +658,12 @@ async def preview_install_response(
             **extra,
         )
 
-    if package is not None:
-        # Record for the preview-before-install gate: install_package verifies
-        # this task finished -- and the package is unchanged -- before
-        # installing the same target. After "nothing to install" this is the
-        # staging task, which ended in state warning, so the gate refuses.
-        record_preview(adom, package, devices, result["preview_task_id"], revision=revision)
+    # Record for the preview-before-install gate: install_package (or
+    # install_device_settings, for package=None) verifies this task
+    # finished -- and the fingerprint is unchanged -- before installing the
+    # same target. After "nothing to install" this is the staging task,
+    # which ended in state warning, so the gate refuses.
+    record_preview(adom, package, devices, result["preview_task_id"], fingerprint=fingerprint)
     response: dict[str, Any] = {
         "status": "success",
         "staged": True,

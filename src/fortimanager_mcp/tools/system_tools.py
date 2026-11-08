@@ -5,6 +5,7 @@ Based on FNDN FortiManager 7.6.5 SYS, DVMDB, and TASK API specifications.
 
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from fortimanager_mcp.api.client import FortiManagerClient
@@ -15,10 +16,10 @@ from fortimanager_mcp.utils.errors import client_safe_error
 from fortimanager_mcp.utils.install_gate import (
     PREVIEW_VALIDITY_TTL,
     TERMINAL_TASK_STATES,
-    consume_preview,
-    find_preview,
-    package_revision,
-    recorded_revision,
+    TakenPreview,
+    install_lock,
+    preview_fingerprint,
+    take_preview,
     task_state,
 )
 from fortimanager_mcp.utils.install_preview import (
@@ -649,23 +650,39 @@ async def get_package(
 # =============================================================================
 
 
+def _target_label(package: str | None) -> str:
+    return "device settings" if package is None else f"package '{package}'"
+
+
+def _describe_change(previewed: dict[str, int], current: dict[str, int]) -> str:
+    """Which fingerprint components moved, e.g. ``revision 5 -> 6``."""
+    changed = [
+        f"{'revision' if name == 'package' else name} {previewed.get(name)} -> {current.get(name)}"
+        for name in sorted(set(previewed) | set(current))
+        if previewed.get(name) != current.get(name)
+    ]
+    return ", ".join(changed)
+
+
 async def _check_install_preview(
     client: FortiManagerClient,
     adom: str,
-    package: str,
-    devices: list[dict[str, str]],
+    package: str | None,
+    taken: TakenPreview,
 ) -> tuple[str, str] | None:
-    """Verify a usable preview exists for this install target.
+    """Verify the preview an install took out of the registry is usable.
 
-    Returns ``None`` when a recorded preview's task finished successfully and
-    the package is unchanged since the preview, otherwise an
-    ``(error_code, problem)`` pair describing what is missing.
+    ``package=None`` is a device-settings install. Returns ``None`` when the
+    preview's task finished successfully and the fingerprint is unchanged
+    since the preview, otherwise an ``(error_code, problem)`` pair
+    describing what is missing.
     """
-    preview_task = find_preview(adom, package, devices)
+    label = _target_label(package)
+    preview_task = taken.task_id
     if preview_task is None:
         return (
             "preview_required",
-            "no preview_install is on record for this package/device set "
+            f"no preview_install is on record for {label} on this device set "
             f"(previews expire after {int(PREVIEW_VALIDITY_TTL // 60)} minutes)",
         )
     try:
@@ -686,32 +703,89 @@ async def _check_install_preview(
         return (
             "preview_required",
             f"preview task {preview_task} found nothing to install (state 'warning'); "
-            "change the package or its assignment, then run preview_install again",
+            "change what is pending for these devices, then run preview_install again",
         )
     if state != "done":
         return ("preview_required", f"preview task {preview_task} ended in state '{state}'")
 
-    # Revision check (issue #25): the package must be unchanged since the
+    # Fingerprint check (issue #25): the target must be unchanged since the
     # preview, or its diff no longer describes what would be installed.
-    previewed_rev = recorded_revision(adom, package, devices)
-    if previewed_rev is not None:
-        current_rev = await package_revision(client, adom, package)
-        if current_rev is None:
+    previewed = taken.fingerprint
+    if previewed is not None:
+        current = await preview_fingerprint(client, adom, package)
+        if current is None:
             return (
                 "preview_required",
-                f"the revision of package '{package}' could not be verified against the preview",
+                f"the revision of {label} could not be verified against the preview",
             )
-        if current_rev != previewed_rev:
-            # The recorded preview no longer describes this package: expire it
-            # so the next attempt reports "no preview on record".
-            consume_preview(adom, package, devices)
+        if current != previewed:
             return (
                 "preview_stale",
-                f"package '{package}' changed since the preview (revision "
-                f"{previewed_rev} -> {current_rev}) — its diff no longer describes "
-                "what would be installed; run preview_install again",
+                f"{label} changed since the preview ({_describe_change(previewed, current)}) "
+                "— its diff no longer describes what would be installed; run "
+                "preview_install again",
             )
     return None
+
+
+async def _gated_install(
+    client: FortiManagerClient,
+    adom: str,
+    package: str | None,
+    devices: list[dict[str, str]],
+    operation: str,
+    start: Callable[[], Awaitable[dict[str, Any]]],
+) -> dict[str, Any]:
+    """Run the preview-before-install gate, then start the install.
+
+    Shared by install_package and install_device_settings (``package=None``).
+    Returns the refusal envelope, or ``{"status": "success", "task_id"}``
+    plus ``warning`` when FMG_INSTALL_SAFETY=warn let an unverified install
+    through. Installs of one target run one at a time, and the preview is
+    taken out of the registry before the first await, so a preview
+    authorizes one install even when calls race. It goes back only when the
+    gate refuses for a reason a later attempt can clear (not finished yet,
+    not verifiable); a stale one, or one whose install was sent, is spent.
+    """
+    gate_mode = get_settings().FMG_INSTALL_SAFETY
+    gate_warning: str | None = None
+    async with install_lock(adom, package, devices):
+        taken = take_preview(adom, package, devices)
+        if gate_mode != "disabled":
+            gate_result = await _check_install_preview(client, adom, package, taken)
+            if gate_result:
+                gate_error, gate_problem = gate_result
+                if gate_error != "preview_stale":
+                    taken.restore()
+                if gate_mode == "strict":
+                    if package is None:
+                        what = "device settings"
+                        how = "Run preview_install with package=None for the same ADOM and devices"
+                    else:
+                        what = f"package '{package}'"
+                        how = "Run preview_install for the same ADOM, package and devices"
+                    return error_response(
+                        error=gate_error,
+                        message=(
+                            f"Refusing to install {what}: {gate_problem}. {how} and "
+                            "review its result first (on FortiManager older than "
+                            "7.6.7 / 8.0.2 it returns a task: wait_for_task, then "
+                            "get_preview_result) — or set FMG_INSTALL_SAFETY=warn/"
+                            "disabled to override."
+                        ),
+                        operation=operation,
+                        adom=adom,
+                        package=package,
+                        recommendation="preview_install",
+                    )
+                gate_warning = f"Installing without a verified preview: {gate_problem}"
+
+        result = await spawn_guarded(operation, start)
+
+    response: dict[str, Any] = {"status": "success", "task_id": result.get("task")}
+    if gate_warning:
+        response["warning"] = gate_warning
+    return response
 
 
 @mcp.tool()
@@ -781,33 +855,6 @@ async def install_package(
         devices = validate_install_scope(devices)
         client = _get_client()
 
-        # Preview-before-install gate (bundle D of #11): a real install needs
-        # a verified preview_install for the same ADOM/package/device set,
-        # unless FMG_INSTALL_SAFETY says otherwise.
-        gate_warning: str | None = None
-        gate_mode = get_settings().FMG_INSTALL_SAFETY
-        if not preview and gate_mode != "disabled":
-            gate_result = await _check_install_preview(client, adom, package, devices)
-            if gate_result:
-                gate_error, gate_problem = gate_result
-                if gate_mode == "strict":
-                    return error_response(
-                        error=gate_error,
-                        message=(
-                            f"Refusing to install package '{package}': {gate_problem}. "
-                            "Run preview_install for the same ADOM, package and devices "
-                            "and review its result first (on FortiManager older than "
-                            "7.6.7 / 8.0.2 it returns a task: wait_for_task, then "
-                            "get_preview_result) — or set FMG_INSTALL_SAFETY=warn/"
-                            "disabled to override."
-                        ),
-                        operation="install_package",
-                        adom=adom,
-                        package=package,
-                        recommendation="preview_install",
-                    )
-                gate_warning = f"Installing without a verified preview: {gate_problem}"
-
         if preview:
             # A bare flags=["preview"] install stages the package and leaves
             # the devices held by an install-wizard session that nothing
@@ -825,7 +872,15 @@ async def install_package(
                 previewed["preview"] = True
             return previewed
 
-        result = await spawn_guarded(
+        # Preview-before-install gate (bundle D of #11): a real install needs
+        # a verified preview_install for the same ADOM/package/device set,
+        # unless FMG_INSTALL_SAFETY says otherwise. The preview that
+        # authorizes it is spent: the next install needs a fresh one.
+        response = await _gated_install(
+            client,
+            adom,
+            package,
+            devices,
             "install_package",
             lambda: client.install_package(
                 adom=adom,
@@ -834,20 +889,10 @@ async def install_package(
                 flags=["none"],
             ),
         )
-
-        # The preview that authorized this install is spent: the next
-        # install needs a fresh one (the package may change in between).
-        consume_preview(adom, package, devices)
-
-        task_id = result.get("task")
-        response = {
-            "status": "success",
-            "task_id": task_id,
-            "preview": preview,
-            "message": f"Installation started, task ID: {task_id}",
-        }
-        if gate_warning:
-            response["warning"] = gate_warning
+        if response["status"] != "success":
+            return response
+        response["preview"] = False
+        response["message"] = f"Installation started, task ID: {response['task_id']}"
         return response
     except TaskSlotsExhausted as e:
         return error_response(
@@ -896,6 +941,13 @@ async def install_device_settings(
     Deploys device-level configurations like interfaces, DNS, NTP
     without reinstalling the full policy package.
 
+    By default (FMG_INSTALL_SAFETY=strict) this requires a verified preview
+    first, like install_package: run preview_install with package=None for
+    the same ADOM and devices and review its result (on FortiManager builds
+    older than 7.6.7 / 8.0.2, preview_install returns a task: wait_for_task
+    on it and read get_preview_result). Each preview authorizes one install.
+    A package preview does not authorize this install, nor the reverse.
+
     Args:
         adom: ADOM name
         devices: Target devices [{"name": "FGT1", "vdom": "root"}, ...]
@@ -907,6 +959,10 @@ async def install_device_settings(
             - status: "success" or "error"
             - task_id: Task ID for monitoring
             - message: Status or error message
+            - warning: Set when FMG_INSTALL_SAFETY=warn let an install
+              without a verified preview through
+            Refused by the gate: status "error", error "preview_required",
+            recommendation "preview_install".
     """
     try:
         adom = validate_adom(adom)
@@ -914,7 +970,11 @@ async def install_device_settings(
         comment = _validate_rev_comment(dev_rev_comments) if dev_rev_comments is not None else None
         client = _get_client()
 
-        result = await spawn_guarded(
+        response = await _gated_install(
+            client,
+            adom,
+            None,
+            devices,
             "install_device_settings",
             lambda: client.install_device(
                 adom=adom,
@@ -922,13 +982,12 @@ async def install_device_settings(
                 dev_rev_comments=comment,
             ),
         )
-
-        task_id = result.get("task")
-        return {
-            "status": "success",
-            "task_id": task_id,
-            "message": f"Device settings installation started, task ID: {task_id}",
-        }
+        if response["status"] != "success":
+            return response
+        response["message"] = (
+            f"Device settings installation started, task ID: {response['task_id']}"
+        )
+        return response
     except TaskSlotsExhausted as e:
         return error_response(
             error="task_slots_exhausted",
