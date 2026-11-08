@@ -17,7 +17,11 @@ from fortimanager_mcp.utils.config import Settings
 from fortimanager_mcp.utils.errors import (
     AuthenticationError,
     ConnectionError,
+    ResourceNotFoundError,
     parse_fmg_error,
+)
+from fortimanager_mcp.utils.errors import (
+    PermissionError as FMGPermissionError,
 )
 
 logger = logging.getLogger(__name__)
@@ -3032,18 +3036,32 @@ class FortiManagerClient:
         metadata (``/pm/template/adom/{adom}/{name}``); the BGP body is in the
         template's cdb subtree.
 
-        The path includes the template's stype: without it FortiManager answers
-        -11 "No permission for the resource", even for a super user.
+        Path: ``/pm/config/adom/{adom}/template/router_bgp/{template}/router/bgp``,
+        with the template's stype (``template setting.stype``) as a segment.
+        This path is NOT in the bundled FNDN specs: the 7.x template schemas
+        document ``/pm/config/adom/{adom}/template/{template}/router/bgp``,
+        and there is no 8.0 template schema. Verified live on FMG 8.0.2 only,
+        where the documented form answers -11 "No permission for the
+        resource" even for a super user and the stype form returns the body.
+        The documented form is tried as a fallback when the stype form is
+        refused or missing, so a 7.x appliance that follows its own docs
+        still answers; that fallback is unverified.
 
         A full read leaves ``route-reflector-client`` out of the neighbor
         groups and only a read naming the field returns it (measured on FMG
         8.0.2), so that second read is merged in. A missing value must not
         cost the rest of the template.
-
-        FNDN: GET /pm/config/adom/{adom}/template/router_bgp/{template}/router/bgp
         """
         url = f"/pm/config/adom/{adom}/template/router_bgp/{name}/router/bgp"
-        bgp = await self.get(url)
+        try:
+            bgp = await self.get(url)
+        except (FMGPermissionError, ResourceNotFoundError) as first:
+            documented = f"/pm/config/adom/{adom}/template/{name}/router/bgp"
+            try:
+                bgp = await self.get(documented)
+            except (FMGPermissionError, ResourceNotFoundError):
+                raise first from None
+            url = documented
         groups = bgp.get("neighbor-group") if isinstance(bgp, dict) else None
         if not groups:
             return bgp
@@ -3054,8 +3072,11 @@ class FortiManagerClient:
         except Exception as e:
             logger.warning(f"Could not read route-reflector-client of template {name}: {e}")
             return bgp
-        by_name = {g.get("name"): g for g in flags if isinstance(g, dict)}
-        for group in groups:
+        rows = flags if isinstance(flags, list) else [flags] if flags else []
+        by_name = {g.get("name"): g for g in rows if isinstance(g, dict)}
+        for group in groups if isinstance(groups, list) else []:
+            if not isinstance(group, dict):
+                continue
             flag = by_name.get(group.get("name"), {}).get("route-reflector-client")
             if flag is not None:
                 group["route-reflector-client"] = flag
@@ -3066,17 +3087,34 @@ class FortiManagerClient:
     ) -> dict[str, Any]:
         """Read named fields of a neighbor group inside a BGP template.
 
-        FNDN: GET /pm/config/adom/{adom}/template/router_bgp/{template}/router/bgp/neighbor-group/{group}
+        Reads the neighbor-group TABLE with ``fields`` and a name filter, not
+        the group's own URL: measured on FMG 8.0.2, a read of
+        ``.../neighbor-group/{group}`` ignores ``fields`` and leaves
+        ``route-reflector-client`` out (so update_bgp_template reported it
+        as None before and after a change that did land), while the table
+        read with ``fields`` returns it. Not in the bundled FNDN specs (see
+        get_bgp_template_config for the stype segment); verified live on
+        8.0.2 only.
+
+        Raises:
+            ResourceNotFoundError: no group of that name in the template
         """
-        url = f"/pm/config/adom/{adom}/template/router_bgp/{name}/router/bgp/neighbor-group/{group}"
-        return await self.get(url, fields=fields)
+        url = f"/pm/config/adom/{adom}/template/router_bgp/{name}/router/bgp/neighbor-group"
+        result = await self.get(url, fields=["name", *fields], filter=["name", "==", group])
+        rows = result if isinstance(result, list) else [result] if result else []
+        for row in rows:
+            if isinstance(row, dict) and row.get("name") == group:
+                return row
+        raise ResourceNotFoundError(f"BGP neighbor group '{group}' not found in template '{name}'")
 
     async def update_bgp_template_neighbor_group(
         self, adom: str, name: str, group: str, data: dict[str, Any]
     ) -> dict[str, Any]:
         """Update fields of a neighbor group inside a BGP template.
 
-        FNDN: UPDATE /pm/config/adom/{adom}/template/router_bgp/{template}/router/bgp/neighbor-group/{group}
+        UPDATE .../template/router_bgp/{template}/router/bgp/neighbor-group/{group}:
+        not in the bundled FNDN specs, verified live on FMG 8.0.2 only (see
+        get_bgp_template_config for the stype segment).
         """
         url = f"/pm/config/adom/{adom}/template/router_bgp/{name}/router/bgp/neighbor-group/{group}"
         return await self.update(url, **data)

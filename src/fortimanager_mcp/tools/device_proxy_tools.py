@@ -3,13 +3,22 @@
 ``EXEC /sys/proxy/json`` forwards a FortiOS API call to a managed device, so a
 device can be queried without a direct route or credentials to it. The
 purpose-built tools (``get_device_sdwan_monitor``, ``policy_lookup``, ...) cover
-known questions; ``query_device_api`` reaches the rest of the API.
+known questions; ``query_device_api`` reaches the rest of the diagnostic API.
 
-Reads only: the tool sends GET and nothing else, and it accepts ``monitor`` and
-``cmdb`` paths. A cmdb read returns the device's own configuration, so secrets
-are redacted by field name and by value before the result leaves this module.
-The name match is deliberately wider than ``CONFIG_TEXT_SECRET_DIRECTIVES``: a
-field wrongly masked costs a value, a field wrongly kept leaks a secret.
+Reads only, and only from an allowlist. The tool sends GET and nothing else,
+and the path must sit under one of ``_ALLOWED_PREFIXES``: the live-state
+``monitor`` endpoints and the ``cmdb`` tables a troubleshooting session reads
+(routing, interfaces, SD-WAN, VPN, policy and objects, switch and wireless
+controller). Everything else is refused, in particular the endpoints that
+return a file rather than API data (``system/config/backup``,
+``system/config-revision/file``, ``system/com-log/dump``, debug downloads):
+a config backup carries every secret of the device as CLI text.
+
+A cmdb read returns the device's own configuration, so secrets are redacted
+by field name, by value (``ENC`` blobs, PEM keys) and, for SNMP communities,
+by position: a community string is the ``name`` of its entry. The name match
+is deliberately wider than ``CONFIG_TEXT_SECRET_DIRECTIVES``: a field wrongly
+masked costs a value, a field wrongly kept leaks a secret.
 """
 
 import logging
@@ -20,6 +29,7 @@ from urllib.parse import urlencode
 from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_default_adom, get_default_device
 from fortimanager_mcp.utils.errors import client_safe_error
+from fortimanager_mcp.utils.redaction import safe_device_message
 from fortimanager_mcp.utils.validation import (
     CONFIG_TEXT_SECRET_DIRECTIVES,
     MASK_VALUE,
@@ -27,17 +37,111 @@ from fortimanager_mcp.utils.validation import (
     redact_config_text_secrets,
     validate_adom,
     validate_device_name,
+    validate_object_name,
 )
 
 logger = logging.getLogger(__name__)
 
 #: A monitor or cmdb path. No query string, percent-encoding or traversal:
-#: parameters go through ``params`` so they meet _ALLOWED_PARAMS.
-_API_PATH = re.compile(r"/api/v2/(?:monitor|cmdb)(?:/[A-Za-z0-9_][A-Za-z0-9_.-]*)+")
+#: parameters go through ``params`` so they meet _ALLOWED_PARAMS. A segment
+#: cannot start with a dot, so ``.`` and ``..`` never match.
+_API_PATH = re.compile(r"/api/v2/(?:monitor|cmdb)(?:/[A-Za-z0-9_][A-Za-z0-9_.-]*)+", re.I)
 
-#: Path segments that return a whole file instead of API data. A config backup
-#: carries every secret of the device as CLI text.
-_BLOCKED_SEGMENTS = frozenset({"backup", "download"})
+#: What the tool may read, relative to ``/api/v2/``. An entry admits the path
+#: itself and everything below it (``monitor/router`` admits
+#: ``monitor/router/bgp/neighbors``), never a sibling that merely shares its
+#: spelling (``cmdb/system/ha`` does not admit ``cmdb/system/ha-monitor``).
+#: Matched case-insensitively. Chosen from what the bundled skills call
+#: (switch-controller detected devices and managed-switch status, router
+#: lookup, ARP, sessions, IPsec, HA peers) plus the neighbouring diagnostic
+#: reads; extend it here, deliberately, rather than widening a prefix.
+_ALLOWED_PREFIXES: tuple[str, ...] = (
+    # Live state.
+    "monitor/system/status",
+    "monitor/system/resource/usage",
+    "monitor/system/interface",
+    "monitor/system/available-interfaces",
+    "monitor/system/ha-peer",
+    "monitor/system/ha-statistics",
+    "monitor/system/ha-checksums",
+    "monitor/system/ha-history",
+    "monitor/system/performance/status",
+    "monitor/system/link-monitor",
+    "monitor/system/dhcp",
+    "monitor/system/sensor-info",
+    "monitor/system/vdom-resource",
+    "monitor/system/global-resources",
+    "monitor/system/fortimanager/status",
+    "monitor/license/status",
+    "monitor/router",
+    "monitor/network/arp",
+    "monitor/network/lldp",
+    "monitor/network/dns",
+    "monitor/firewall/session",
+    # FortiOS 7.6 serves the session table here; firewall/session answers
+    # "Invalid url" on 7.6.7.
+    "monitor/firewall/sessions",
+    "monitor/firewall/policy",
+    "monitor/firewall/proxy-policy",
+    "monitor/firewall/security-policy",
+    "monitor/firewall/local-in",
+    "monitor/firewall/shaper",
+    "monitor/firewall/per-ip-shaper",
+    "monitor/firewall/address-fqdns",
+    "monitor/firewall/address-dynamic",
+    "monitor/firewall/internet-service-match",
+    "monitor/vpn/ipsec",
+    "monitor/vpn/ssl",
+    "monitor/virtual-wan",
+    "monitor/switch-controller/managed-switch",
+    "monitor/switch-controller/detected-device",
+    "monitor/wifi/client",
+    "monitor/wifi/managed_ap",
+    "monitor/wifi/ap_status",
+    "monitor/wifi/interfering_ap",
+    "monitor/wifi/rogue_ap",
+    "monitor/user/device",
+    "monitor/user/firewall",
+    "monitor/user/banned",
+    # Configuration.
+    "cmdb/firewall",
+    "cmdb/firewall.service",
+    "cmdb/firewall.schedule",
+    "cmdb/firewall.shaper",
+    "cmdb/router",
+    "cmdb/system/interface",
+    "cmdb/system/zone",
+    "cmdb/system/sdwan",
+    "cmdb/system/virtual-wan-link",
+    "cmdb/system/ha",
+    "cmdb/system/global",
+    "cmdb/system/settings",
+    "cmdb/system/dns",
+    "cmdb/system/ntp",
+    "cmdb/system/central-management",
+    "cmdb/system/link-monitor",
+    "cmdb/system/gre-tunnel",
+    "cmdb/system/ipip-tunnel",
+    "cmdb/system/vxlan",
+    "cmdb/system/switch-interface",
+    "cmdb/system.dhcp/server",
+    "cmdb/system.snmp",
+    "cmdb/vpn.ipsec",
+    "cmdb/switch-controller",
+    "cmdb/wireless-controller",
+    "cmdb/user/group",
+    "cmdb/application/list",
+    "cmdb/ips/sensor",
+    "cmdb/webfilter/profile",
+    "cmdb/antivirus/profile",
+    "cmdb/dnsfilter/profile",
+)
+
+#: Segments that name a file export or a dump. None of the allowed prefixes
+#: has one today; this stops a future prefix from admitting one by accident.
+_FILE_SEGMENTS = frozenset(
+    {"backup", "download", "dump", "export", "file", "raw", "restore", "upload"}
+)
 
 #: GET parameters the tool forwards. An allowlist because FortiOS has
 #: parameters that widen what a read returns, such as ``plain-text-password``.
@@ -65,6 +169,16 @@ _ALLOWED_PARAMS = frozenset(
 
 _SECRET_KEY = re.compile(r"passw|passphrase|secret|psk|private[-_]?key|api[-_]?key|token", re.I)
 
+#: Tables whose entries are SNMP communities. The community string is the
+#: entry's ``name`` (``config system snmp community`` / ``edit 1`` /
+#: ``set name <community>``), so a field-name match cannot see it.
+_COMMUNITY_TABLES = ("cmdb/system.snmp/community", "cmdb/switch-controller/snmp-community")
+
+#: The same tables met as a sub-table, e.g. ``snmp-community[]`` on a
+#: ``switch-controller managed-switch`` entry. ``community`` itself already
+#: matches CONFIG_TEXT_SECRET_DIRECTIVES and is masked whole.
+_COMMUNITY_KEYS = frozenset({"snmp-community"})
+
 _MAX_DEPTH = 32
 
 
@@ -75,17 +189,37 @@ def _is_secret_key(key: str) -> bool:
     )
 
 
-def _redact(value: Any, depth: int = 0) -> Any:
-    """Copy a device response with its secrets masked."""
+def _redact_community(entry: Any, depth: int) -> Any:
+    """One SNMP community entry: its ``name`` is the community string."""
+    if not isinstance(entry, dict):
+        return _redact(entry, depth)
+    redacted = _redact(entry, depth)
+    if "name" in redacted:
+        redacted["name"] = MASK_VALUE
+    return redacted
+
+
+def _redact(value: Any, depth: int = 0, community: bool = False) -> Any:
+    """Copy a device response with its secrets masked.
+
+    ``community`` marks a value whose entries are SNMP communities.
+    """
     if depth > _MAX_DEPTH:
         return MASK_VALUE
+    if community:
+        if isinstance(value, list):
+            return [_redact_community(item, depth + 1) for item in value]
+        return _redact_community(value, depth + 1)
     if isinstance(value, dict):
-        return {
-            key: MASK_VALUE
-            if isinstance(key, str) and _is_secret_key(key)
-            else _redact(item, depth + 1)
-            for key, item in value.items()
-        }
+        out: dict[Any, Any] = {}
+        for key, item in value.items():
+            if isinstance(key, str) and _is_secret_key(key):
+                out[key] = MASK_VALUE
+            elif isinstance(key, str) and key.lower() in _COMMUNITY_KEYS:
+                out[key] = _redact(item, depth + 1, community=True)
+            else:
+                out[key] = _redact(item, depth + 1)
+        return out
     if isinstance(value, list):
         return [_redact(item, depth + 1) for item in value]
     if isinstance(value, str):
@@ -95,17 +229,41 @@ def _redact(value: Any, depth: int = 0) -> Any:
     return value
 
 
+def _relative(path: str) -> str:
+    """The path below ``/api/v2/``, lowercased for matching."""
+    return path[len("/api/v2/") :].lower()
+
+
+def _under(relative: str, prefix: str) -> bool:
+    return relative == prefix or relative.startswith(prefix + "/")
+
+
 def _validate_path(path: str) -> str:
-    """Accept a read path on the device API, or raise ValidationError."""
+    """Accept an allowlisted read path on the device API, or raise ValidationError."""
     if not isinstance(path, str) or not _API_PATH.fullmatch(path):
         raise ValidationError(
             "path must be a FortiOS API path such as /api/v2/monitor/system/status "
             "or /api/v2/cmdb/firewall/address, without a query string"
         )
-    segments = path.split("/")
-    if ".." in path or _BLOCKED_SEGMENTS.intersection(segments):
-        raise ValidationError("traversal and file export paths (backup, download) are refused")
+    relative = _relative(path)
+    if _FILE_SEGMENTS.intersection(relative.split("/")):
+        raise ValidationError(
+            "file export and dump paths (backup, download, dump, file, ...) are refused"
+        )
+    if not any(_under(relative, prefix) for prefix in _ALLOWED_PREFIXES):
+        # Relative spellings on purpose: client_safe_error scrubs anything
+        # that starts with /api/ from a message.
+        allowed = ", ".join(_ALLOWED_PREFIXES)
+        raise ValidationError(
+            f"path api/v2/{relative} is not in the read allowlist. Allowed, relative "
+            f"to api/v2 and each with everything below it: {allowed}"
+        )
     return path
+
+
+def _is_community_table(path: str) -> bool:
+    relative = _relative(path)
+    return any(_under(relative, table) for table in _COMMUNITY_TABLES)
 
 
 def _validate_params(params: dict[str, Any] | None, vdom: str | None) -> dict[str, Any]:
@@ -119,7 +277,7 @@ def _validate_params(params: dict[str, Any] | None, vdom: str | None) -> dict[st
             raise ValidationError(f"parameter {name!r} must be a string, number or boolean")
         query[name] = str(value).lower() if isinstance(value, bool) else value
     if vdom:
-        query["vdom"] = validate_adom(vdom)
+        query["vdom"] = validate_object_name(vdom, "VDOM")
     return query
 
 
@@ -131,15 +289,23 @@ async def query_device_api(
     vdom: str | None = None,
     params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Read any FortiOS REST API path on a managed device through FortiManager.
+    """Read a diagnostic FortiOS REST API path on a managed device through FortiManager.
 
     Proxies a GET through ``/sys/proxy/json``, so the device needs no direct
     route or credentials. Use it for what no dedicated tool covers: live state
     from ``monitor`` paths, the running configuration from ``cmdb`` paths.
 
-    Read-only: only GET is sent. Secrets are redacted by field name and value,
-    file exports (``backup``, ``download``) are refused, and ``params`` accepts
-    the listed query parameters only.
+    Read-only: only GET is sent, and only to an allowlist of paths (each
+    with everything below it): monitor system status/resource/interface/
+    ha-peer/dhcp/link-monitor, router (ipv4, lookup, bgp, ospf, ...), network
+    arp/lldp, firewall session/policy hit counts, vpn ipsec/ssl, virtual-wan,
+    switch-controller managed-switch/detected-device, wifi clients and APs,
+    user device/firewall; cmdb firewall, router, system interface/zone/sdwan/
+    ha/global/dns/snmp, vpn.ipsec, switch-controller, wireless-controller,
+    user group and the security profiles. Anything else, and every file
+    export or dump, is refused with the full list. Secrets are redacted by
+    field name and value, SNMP community strings included, and ``params``
+    accepts the listed query parameters only.
 
     Args:
         path: API path without query string, e.g.
@@ -196,14 +362,27 @@ async def query_device_api(
     if not isinstance(entry, dict):
         return {"error": "no data returned by the device", "error_code": "device_proxy_error"}
 
+    response = entry.get("response")
     status = entry.get("status")
     if isinstance(status, dict) and status.get("code") not in (0, None):
-        message = str(status.get("message") or "device proxy error")
-        return {"error": message, "error_code": "device_proxy_error"}
+        error: dict[str, Any] = {
+            "error": safe_device_message(status.get("message")),
+            "error_code": "device_proxy_error",
+        }
+        # An unknown path comes back as a proxy error ("Invalid url") with
+        # the device's own HTTP status beside it; keep that, it says why.
+        if isinstance(response, dict) and response.get("http_status") is not None:
+            error["http_status"] = response.get("http_status")
+        return error
 
-    response = entry.get("response")
+    community = _is_community_table(path)
     if not isinstance(response, dict):
-        return {"adom": adom, "device": device, "path": path, "results": _redact(response)}
+        return {
+            "adom": adom,
+            "device": device,
+            "path": path,
+            "results": _redact(response, community=community),
+        }
     if response.get("status") == "error":
         return {
             "error": f"device answered HTTP {response.get('http_status')}",
@@ -217,5 +396,5 @@ async def query_device_api(
         "http_status": response.get("http_status"),
         "version": response.get("version"),
         "build": response.get("build"),
-        "results": _redact(response.get("results")),
+        "results": _redact(response.get("results"), community=community),
     }

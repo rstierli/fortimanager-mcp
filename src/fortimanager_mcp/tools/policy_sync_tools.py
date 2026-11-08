@@ -45,12 +45,11 @@ from fortimanager_mcp.utils.validation import (
     ValidationError,
     validate_adom,
     validate_device_name,
+    validate_object_name,
     validate_package_name,
 )
 
 logger = logging.getLogger(__name__)
-
-_VDOM_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,31}$")
 
 #: Policy fields compared between package and device. Chosen for what
 #: decides which traffic a policy matches and what it does with it; hit
@@ -120,12 +119,6 @@ def _get_client() -> FortiManagerClient:
     if not client:
         raise RuntimeError("FortiManager client not initialized")
     return client
-
-
-def _validate_vdom(vdom: str) -> str:
-    if not isinstance(vdom, str) or not _VDOM_PATTERN.match(vdom.strip()):
-        raise ValidationError(f"Invalid VDOM name {vdom!r}")
-    return vdom.strip()
 
 
 # =============================================================================
@@ -285,6 +278,10 @@ async def _package_policies(
         if not block:
             policies.append(entry)
             continue
+        # The block name comes from FortiManager, not the caller, but it is
+        # still interpolated into a URL: hold it to the same rule as any
+        # object name before it gets there.
+        block = validate_object_name(str(block), "policy block")
         members = await client.get_verbose(
             f"/pm/config/adom/{adom}/pblock/{block}/firewall/policy", option=["scope member"]
         )
@@ -507,9 +504,9 @@ def compare_policies(
             entry["differences"] = diffs
             if any(f in _MAPPED_FIELDS for f in diffs):
                 entry["note"] = (
-                    "interfaces are compared after per-device and default mapping "
-                    "(per-platform mappings are not resolved); address names are "
-                    "compared as written"
+                    "interfaces are compared after FortiManager's interface mapping "
+                    "(per-device, per-platform, then default); address objects are "
+                    "compared by name, not by their per-device values"
                 )
             modified.append(entry)
 
@@ -673,14 +670,14 @@ async def check_device_policy_sync(
         other devices).
 
     Example:
-        >>> result = await check_device_policy_sync("production", "branch1")
+        >>> result = await check_device_policy_sync("demo", "branch1")
         >>> for p in result["comparisons"]["package_vs_revision"]["modified"]:
         ...     print(p["policyid"], p["differences"])
     """
     try:
         adom = validate_adom(adom)
         device = validate_device_name(device)
-        vdom = _validate_vdom(vdom)
+        vdom = validate_object_name(vdom, "VDOM")
         if source not in _SOURCES:
             raise ValidationError(f"source must be one of {', '.join(_SOURCES)}, got {source!r}")
         if isinstance(revision, bool) or not isinstance(revision, int):

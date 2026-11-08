@@ -141,7 +141,7 @@ def _sdwan_client() -> MagicMock:
 async def _update(client: MagicMock, settings: dict[str, Any]) -> dict[str, Any]:
     with patch.object(sdwan_tools, "get_fmg_client", return_value=client):
         return await sdwan_tools.update_bgp_template(
-            adom="production",
+            adom="demo",
             name="sites_HUB1_BGP",
             neighbor_group="EDGE",
             settings=settings,
@@ -155,7 +155,7 @@ class TestUpdateBgpTemplate:
         result = await _update(client, {"route-reflector-client": "enable"})
 
         client.update_bgp_template_neighbor_group.assert_awaited_once_with(
-            "production", "sites_HUB1_BGP", "EDGE", {"route-reflector-client": "enable"}
+            "demo", "sites_HUB1_BGP", "EDGE", {"route-reflector-client": "enable"}
         )
         assert result["before"] == {"route-reflector-client": 0}
         assert result["after"] == {"route-reflector-client": 1}
@@ -184,12 +184,47 @@ class TestUpdateBgpTemplate:
     async def test_client_url(self, mock_client: Any, mock_fmg_instance: MagicMock) -> None:
         mock_fmg_instance.update.return_value = (0, {})
         await mock_client.update_bgp_template_neighbor_group(
-            "production", "t", "EDGE", {"next-hop-self": "enable"}
+            "demo", "t", "EDGE", {"next-hop-self": "enable"}
         )
 
         assert mock_fmg_instance.update.call_args[0][0] == (
-            "/pm/config/adom/production/template/router_bgp/t/router/bgp/neighbor-group/EDGE"
+            "/pm/config/adom/demo/template/router_bgp/t/router/bgp/neighbor-group/EDGE"
         )
+
+    @pytest.mark.asyncio
+    async def test_the_group_is_read_from_the_table(
+        self, mock_client: Any, mock_fmg_instance: MagicMock
+    ) -> None:
+        """Measured on 8.0.2: the group's own URL ignores ``fields`` and omits the flag."""
+        mock_fmg_instance.get.return_value = (
+            0,
+            [{"name": "EDGE", "route-reflector-client": 1, "advertisement-interval": 5}],
+        )
+        row = await mock_client.get_bgp_template_neighbor_group(
+            "demo", "t", "EDGE", ["advertisement-interval", "route-reflector-client"]
+        )
+
+        args, kwargs = mock_fmg_instance.get.call_args
+        assert args[0] == "/pm/config/adom/demo/template/router_bgp/t/router/bgp/neighbor-group"
+        assert kwargs["fields"] == ["name", "advertisement-interval", "route-reflector-client"]
+        assert kwargs["filter"] == ["name", "==", "EDGE"]
+        assert row["route-reflector-client"] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_missing_group_is_not_found(
+        self, mock_client: Any, mock_fmg_instance: MagicMock
+    ) -> None:
+        mock_fmg_instance.get.return_value = (0, [])
+        with patch.object(sdwan_tools, "get_fmg_client", return_value=mock_client):
+            result = await sdwan_tools.update_bgp_template(
+                adom="demo",
+                name="t",
+                neighbor_group="NOPE",
+                settings={"next-hop-self": "enable"},
+            )
+
+        assert result["error_code"] == "not_found"
+        mock_fmg_instance.update.assert_not_called()
 
 
 class TestGetProfileGroup:

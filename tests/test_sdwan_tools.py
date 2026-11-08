@@ -15,7 +15,7 @@ MOCK_DEVICE_SDWAN = {
     "members": [
         {
             "seq-num": 1,
-            "interface": "mystier_v_BBI",
+            "interface": "wan1_vlan",
             "gateway": "82.197.160.1",
             "zone": "BBI-zone",
             "weight": 70,
@@ -24,7 +24,7 @@ MOCK_DEVICE_SDWAN = {
         },
         {
             "seq-num": 2,
-            "interface": "mystier_v_BBI2",
+            "interface": "wan2_vlan",
             "gateway": "46.127.181.1",
             "zone": "BBI-zone",
             "weight": 30,
@@ -62,9 +62,9 @@ class TestGetDeviceSdwan:
         self, mock_client_configured: FortiManagerClient
     ) -> None:
         with patch.object(sdwan_tools, "get_fmg_client", return_value=mock_client_configured):
-            result = await sdwan_tools.get_device_sdwan(device="myfw01")
+            result = await sdwan_tools.get_device_sdwan(device="branch1")
 
-        assert result["device"] == "myfw01"
+        assert result["device"] == "branch1"
         assert result["vdom"] == "root"
         assert result["sdwan"] == MOCK_DEVICE_SDWAN
 
@@ -73,8 +73,8 @@ class TestGetDeviceSdwan:
         assert summary["load_balance_mode"] == "source-ip-based"
         assert summary["member_count"] == 2
         assert [m["interface"] for m in summary["members"]] == [
-            "mystier_v_BBI",
-            "mystier_v_BBI2",
+            "wan1_vlan",
+            "wan2_vlan",
         ]
         assert summary["zones"] == ["virtual-wan-link", "BBI-zone"]
         assert summary["health_checks"][0]["name"] == "olay_inet"
@@ -85,15 +85,15 @@ class TestGetDeviceSdwan:
         self, mock_client_configured: FortiManagerClient, mock_fmg_instance: MagicMock
     ) -> None:
         with patch.object(sdwan_tools, "get_fmg_client", return_value=mock_client_configured):
-            await sdwan_tools.get_device_sdwan(device="myfw01", vdom="root")
+            await sdwan_tools.get_device_sdwan(device="branch1", vdom="root")
 
         called_url = mock_fmg_instance.get.call_args[0][0]
-        assert called_url == "/pm/config/device/myfw01/vdom/root/system/sdwan"
+        assert called_url == "/pm/config/device/branch1/vdom/root/system/sdwan"
 
     @pytest.mark.asyncio
     async def test_not_connected(self) -> None:
         with patch.object(sdwan_tools, "get_fmg_client", return_value=None):
-            result = await sdwan_tools.get_device_sdwan(device="myfw01")
+            result = await sdwan_tools.get_device_sdwan(device="branch1")
         assert "error" in result
 
     @pytest.mark.asyncio
@@ -372,6 +372,49 @@ class TestGetDeviceBgpStatus:
         assert result["unverified"] == ["routing table: device unreachable"]
 
     @pytest.mark.asyncio
+    async def test_the_device_http_status_is_kept(self) -> None:
+        """Measured on 8.0.2: a device without BGP answers -6 "Invalid url", HTTP 500."""
+
+        async def proxy(action: str, resource: str, target: list[str]) -> list[dict]:
+            if resource == "/api/v2/monitor/router/bgp/neighbors":
+                return [
+                    {
+                        "status": {"code": -6, "message": "Invalid url"},
+                        "response": {"http_status": 500, "status": "error"},
+                    }
+                ]
+            if resource == "/api/v2/monitor/router/bgp/paths":
+                return [
+                    {"status": {"code": 0}, "response": {"status": "error", "http_status": 404}}
+                ]
+            return _proxied(MOCK_ROUTES)
+
+        client = AsyncMock()
+        client.proxy_call = AsyncMock(side_effect=proxy)
+        with patch.object(sdwan_tools, "get_fmg_client", return_value=client):
+            result = await sdwan_tools.get_device_bgp_status(adom="root", device="branch1")
+
+        assert result["unverified"] == [
+            "BGP neighbors: Invalid url (HTTP 500)",
+            "BGP paths: device API error (HTTP 404)",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_the_device_message_is_scrubbed(self) -> None:
+        async def proxy(action: str, resource: str, target: list[str]) -> list[dict]:
+            message = "branch1(228) error: GET /api/v2/monitor/x\npassword=hunter2"
+            return [{"status": {"code": -1, "message": message}}]
+
+        client = AsyncMock()
+        client.proxy_call = AsyncMock(side_effect=proxy)
+        with patch.object(sdwan_tools, "get_fmg_client", return_value=client):
+            result = await sdwan_tools.get_device_bgp_status(adom="root", device="branch1")
+
+        assert "hunter2" not in result["error"]
+        assert "/api/" not in result["error"]
+        assert "\n" not in result["error"]
+
+    @pytest.mark.asyncio
     async def test_all_sources_unreadable_is_an_error(self) -> None:
         client = _bgp_client(
             frozenset(
@@ -527,10 +570,10 @@ class TestGetSdwanTemplateConfig:
     ) -> None:
         client = _client_returning(mock_client, mock_fmg_instance, MOCK_SDWAN_WITH_SECRET)
         with patch.object(sdwan_tools, "get_fmg_client", return_value=client):
-            result = await sdwan_tools.get_sdwan_template_config(adom="production", name="tpl")
+            result = await sdwan_tools.get_sdwan_template_config(adom="demo", name="tpl")
 
         called_url = mock_fmg_instance.get.call_args[0][0]
-        assert called_url == "/pm/config/adom/production/wanprof/tpl/system/sdwan"
+        assert called_url == "/pm/config/adom/demo/wanprof/tpl/system/sdwan"
         assert result["summary"]["member_count"] == 1
         assert result["summary"]["health_checks"][0]["name"] == "http_probe"
 
@@ -540,7 +583,7 @@ class TestGetSdwanTemplateConfig:
     ) -> None:
         client = _client_returning(mock_client, mock_fmg_instance, MOCK_SDWAN_WITH_SECRET)
         with patch.object(sdwan_tools, "get_fmg_client", return_value=client):
-            result = await sdwan_tools.get_sdwan_template_config(adom="production", name="tpl")
+            result = await sdwan_tools.get_sdwan_template_config(adom="demo", name="tpl")
         assert SECRET not in repr(result)
 
     @pytest.mark.asyncio
@@ -559,7 +602,7 @@ class TestDeviceSdwanStripsProbePassword:
     ) -> None:
         client = _client_returning(mock_client, mock_fmg_instance, MOCK_SDWAN_WITH_SECRET)
         with patch.object(sdwan_tools, "get_fmg_client", return_value=client):
-            result = await sdwan_tools.get_device_sdwan(device="myfw01")
+            result = await sdwan_tools.get_device_sdwan(device="branch1")
         assert SECRET not in repr(result)
         assert result["sdwan"]["health-check"][0]["name"] == "http_probe"
 
@@ -571,12 +614,10 @@ class TestGetBgpTemplate:
     ) -> None:
         client = _client_returning(mock_client, mock_fmg_instance, MOCK_BGP)
         with patch.object(sdwan_tools, "get_fmg_client", return_value=client):
-            result = await sdwan_tools.get_bgp_template(adom="production", name="sites_HUB1_BGP")
+            result = await sdwan_tools.get_bgp_template(adom="demo", name="sites_HUB1_BGP")
 
         called_url = mock_fmg_instance.get.call_args_list[0][0][0]
-        assert (
-            called_url == "/pm/config/adom/production/template/router_bgp/sites_HUB1_BGP/router/bgp"
-        )
+        assert called_url == "/pm/config/adom/demo/template/router_bgp/sites_HUB1_BGP/router/bgp"
         assert result["summary"]["as"] == 65000
         assert result["summary"]["neighbor_groups"][0]["route_reflector_client"] == "enable"
 
@@ -585,7 +626,7 @@ class TestGetBgpTemplate:
         self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
     ) -> None:
         """A full read omits the field; only a read naming it returns it."""
-        base = "/pm/config/adom/production/template/router_bgp/sites_HUB1_BGP/router/bgp"
+        base = "/pm/config/adom/demo/template/router_bgp/sites_HUB1_BGP/router/bgp"
 
         def mock_get(url: str, **kwargs: object) -> tuple[int, object]:
             if url == base:
@@ -596,7 +637,7 @@ class TestGetBgpTemplate:
 
         mock_fmg_instance.get.side_effect = mock_get
         with patch.object(sdwan_tools, "get_fmg_client", return_value=mock_client):
-            result = await sdwan_tools.get_bgp_template(adom="production", name="sites_HUB1_BGP")
+            result = await sdwan_tools.get_bgp_template(adom="demo", name="sites_HUB1_BGP")
 
         assert result["summary"]["neighbor_groups"][0]["route_reflector_client"] == 1
 
@@ -604,7 +645,7 @@ class TestGetBgpTemplate:
     async def test_failed_flag_read_keeps_the_template(
         self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
     ) -> None:
-        base = "/pm/config/adom/production/template/router_bgp/sites_HUB1_BGP/router/bgp"
+        base = "/pm/config/adom/demo/template/router_bgp/sites_HUB1_BGP/router/bgp"
 
         def mock_get(url: str, **kwargs: object) -> tuple[int, object]:
             if url == base:
@@ -613,7 +654,7 @@ class TestGetBgpTemplate:
 
         mock_fmg_instance.get.side_effect = mock_get
         with patch.object(sdwan_tools, "get_fmg_client", return_value=mock_client):
-            result = await sdwan_tools.get_bgp_template(adom="production", name="sites_HUB1_BGP")
+            result = await sdwan_tools.get_bgp_template(adom="demo", name="sites_HUB1_BGP")
 
         assert result["summary"]["as"] == "65000"
         assert result["summary"]["neighbor_groups"][0]["route_reflector_client"] is None
@@ -624,8 +665,45 @@ class TestGetBgpTemplate:
     ) -> None:
         client = _client_returning(mock_client, mock_fmg_instance, MOCK_BGP)
         with patch.object(sdwan_tools, "get_fmg_client", return_value=client):
-            result = await sdwan_tools.get_bgp_template(adom="production", name="tpl")
+            result = await sdwan_tools.get_bgp_template(adom="demo", name="tpl")
         assert SECRET not in repr(result)
+
+    @pytest.mark.asyncio
+    async def test_the_documented_path_is_the_fallback(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """8.0.2 needs the stype segment; 7.x documents the path without it."""
+        stype = "/pm/config/adom/demo/template/router_bgp/tpl/router/bgp"
+        documented = "/pm/config/adom/demo/template/tpl/router/bgp"
+
+        def mock_get(url: str, **kwargs: object) -> tuple[int, object]:
+            if url == stype:
+                # -3 rather than the -11 8.0.2 sends for the other form: the
+                # client answers -11 with a reconnect, which a unit test has
+                # no appliance for. Both codes take the fallback.
+                return (-3, {"status": {"code": -3, "message": "Object does not exist"}})
+            assert url == documented
+            return (0, {"as": "65000"})
+
+        mock_fmg_instance.get.side_effect = mock_get
+        with patch.object(sdwan_tools, "get_fmg_client", return_value=mock_client):
+            result = await sdwan_tools.get_bgp_template(adom="demo", name="tpl")
+
+        assert result["summary"]["as"] == "65000"
+
+    @pytest.mark.asyncio
+    async def test_both_paths_refused_reports_the_first_error(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        mock_fmg_instance.get.return_value = (
+            -3,
+            {"status": {"code": -3, "message": "Object does not exist"}},
+        )
+        with patch.object(sdwan_tools, "get_fmg_client", return_value=mock_client):
+            result = await sdwan_tools.get_bgp_template(adom="demo", name="tpl")
+
+        assert result["error_code"] == "not_found"
+        assert mock_fmg_instance.get.call_count == 2
 
 
 class TestGetDeviceBgp:
@@ -785,7 +863,7 @@ def _diag_client(
 async def _diagnose(client: AsyncMock, **kwargs: object) -> dict:
     with patch.object(sdwan_tools, "get_fmg_client", return_value=client):
         return await sdwan_tools.diagnose_ipsec_tunnel(
-            device="branch2", tunnel="HUB1-VPN2", adom="production", **kwargs
+            device="branch2", tunnel="HUB1-VPN2", adom="demo", **kwargs
         )
 
 
@@ -816,8 +894,18 @@ class TestDiagnoseIpsecTunnel:
         result = await _diagnose(_diag_client(_live(tunnel_up=False, hc_status="down")))
 
         assert result["verdict"] == "tunnel_down"
-        assert any("203.0.113.1" in step for step in result["next_steps"])
+        assert any("evidence.gateway.remote_gw" in step for step in result["next_steps"])
         assert any("ike" in step for step in result["next_steps"])
+        assert result["evidence"]["gateway"]["remote_gw"] == "203.0.113.1"
+
+    @pytest.mark.asyncio
+    async def test_no_address_is_written_into_the_prose(self) -> None:
+        """Free text is not masked, so a peer address there would bypass masking."""
+        for live in (_live(tunnel_up=False, hc_status="down"), _live(link=False), _live()):
+            result = await _diagnose(_diag_client(live))
+            prose = " ".join([result["explanation"], *result["next_steps"]])
+            assert "203.0.113.1" not in prose
+            assert "192.0.2.10" not in prose
 
     @pytest.mark.asyncio
     async def test_unlisted_tunnel_counts_as_down(self) -> None:
