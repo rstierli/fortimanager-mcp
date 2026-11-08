@@ -9,13 +9,15 @@ Based on FNDN FortiManager 7.6.5 API specifications.
 """
 
 import logging
+import re
 from typing import Any
 
 from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_default_adom
 from fortimanager_mcp.utils.errors import client_safe_error
 from fortimanager_mcp.utils.validation import (
-    redact_config_text_secrets,
+    CONFIG_TEXT_SECRET_DIRECTIVES,
+    MASK_VALUE,
     validate_adom,
     validate_device_name,
     validate_object_name,
@@ -25,6 +27,144 @@ logger = logging.getLogger(__name__)
 
 #: ``type`` of a CLI template (``obj/cli/template``).
 _CLI_TEMPLATE_TYPES: dict[Any, str] = {0: "cli", 1: "jinja"}
+
+# -----------------------------------------------------------------------------
+# CLI template script redaction
+#
+# A template body is FortiOS CLI, so the "set <secret-directive> <value>"
+# rule that redact_config_text_secrets applies to device config exports
+# applies here too. A template differs from an export in three ways, which
+# is why it gets its own pass instead of the shared one:
+#
+# - Jinja (type 1) can hold a secret outside any "set" line, in a variable
+#   assignment ("{% set psk = '...' %}", "{% set psk %}...{% endset %}") or a
+#   dict/keyword literal ('{"password": "..."}').
+# - A "set" line can follow a Jinja tag on the same line
+#   ("{% if hub %}set psksecret ...{% endif %}").
+# - The value is often a variable reference ("{{ psk }}", "$(psk)"), which is
+#   not a secret and is the useful part to see: it says where the value comes
+#   from. Only a bare reference is kept; anything with a filter, literal or
+#   expression in it is masked.
+#
+# Single quotes are tracked as well as double quotes, since a template author
+# may write either; a multi-line quoted value is dropped up to its closing
+# quote, as redact_config_text_secrets does.
+# -----------------------------------------------------------------------------
+
+#: A variable name containing one of these is treated as holding a secret.
+_SECRET_NAME_HINTS = (
+    "pass",
+    "pwd",
+    "psk",
+    "secret",
+    "key",
+    "token",
+    "community",
+    "credential",
+)
+_SECRET_NAME = rf"[\w.]*(?:{'|'.join(_SECRET_NAME_HINTS)})[\w.]*"
+
+_JINJA_BLOCK_SET = re.compile(
+    r"(?P<open>\{%-?\s*set\s+(?P<name>[\w.]+)\s*-?%\})(?P<body>.*?)"
+    r"(?P<close>\{%-?\s*endset\s*-?%\})",
+    re.DOTALL,
+)
+_JINJA_INLINE_SET = re.compile(
+    r"(?P<head>\{%-?\s*set\s+(?P<name>[\w.]+(?:\s*,\s*[\w.]+)*)\s*=\s*)"
+    r"(?P<value>.*?)(?P<tail>\s*-?%\})",
+    re.DOTALL,
+)
+_JINJA_TAG = re.compile(r"\{%.*?%\}|\{\{.*?\}\}", re.DOTALL)
+_JINJA_SECRET_LITERAL = re.compile(
+    rf"(?P<key>(?P<q>[\"']?)(?i:{_SECRET_NAME})(?P=q)\s*(?:==|!=|[:=])\s*)"
+    r"(?P<lq>[\"'])(?:\\.|(?!(?P=lq)).)*(?P=lq)",
+    re.DOTALL,
+)
+_SET_LINE = re.compile(
+    r"(?P<lead>^|%\}|\}\})(?P<prefix>\s*set\s+(?P<directive>\S+)\s+)(?P<rest>.*)$"
+)
+_ENC_VALUE = re.compile(r"^[\"']?ENC\s")
+_VARIABLE_REFERENCE = re.compile(
+    r"^(?P<q>[\"']?)(?:\{\{-?\s*[A-Za-z_][\w.]*\s*-?\}\}|\$\([A-Za-z_]\w*\))(?P=q)$"
+)
+
+
+def _is_secret_name(name: str) -> bool:
+    lowered = name.lower()
+    return any(hint in lowered for hint in _SECRET_NAME_HINTS)
+
+
+def _closes_quote(text: str, quote: str) -> bool:
+    """True if ``text`` holds ``quote`` not escaped by a backslash."""
+    escaped = False
+    for char in text:
+        if escaped:
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == quote:
+            return True
+    return False
+
+
+def _redact_jinja(text: str) -> str:
+    """Mask secret-named Jinja assignments and secret-keyed string literals."""
+
+    def block(m: re.Match[str]) -> str:
+        if not _is_secret_name(m.group("name")):
+            return m.group(0)
+        return f"{m.group('open')}{MASK_VALUE}{m.group('close')}"
+
+    def inline(m: re.Match[str]) -> str:
+        if not _is_secret_name(m.group("name")):
+            return m.group(0)
+        return f"{m.group('head')}{MASK_VALUE}{m.group('tail')}"
+
+    def literal(m: re.Match[str]) -> str:
+        return f"{m.group('key')}{m.group('lq')}{MASK_VALUE}{m.group('lq')}"
+
+    text = _JINJA_BLOCK_SET.sub(block, text)
+    text = _JINJA_INLINE_SET.sub(inline, text)
+    return _JINJA_TAG.sub(lambda m: _JINJA_SECRET_LITERAL.sub(literal, m.group(0)), text)
+
+
+def redact_cli_template_script(script: str) -> str:
+    """Mask secrets in a CLI template body (FortiOS CLI or Jinja).
+
+    Keeps the directive or variable name visible, so the result still shows
+    that a template sets a password and, for a bare ``{{ var }}`` or
+    ``$(var)`` reference, which variable it comes from.
+    """
+    lines = _redact_jinja(script).split("\n")
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        i += 1
+        match = _SET_LINE.search(line)
+        if not match:
+            out.append(line)
+            continue
+        rest = match.group("rest")
+        cut = rest.find("{%")
+        value, tail = (rest[:cut], rest[cut:]) if cut > 0 else (rest, "")
+        value = value.rstrip()
+        secret = match.group("directive") in CONFIG_TEXT_SECRET_DIRECTIVES or bool(
+            _ENC_VALUE.match(value)
+        )
+        if not secret or _VARIABLE_REFERENCE.match(value) or value == MASK_VALUE:
+            out.append(line)
+            continue
+        out.append(line[: match.start("rest")] + MASK_VALUE + (f" {tail}" if tail else ""))
+        quote = value[:1]
+        if quote in ("'", '"') and not _closes_quote(value[1:], quote):
+            # Unterminated quote: the value continues on the next lines up to
+            # the closing one (or the end of the script). Drop them all.
+            while i < len(lines) and not _closes_quote(lines[i], quote):
+                i += 1
+            i += 1
+    return "\n".join(out)
+
 
 # =============================================================================
 # Provisioning Templates (General)
@@ -346,8 +486,12 @@ async def get_cli_template(
     """Read a CLI template, with its script.
 
     ``get_cli_template_group`` lists a group's members only; this returns what
-    a member pushes. Secret directives in the script are redacted, so the
-    result shows that a template sets a password, not the value.
+    a member pushes. Secrets in the script are redacted, so the result shows
+    that a template sets a password, not the value: ``set <secret>`` values
+    and ENC blobs (also after a Jinja tag on the same line), secret-named
+    Jinja ``{% set %}`` assignments, and secret-keyed string literals inside
+    Jinja tags. A bare variable reference (``set psksecret {{ psk }}``,
+    ``$(psk)``) is kept, since it names where the value comes from.
 
     Args:
         adom: ADOM name
@@ -371,7 +515,7 @@ async def get_cli_template(
                 "type": _CLI_TEMPLATE_TYPES.get(template.get("type"), template.get("type")),
                 "description": template.get("description"),
                 "variables": template.get("variables"),
-                "script": redact_config_text_secrets(script) if isinstance(script, str) else script,
+                "script": redact_cli_template_script(script) if isinstance(script, str) else script,
             }
         }
     except Exception as e:

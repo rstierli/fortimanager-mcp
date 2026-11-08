@@ -3894,14 +3894,16 @@ class FortiManagerClient:
             },
         )
 
-    # Firmware templates (FNDN 8.0 "Firmware Template", fwmprof). The template
-    # itself lives at /pm/fwmprof/adom/{adom}; its settings, including the
-    # enforced version per platform, are the "fwmprof setting" sub-object.
+    # Firmware templates (fwmprof). The template itself lives at
+    # /pm/fwmprof/adom/{adom}; its settings, including the enforced version
+    # per platform, are the "fwmprof setting" sub-object. These URLs are not
+    # in the bundled API reference; verified on FortiManager 8.0.2.
 
     async def list_firmware_templates(self, adom: str) -> list[dict[str, Any]]:
         """List firmware templates with their settings and assignment.
 
-        FNDN: GET /pm/fwmprof/adom/{adom}
+        GET /pm/fwmprof/adom/{adom} -- not in the bundled API reference;
+        verified on FortiManager 8.0.2.
         """
         result = await self.get(f"/pm/fwmprof/adom/{adom}")
         rows = result if isinstance(result, list) else [result] if result else []
@@ -3910,13 +3912,15 @@ class FortiManagerClient:
     async def create_firmware_template(self, adom: str, template: dict[str, Any]) -> Any:
         """Create a firmware template.
 
-        FNDN: ADD /pm/fwmprof/adom/{adom}
+        ADD /pm/fwmprof/adom/{adom} -- not in the bundled API reference;
+        verified on FortiManager 8.0.2.
         """
         return await self.add(f"/pm/fwmprof/adom/{adom}", data=template)
 
     async def delete_firmware_template(self, adom: str, name: str) -> Any:
         """Delete a firmware template.
 
-        FNDN: DELETE /pm/fwmprof/adom/{adom}/{name}
+        DELETE /pm/fwmprof/adom/{adom}/{name} -- not in the bundled API
+        reference; verified on FortiManager 8.0.2.
         """
         return await self.delete(f"/pm/fwmprof/adom/{adom}/{name}")

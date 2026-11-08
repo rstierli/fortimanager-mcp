@@ -125,8 +125,6 @@ def register_dynamic_tools(mcp_server: MCPServer) -> None:
                 ("get_task", "Get task details by ID"),
                 ("wait_for_task", "Wait for a task to complete"),
                 ("list_packages", "List policy packages in an ADOM"),
-                ("list_policy_blocks", "List policy blocks in an ADOM"),
-                ("list_policy_block_policies", "List the policies held in a policy block"),
                 ("get_package", "Get policy package details"),
                 ("install_package", "Install policy package to devices"),
                 ("install_device_settings", "Install device settings only"),
@@ -202,16 +200,10 @@ def register_dynamic_tools(mcp_server: MCPServer) -> None:
                 ("delete_firewall_policies_bulk", "Bulk delete policies"),
                 ("move_firewall_policy", "Reorder policy position"),
                 ("search_firewall_policies", "Search policies with filters"),
+                ("list_policy_blocks", "List policy blocks in an ADOM"),
+                ("list_policy_block_policies", "List the policies held in a policy block"),
                 ("preview_install", "Preview the CLI a package/device-settings install would push"),
                 ("get_preview_result", "Re-fetch an install preview result"),
-                (
-                    "get_package_install_status",
-                    "Per-device policy package assignment and install status",
-                ),
-                (
-                    "check_device_policy_sync",
-                    "Compare a device's policies (revision / device DB) with its package",
-                ),
                 ("create_local_in_policy", "Create a new IPv4 local-in policy"),
                 ("create_local_in_policy6", "Create a new IPv6 local-in policy"),
                 ("delete_local_in_policy", "Delete an IPv4 local-in policy"),
@@ -543,11 +535,28 @@ def register_dynamic_tools(mcp_server: MCPServer) -> None:
             "device_proxy": [
                 ("query_device_api", "Read any FortiOS API path on a device through FortiManager"),
             ],
+            "policy_sync": [
+                (
+                    "get_package_install_status",
+                    "Per-device policy package assignment and install status",
+                ),
+                (
+                    "check_device_policy_sync",
+                    "Compare a device's policies (revision / device DB) with its package",
+                ),
+            ],
         }
 
         # Search for matching tools
         matches = []
         keywords = op.split()
+
+        # An exact category name lists that category alone: "policy_sync"
+        # would otherwise also pull in all of "policy" (a substring of it)
+        # and the 20-result cap below would cut its own tools off.
+        exact = op.replace(" ", "_")
+        if exact in tool_catalog:
+            tool_catalog = {exact: tool_catalog[exact]}
 
         for category, tools in tool_catalog.items():
             # Check if searching by category
@@ -609,7 +618,7 @@ def register_dynamic_tools(mcp_server: MCPServer) -> None:
                     ),
                 },
                 "policy": {
-                    "count": 29,
+                    "count": 27,
                     "description": "Firewall policies, packages, installation, local-in policies",
                 },
                 "object": {
@@ -683,6 +692,12 @@ def register_dynamic_tools(mcp_server: MCPServer) -> None:
                     "count": 1,
                     "description": "Read-only FortiOS API access to devices through FortiManager",
                 },
+                "policy_sync": {
+                    "count": 2,
+                    "description": (
+                        "Package install status per device, and device-vs-package policy comparison"
+                    ),
+                },
             },
             "usage": "Use find_fortimanager_tool(category) to see tools in a category",
         }
@@ -718,8 +733,6 @@ def register_dynamic_tools(mcp_server: MCPServer) -> None:
                     "get_task",
                     "wait_for_task",
                     "list_packages",
-                    "list_policy_blocks",
-                    "list_policy_block_policies",
                     "get_package",
                     "install_package",
                     "install_device_settings",
@@ -770,6 +783,8 @@ def register_dynamic_tools(mcp_server: MCPServer) -> None:
                     "create_device_on_demand_sniffer",
                 },
                 "policy_tools": {
+                    "list_policy_blocks",
+                    "list_policy_block_policies",
                     "create_package",
                     "delete_package",
                     "clone_package",

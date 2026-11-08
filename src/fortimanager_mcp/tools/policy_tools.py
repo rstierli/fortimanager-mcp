@@ -23,7 +23,7 @@ from fortimanager_mcp.utils.install_preview import (
     wait_task_terminal,
 )
 from fortimanager_mcp.utils.install_preview import redact_preview as _redact_preview
-from fortimanager_mcp.utils.responses import error_response
+from fortimanager_mcp.utils.responses import error_response, redact
 from fortimanager_mcp.utils.task_guard import TaskSlotsExhausted, spawn_guarded
 from fortimanager_mcp.utils.validation import (
     ValidationError,
@@ -36,6 +36,7 @@ from fortimanager_mcp.utils.validation import (
     validate_install_on,
     validate_install_scope,
     validate_move_position,
+    validate_object_name,
     validate_package_name,
     validate_policy_name,
     validate_security_profiles,
@@ -51,6 +52,23 @@ def _get_client() -> FortiManagerClient:
     if not client:
         raise RuntimeError("FortiManager client not initialized")
     return client
+
+
+def _redact_task_lines(lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Run the free-text redactor over the detail and history of task lines.
+
+    ``error_response`` redacts its ``message`` but merges extras verbatim,
+    and a task line's detail is FortiManager's own text about the object it
+    failed on, which can quote the offending value.
+    """
+    return [
+        {
+            **line,
+            "detail": redact(d) if isinstance(d := line.get("detail"), str) else d,
+            "history": [redact(str(h)) for h in line.get("history") or []],
+        }
+        for line in lines
+    ]
 
 
 def _build_security_profile_fields(
@@ -226,18 +244,26 @@ async def clone_package(
     Creates a copy of an existing package with all its policies and waits
     for FortiManager's clone task to finish.
 
-    By default the clone is NOT assigned to any device, so it can be edited
-    and reviewed without touching the devices that run the source package.
-    Each policy keeps its own "install on" targets (FMG clears them on an
-    unassigned clone; they are copied back from the source).
+    Changed in 1.13.0: by default the clone is NOT assigned to any device
+    (earlier releases asked FMG to keep the source's assignment), so it can
+    be edited and reviewed without touching the devices that run the source
+    package. Pass ``copy_installation_targets=True`` for the old behaviour.
+    Each policy keeps its own "install on" targets either way: FMG clears
+    them on an unassigned clone, so they are copied back from the source.
+
+    The new name is sent as ``dst_name``, the parameter FNDN documents for
+    ``/securityconsole/package/clone`` (7.2 through 8.0); earlier releases
+    sent ``new_name``, which is not a parameter of that command. The clone is
+    created at the package root, so ``new_name`` is a plain name, not a
+    folder path.
 
     Args:
         adom: ADOM name
-        package: Source package name
-        new_name: Name for the cloned package
+        package: Source package name (may be folder-qualified)
+        new_name: Name for the cloned package, without a folder
         copy_installation_targets: Also copy the source package's device and
             group assignment (default: False)
-        timeout: Seconds to wait for the clone task (default 120)
+        timeout: Seconds to wait for the clone task (10-600, default 120)
 
     Returns:
         dict: Clone result with keys:
@@ -261,6 +287,13 @@ async def clone_package(
         adom = validate_adom(adom)
         package = validate_package_name(package)
         new_name = validate_package_name(new_name)
+        if "/" in new_name:
+            # dst_parent is not exposed: the clone lands at the package root,
+            # and the install-on restore below addresses it by this name.
+            raise ValidationError(
+                f"new_name '{new_name}' must be a package name, not a folder path: "
+                "the clone is created at the package root"
+            )
         client = _get_client()
 
         targets: dict[int, list[dict[str, Any]]] = {}
@@ -274,7 +307,7 @@ async def clone_package(
                 if isinstance(policy, dict) and policy.get("scope member"):
                     targets[int(policy["policyid"])] = policy["scope member"]
 
-        deadline = asyncio.get_event_loop().time() + max(10, min(int(timeout), 600))
+        deadline = asyncio.get_running_loop().time() + max(10, min(int(timeout), 600))
         result = await spawn_guarded(
             "clone_package",
             lambda: client.clone_package(
@@ -283,7 +316,17 @@ async def clone_package(
         )
         task_id = result.get("task") if isinstance(result, dict) else None
         if task_id is not None:
-            task = await wait_task_terminal(client, int(task_id), deadline)
+            try:
+                task = await wait_task_terminal(client, int(task_id), deadline)
+            except TimeoutError as e:
+                return error_response(
+                    error="task_timeout",
+                    message=f"{e}; the clone may still finish, check with get_task",
+                    operation="clone_package",
+                    adom=adom,
+                    package=package,
+                    task_id=int(task_id),
+                )
             if task_state(task) != "done":
                 lines = summarize_task_lines(await client.get_task_line(int(task_id)))
                 return error_response(
@@ -293,7 +336,7 @@ async def clone_package(
                     adom=adom,
                     package=package,
                     task_id=int(task_id),
-                    task_lines=lines,
+                    task_lines=_redact_task_lines(lines),
                 )
 
         restored: list[int] = []
@@ -487,7 +530,9 @@ async def list_policy_block_policies(
     Args:
         adom: ADOM name
         block: Policy block name (see list_policy_blocks, or the
-            ``_policy_block`` field of a package entry)
+            ``_policy_block`` field of a package entry). A block that does
+            not exist answers "No permission for the resource" (FMG -11),
+            not "not found" (measured on 8.0.2)
         fields: Specific fields to return (optional)
         limit: Maximum number of policies to return (optional)
         offset: Starting position for pagination (default: 0)
@@ -497,7 +542,9 @@ async def list_policy_block_policies(
     """
     try:
         adom = validate_adom(adom)
-        block = validate_package_name(block)
+        # A block is one object name, not a folder path: validate_package_name
+        # accepts "/", which would step into a different API path.
+        block = validate_object_name(block, "policy block")
         client = _get_client()
         policies = await client.list_policy_block_policies(
             adom, block, fields=fields, range=[offset, limit] if limit else None

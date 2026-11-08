@@ -1878,3 +1878,69 @@ class TestCaBundleAndVerifyGuidance:
         assert "subjectAltName" in blob or "SAN" in blob
         # And the setting that makes true reachable is named.
         assert "FORTIMANAGER_CA_BUNDLE" in blob
+
+
+class TestPortedClientMethods:
+    """Request shapes of the client methods added by the lvenet port (1.13.0)."""
+
+    @pytest.mark.asyncio
+    async def test_clone_package_without_scope_omits_it(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """No ``scope`` key at all is what makes FMG copy the source's targets."""
+        mock_fmg_instance.execute.return_value = (0, {"task": 9})
+
+        result = await mock_client.clone_package("demo", "branch", "branch-v2")
+
+        assert result == {"task": 9}
+        assert mock_fmg_instance.execute.call_args.args[0] == "/securityconsole/package/clone"
+        assert mock_fmg_instance.execute.call_args.kwargs == {
+            "adom": "demo",
+            "pkg": "branch",
+            "dst_name": "branch-v2",
+        }
+
+    @pytest.mark.asyncio
+    async def test_list_firewall_policies_scope_member_option(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        mock_fmg_instance.get.return_value = (0, [])
+
+        await mock_client.list_firewall_policies("demo", "branch", scope_member=True)
+        assert mock_fmg_instance.get.call_args.kwargs["option"] == ["scope member"]
+
+        await mock_client.list_firewall_policies("demo", "branch")
+        assert "option" not in mock_fmg_instance.get.call_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_policy_block_reads_normalise_to_lists(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        mock_fmg_instance.get.return_value = (0, {"name": "shared"})
+        assert await mock_client.list_policy_blocks("demo") == [{"name": "shared"}]
+
+        mock_fmg_instance.get.return_value = (0, None)
+        assert await mock_client.list_policy_block_policies("demo", "shared") == []
+        assert mock_fmg_instance.get.call_args.kwargs == {}
+
+    @pytest.mark.asyncio
+    async def test_cli_template_list_asks_for_no_script(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        mock_fmg_instance.get.return_value = (0, [])
+
+        await mock_client.list_cli_templates("demo")
+
+        assert mock_fmg_instance.get.call_args.args[0] == "/pm/config/adom/demo/obj/cli/template"
+        assert "script" not in mock_fmg_instance.get.call_args.kwargs["fields"]
+
+    @pytest.mark.asyncio
+    async def test_profile_group_url(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        mock_fmg_instance.get.return_value = (0, {"name": "g1"})
+
+        assert await mock_client.get_profile_group("demo", "g1") == {"name": "g1"}
+        assert mock_fmg_instance.get.call_args.args[0] == (
+            "/pm/config/adom/demo/obj/firewall/profile-group/g1"
+        )
