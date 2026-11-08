@@ -134,6 +134,75 @@ class TestPackageTools:
         assert "task_id" in result
 
 
+class TestInstallDeviceSettings:
+    """install_device_settings forwards an optional revision comment."""
+
+    @pytest.mark.asyncio
+    async def test_comment_is_sent(
+        self, mock_client_configured: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        from fortimanager_mcp.tools import system_tools
+
+        with patch.object(system_tools, "get_fmg_client", return_value=mock_client_configured):
+            result = await system_tools.install_device_settings(
+                adom="root",
+                devices=[{"name": "FGT-01", "vdom": "root"}],
+                dev_rev_comments="  quick install from MCP  ",
+            )
+
+        assert result["status"] == "success"
+        assert result["task_id"] == 123
+        url, kwargs = (
+            mock_fmg_instance.execute.call_args.args[0],
+            mock_fmg_instance.execute.call_args.kwargs,
+        )
+        assert url == "/securityconsole/install/device"
+        assert kwargs["dev_rev_comments"] == "quick install from MCP"
+
+    @pytest.mark.asyncio
+    async def test_no_comment_omits_field(
+        self, mock_client_configured: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        from fortimanager_mcp.tools import system_tools
+
+        with patch.object(system_tools, "get_fmg_client", return_value=mock_client_configured):
+            result = await system_tools.install_device_settings(
+                adom="root", devices=[{"name": "FGT-01", "vdom": "root"}]
+            )
+
+        assert result["status"] == "success"
+        assert "dev_rev_comments" not in mock_fmg_instance.execute.call_args.kwargs
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "comment",
+        ["", "   ", "line1\nline2", "x" * 128, "é" * 64],
+    )
+    async def test_bad_comment_refused_before_install(
+        self,
+        comment: str,
+        mock_client_configured: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+    ) -> None:
+        from fortimanager_mcp.tools import system_tools
+
+        with patch.object(system_tools, "get_fmg_client", return_value=mock_client_configured):
+            result = await system_tools.install_device_settings(
+                adom="root",
+                devices=[{"name": "FGT-01", "vdom": "root"}],
+                dev_rev_comments=comment,
+            )
+
+        assert result["status"] == "error"
+        assert "dev_rev_comments" in result["message"]
+        mock_fmg_instance.execute.assert_not_called()
+
+    def test_comment_at_byte_limit_accepted(self) -> None:
+        from fortimanager_mcp.tools import system_tools
+
+        assert system_tools._validate_rev_comment("x" * 127) == "x" * 127
+
+
 class TestWorkspaceTools:
     """Test workspace/ADOM locking tools."""
 

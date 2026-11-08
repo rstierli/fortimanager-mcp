@@ -3,6 +3,7 @@ DB, and firewall policy/object revision history.
 """
 
 import json
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -151,6 +152,150 @@ class TestDiffDeviceRevision:
         assert result["changed"] is True
         assert "-    set hostname old" in result["diff"]
         assert "+    set hostname new" in result["diff"]
+
+    @pytest.mark.asyncio
+    async def test_export_noise_is_not_a_change(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        def mock_execute(url: str, **kwargs):
+            if url == "/deployment/checkout/revision":
+                return (0, {"content": "#platform=FortiGate-VM64\nconfig a\n\nend\n\n"})
+            return (0, {"content": "#platform=FORTIGATE-VM64\nconfig a\nend\n"})
+
+        mock_fmg_instance.execute.side_effect = mock_execute
+        with patch.object(revision_tools, "get_fmg_client", return_value=mock_client):
+            result = await revision_tools.diff_device_revision("hub2", revision=7)
+
+        assert result["changed"] is False
+
+    @pytest.mark.asyncio
+    async def test_sections_limit_the_diff(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        def config(asn: str, hostname: str) -> str:
+            return (
+                f"config system global\nset hostname {hostname}\nend\n"
+                f"config router bgp\nset as {asn}\nconfig neighbor\nedit a\nnext\nend\n"
+                f"set router-id {asn}\nend\n"
+            )
+
+        def mock_execute(url: str, **kwargs):
+            if url == "/deployment/checkout/revision":
+                return (0, {"content": config("1", "old")})
+            return (0, {"content": config("2", "new")})
+
+        mock_fmg_instance.execute.side_effect = mock_execute
+        with patch.object(revision_tools, "get_fmg_client", return_value=mock_client):
+            result = await revision_tools.diff_device_revision(
+                "hub2", revision=7, sections=["config router bgp", "router static"]
+            )
+
+        assert "+set as 2" in result["diff"]
+        assert "hostname" not in result["diff"]
+        assert "+set router-id 2" in result["diff"]
+        assert result["sections_missing"] == ["router static"]
+
+    @staticmethod
+    def _vdom_config(asn: str, psk: str) -> str:
+        return (
+            "#config-version=FGVM64-7.4.4-FW-build2662\n"
+            "config vdom\nedit root\n"
+            "config system interface\nedit port1\nset ip 192.0.2.1 255.255.255.0\nnext\nend\n"
+            f"config vpn ipsec phase1-interface\nedit hub1\nset psksecret {psk}\nnext\nend\n"
+            f"config router bgp\nset as {asn}\nend\n"
+            "end\n"
+        )
+
+    async def _diff_sections(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        past: str,
+        current: str,
+        sections: Any,
+    ) -> dict[str, Any]:
+        def mock_execute(url: str, **kwargs):
+            if url == "/deployment/checkout/revision":
+                return (0, {"content": past})
+            return (0, {"content": current})
+
+        mock_fmg_instance.execute.side_effect = mock_execute
+        with patch.object(revision_tools, "get_fmg_client", return_value=mock_client):
+            return await revision_tools.diff_device_revision("hub2", revision=7, sections=sections)
+
+    @pytest.mark.asyncio
+    async def test_sections_match_inside_a_vdom(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        result = await self._diff_sections(
+            mock_client,
+            mock_fmg_instance,
+            self._vdom_config("65001", "old-psk"),
+            self._vdom_config("65002", "new-psk"),
+            ["router bgp"],
+        )
+
+        assert result["changed"] is True
+        assert "-set as 65001" in result["diff"]
+        assert "+set as 65002" in result["diff"]
+        assert "port1" not in result["diff"]
+        assert result["sections_missing"] == []
+
+    @pytest.mark.asyncio
+    async def test_sections_diff_is_still_redacted(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        result = await self._diff_sections(
+            mock_client,
+            mock_fmg_instance,
+            self._vdom_config("65001", "old-psk"),
+            self._vdom_config("65001", "new-psk"),
+            ["vpn ipsec phase1-interface"],
+        )
+
+        assert "old-psk" not in result["diff"] and "new-psk" not in result["diff"]
+        assert result["changed"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_single_section_string_is_accepted(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """A bare string used to be iterated per character and match nothing."""
+        result = await self._diff_sections(
+            mock_client,
+            mock_fmg_instance,
+            self._vdom_config("65001", "x"),
+            self._vdom_config("65002", "x"),
+            "router bgp",
+        )
+
+        assert "+set as 65002" in result["diff"]
+        assert result["sections_missing"] == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("sections", [[""], [1], {"router bgp": 1}])
+    async def test_invalid_sections_are_refused(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock, sections: Any
+    ) -> None:
+        result = await self._diff_sections(mock_client, mock_fmg_instance, "", "", sections)
+
+        assert result["status"] == "error"
+        mock_fmg_instance.execute.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_header_and_whitespace_noise_is_dropped_without_sections(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        result = await self._diff_sections(
+            mock_client,
+            mock_fmg_instance,
+            "#buildno=1\nconfig a   \n\nset b 1\nend",
+            "#buildno=2\nconfig a\nset b 1\nend\n\n",
+            None,
+        )
+
+        assert result["changed"] is False
+        assert "sections_missing" not in result
 
     @pytest.mark.asyncio
     async def test_reports_unchanged_when_identical(

@@ -278,3 +278,39 @@ class TestSpawnSitesAreGuarded:
         assert result["error"] == "task_slots_exhausted"
         assert result["operation"] == "execute_script_on_device"
         client.execute_script.assert_not_called()
+
+
+class TestWaitForTaskStates:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("raw", "status", "state"),
+        [
+            (4, "success", "done"),
+            (8, "success", "warning"),
+            (3, "error", "cancelled"),
+            (7, "error", "aborted"),
+            (5, "error", "error"),
+            ("Done", "success", "done"),
+        ],
+    )
+    async def test_every_terminal_state_ends_the_wait(
+        self, raw: int | str, status: str, state: str
+    ) -> None:
+        client = _mock_client_with_get_task([{"state": raw}])
+        with patch.object(system_tools, "get_fmg_client", return_value=client):
+            result = await system_tools.wait_for_task(42, timeout=5, poll_interval=1)
+        assert result["completed"] is True
+        assert result["status"] == status
+        assert result["task_state"] == state
+        assert client.get_task.call_count == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("raw", [9, 10, 42])
+    async def test_non_terminal_states_keep_waiting(self, raw: int) -> None:
+        """to_continue (9), unknown (10) and numbers outside the enum are not
+        end states: the wait goes on until the task really ends."""
+        client = _mock_client_with_get_task([{"state": raw}, {"state": 4}])
+        with patch.object(system_tools, "get_fmg_client", return_value=client):
+            result = await system_tools.wait_for_task(42, timeout=5, poll_interval=1)
+        assert result["task_state"] == "done"
+        assert client.get_task.call_count == 2

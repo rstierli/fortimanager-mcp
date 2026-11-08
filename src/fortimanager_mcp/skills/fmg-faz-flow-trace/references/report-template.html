@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="{{LANG}}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{TITLE}}</title>
+<style>
+:root{--bg:#f4f7f8;--panel:#fff;--fg:#14242b;--muted:#566a73;--line:#d2dde2;--accent:#0b6a78;--ok:#1c7a4d;--warn:#9a5a00;
+--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--body:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+@media (prefers-color-scheme:dark){:root{--bg:#0f171b;--panel:#162127;--fg:#e4edf0;--muted:#9fb1b9;--line:#2b3a41;--accent:#5cc3d2;--ok:#62cf9b;--warn:#e7b35f}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.55 var(--body)}
+main{max-width:1180px;margin:0 auto;padding:36px 20px 56px;display:grid;gap:30px}
+header{display:grid;gap:6px}
+.flow{font:600 14px var(--mono);color:var(--accent);overflow-wrap:anywhere}
+h1{font-size:30px;line-height:1.2;margin:0}
+h2{font-size:19px;margin:0 0 10px}
+p{margin:0;max-width:75ch}
+.meta{color:var(--muted);font-size:14px}
+.verdict{background:var(--panel);border:1px solid var(--line);border-left:5px solid var(--ok);padding:14px 18px}
+.verdict.warn{border-left-color:var(--warn)}
+.path{display:flex;flex-wrap:wrap;gap:8px;align-items:center;font:13.5px var(--mono);list-style:none;margin:0;padding:0}
+.path li{background:var(--panel);border:1px solid var(--line);padding:6px 10px;overflow-wrap:anywhere;min-width:0}
+.path li+li::before{content:"\2192";margin-right:8px;color:var(--muted)}
+.tw{overflow-x:auto;border:1px solid var(--line);background:var(--panel)}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{padding:9px 11px;text-align:left;vertical-align:top;border-bottom:1px solid var(--line);white-space:nowrap}
+th{font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+tr:last-child td{border-bottom:0}
+td code,li code,p code{font:13px var(--mono)}
+td{font-variant-numeric:tabular-nums}
+ul{margin:0;padding-left:20px;display:grid;gap:5px;max-width:80ch}
+footer{color:var(--muted);font-size:13px}
+</style>
+</head>
+<body>
+<main>
+<header>
+<div class="flow">{{FLOW}}</div>
+<h1>{{HEADING}}</h1>
+<p class="meta">{{META}}</p>
+</header>
+<section class="verdict{{VERDICT_CLASS}}"><p>{{VERDICT}}</p></section>
+<section><h2>{{PATH_HEADING}}</h2><ol class="path">{{PATH_ITEMS}}</ol></section>
+<section><h2>{{HOPS_HEADING}}</h2><div class="tw"><table>{{HOPS_TABLE}}</table></div></section>
+<section><h2>{{HOSTS_HEADING}}</h2><div class="tw"><table>{{HOSTS_TABLE}}</table></div></section>
+<section><h2>{{NOTES_HEADING}}</h2><ul>{{NOTES}}</ul></section>
+<footer>{{FOOTER}}</footer>
+</main>
+</body>
+</html>

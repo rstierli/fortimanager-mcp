@@ -2,7 +2,7 @@
 
 Uses the MCPServer decorator pattern for tool registration.
 Supports two modes:
-- full: All 232 tools loaded (default)
+- full: All 253 tools loaded (default)
 - dynamic: Only discovery tools loaded (~90% context reduction)
 """
 
@@ -89,7 +89,7 @@ async def health_check() -> str:
     """Check FortiManager MCP server health and connection status."""
     mode = settings.FMG_TOOL_MODE
     if mode == "full":
-        tool_info = "All 232 tools loaded"
+        tool_info = "All 253 tools loaded"
     else:
         tool_info = "Discovery tools + dynamic execution"
     return f"FortiManager MCP Server is healthy (mode: {mode}, {tool_info})"
@@ -111,7 +111,7 @@ def register_dynamic_tools(mcp_server: MCPServer) -> None:
         """
         op = operation.lower().strip()
 
-        # Define available tools and their categories (232 tools total)
+        # Define available tools and their categories (253 tools total)
         tool_catalog = {
             "system": [
                 ("get_system_status", "Get FortiManager system status and version info"),
@@ -138,6 +138,9 @@ def register_dynamic_tools(mcp_server: MCPServer) -> None:
                 ("search_devices", "Search devices with filters"),
                 ("add_device", "Add a new device to FortiManager"),
                 ("add_model_device", "Add offline model device"),
+                ("list_metadata_variables", "List metadata variables and per-device values"),
+                ("check_device_variables", "Check a device's metadata variables"),
+                ("set_metadata_variable", "Set a device's value for a metadata variable"),
                 ("delete_device", "Remove a device from FortiManager"),
                 ("add_devices_bulk", "Add multiple devices at once"),
                 ("delete_devices_bulk", "Remove multiple devices at once"),
@@ -197,8 +200,10 @@ def register_dynamic_tools(mcp_server: MCPServer) -> None:
                 ("delete_firewall_policies_bulk", "Bulk delete policies"),
                 ("move_firewall_policy", "Reorder policy position"),
                 ("search_firewall_policies", "Search policies with filters"),
-                ("preview_install", "Preview installation changes"),
-                ("get_preview_result", "Get preview results"),
+                ("list_policy_blocks", "List policy blocks in an ADOM"),
+                ("list_policy_block_policies", "List the policies held in a policy block"),
+                ("preview_install", "Preview the CLI a package/device-settings install would push"),
+                ("get_preview_result", "Re-fetch an install preview result"),
                 ("create_local_in_policy", "Create a new IPv4 local-in policy"),
                 ("create_local_in_policy6", "Create a new IPv6 local-in policy"),
                 ("delete_local_in_policy", "Delete an IPv4 local-in policy"),
@@ -265,6 +270,8 @@ def register_dynamic_tools(mcp_server: MCPServer) -> None:
                 ("assign_system_template", "Assign template to device"),
                 ("assign_system_template_bulk", "Bulk assign system template"),
                 ("unassign_system_template", "Remove template assignment"),
+                ("list_cli_templates", "List CLI templates"),
+                ("get_cli_template", "Read a CLI template and its script"),
                 ("list_cli_template_groups", "List CLI template groups"),
                 ("get_cli_template_group", "Get CLI template group"),
                 ("create_cli_template_group", "Create CLI template group"),
@@ -283,13 +290,24 @@ def register_dynamic_tools(mcp_server: MCPServer) -> None:
                 ("assign_sdwan_template_bulk", "Bulk assign SD-WAN template"),
                 ("unassign_sdwan_template", "Remove template assignment"),
                 ("get_device_sdwan", "Get device-DB SD-WAN config (members/zones/rules)"),
+                ("get_sdwan_template_config", "Get SD-WAN template body (members/SLAs/rules)"),
+                ("get_bgp_template", "Get BGP template body (AS/neighbors/networks)"),
+                ("update_bgp_template", "Change neighbor-group options in a BGP template"),
+                ("get_device_bgp", "Get device-DB BGP config (AS/neighbors/networks)"),
+                ("get_device_static_routes", "Get device-DB IPv4 static routes"),
                 (
                     "get_device_sdwan_monitor",
                     "Live SD-WAN Monitor: member link/bandwidth + SLA health",
                 ),
+                ("get_device_bgp_status", "Live BGP: peer state, learned paths, BGP routes"),
+                (
+                    "diagnose_ipsec_tunnel",
+                    "Diagnose a down IPsec overlay tunnel: underlay, IKE, health checks, hub",
+                ),
                 ("resolve_datasource", "Resolve objects a config attribute can reference"),
             ],
             "security_profile": [
+                ("get_profile_group", "Get a firewall security profile group"),
                 ("create_antivirus_profile", "Create an antivirus profile"),
                 ("create_application_list", "Create an application-control list"),
                 ("create_dnsfilter_profile", "Create a DNS filter profile"),
@@ -478,6 +496,15 @@ def register_dynamic_tools(mcp_server: MCPServer) -> None:
             ],
             "firmware": [
                 (
+                    "create_firmware_template",
+                    "Create a firmware template enforcing a version per platform",
+                ),
+                ("delete_firmware_template", "Delete an unassigned firmware template"),
+                (
+                    "list_firmware_templates",
+                    "List firmware templates with versions, schedule and assignment",
+                ),
+                (
                     "get_firmware_upgrade_path",
                     "Preview the multi-step firmware upgrade path to a target version",
                 ),
@@ -505,11 +532,31 @@ def register_dynamic_tools(mcp_server: MCPServer) -> None:
                     "Simulate a firewall policy lookup for a traffic 5-tuple against a managed device",
                 ),
             ],
+            "device_proxy": [
+                ("query_device_api", "Read an allowlisted FortiOS diagnostic API path on a device"),
+            ],
+            "policy_sync": [
+                (
+                    "get_package_install_status",
+                    "Per-device policy package assignment and install status",
+                ),
+                (
+                    "check_device_policy_sync",
+                    "Compare a device's policies (revision / device DB) with its package",
+                ),
+            ],
         }
 
         # Search for matching tools
         matches = []
         keywords = op.split()
+
+        # An exact category name lists that category alone: "policy_sync"
+        # would otherwise also pull in all of "policy" (a substring of it)
+        # and the 20-result cap below would cut its own tools off.
+        exact = op.replace(" ", "_")
+        if exact in tool_catalog:
+            tool_catalog = {exact: tool_catalog[exact]}
 
         for category, tools in tool_catalog.items():
             # Check if searching by category
@@ -548,14 +595,14 @@ def register_dynamic_tools(mcp_server: MCPServer) -> None:
             Categories with descriptions and tool counts
         """
         return {
-            "total_tools": 232,
+            "total_tools": 253,
             "categories": {
                 "system": {
                     "count": 17,
                     "description": "System status, ADOM management, tasks, packages",
                 },
                 "device": {
-                    "count": 14,
+                    "count": 17,
                     "description": (
                         "Device management, VDOMs, bulk operations, interface config, "
                         "client location"
@@ -571,7 +618,7 @@ def register_dynamic_tools(mcp_server: MCPServer) -> None:
                     ),
                 },
                 "policy": {
-                    "count": 25,
+                    "count": 27,
                     "description": "Firewall policies, packages, installation, local-in policies",
                 },
                 "object": {
@@ -583,18 +630,18 @@ def register_dynamic_tools(mcp_server: MCPServer) -> None:
                     "description": "CLI scripts, execution, logs",
                 },
                 "template": {
-                    "count": 15,
+                    "count": 17,
                     "description": "Provisioning templates, system templates, CLI template groups",
                 },
                 "sdwan": {
-                    "count": 10,
+                    "count": 17,
                     "description": (
                         "SD-WAN templates, assignment, device config + live monitor, "
                         "datasource resolution"
                     ),
                 },
                 "security_profile": {
-                    "count": 20,
+                    "count": 21,
                     "description": (
                         "Antivirus, application-control, DNS filter, and web filter profile CRUD"
                     ),
@@ -627,9 +674,10 @@ def register_dynamic_tools(mcp_server: MCPServer) -> None:
                     "description": "Device group CRUD, membership, and group nesting",
                 },
                 "firmware": {
-                    "count": 5,
+                    "count": 8,
                     "description": (
-                        "Firmware image listing, upgrade path preview, and device firmware upgrade"
+                        "Firmware image listing, upgrade path preview, device firmware upgrade, "
+                        "and firmware templates"
                     ),
                 },
                 "object_usage": {
@@ -639,6 +687,16 @@ def register_dynamic_tools(mcp_server: MCPServer) -> None:
                 "policy_lookup": {
                     "count": 1,
                     "description": "Simulate a firewall policy lookup for a traffic 5-tuple",
+                },
+                "device_proxy": {
+                    "count": 1,
+                    "description": "Read-only FortiOS API access to devices through FortiManager",
+                },
+                "policy_sync": {
+                    "count": 2,
+                    "description": (
+                        "Package install status per device, and device-vs-package policy comparison"
+                    ),
                 },
             },
             "usage": "Use find_fortimanager_tool(category) to see tools in a category",
@@ -688,6 +746,9 @@ def register_dynamic_tools(mcp_server: MCPServer) -> None:
                     "search_devices",
                     "add_device",
                     "add_model_device",
+                    "list_metadata_variables",
+                    "check_device_variables",
+                    "set_metadata_variable",
                     "delete_device",
                     "add_devices_bulk",
                     "delete_devices_bulk",
@@ -722,6 +783,8 @@ def register_dynamic_tools(mcp_server: MCPServer) -> None:
                     "create_device_on_demand_sniffer",
                 },
                 "policy_tools": {
+                    "list_policy_blocks",
+                    "list_policy_block_policies",
                     "create_package",
                     "delete_package",
                     "clone_package",
@@ -800,6 +863,8 @@ def register_dynamic_tools(mcp_server: MCPServer) -> None:
                     "assign_system_template",
                     "assign_system_template_bulk",
                     "unassign_system_template",
+                    "list_cli_templates",
+                    "get_cli_template",
                     "list_cli_template_groups",
                     "get_cli_template_group",
                     "create_cli_template_group",
@@ -819,10 +884,18 @@ def register_dynamic_tools(mcp_server: MCPServer) -> None:
                     "unassign_sdwan_template",
                     "get_device_sdwan",
                     "get_device_sdwan_monitor",
+                    "get_device_bgp_status",
+                    "diagnose_ipsec_tunnel",
+                    "get_sdwan_template_config",
+                    "get_bgp_template",
+                    "update_bgp_template",
+                    "get_device_bgp",
+                    "get_device_static_routes",
                     "resolve_datasource",
                 },
                 # --- 2026-08-14 high-priority tool expansion batch ---
                 "security_profile_tools": {
+                    "get_profile_group",
                     "list_antivirus_profiles",
                     "get_antivirus_profile",
                     "create_antivirus_profile",
@@ -914,6 +987,9 @@ def register_dynamic_tools(mcp_server: MCPServer) -> None:
                     "list_firmware_images",
                     "upgrade_device_firmware",
                     "get_firmware_upgrade_report",
+                    "list_firmware_templates",
+                    "create_firmware_template",
+                    "delete_firmware_template",
                 },
                 "object_usage_tools": {
                     "find_object_usage",
@@ -932,6 +1008,13 @@ def register_dynamic_tools(mcp_server: MCPServer) -> None:
                 },
                 "policy_lookup_tools": {
                     "policy_lookup",
+                },
+                "device_proxy_tools": {
+                    "query_device_api",
+                },
+                "policy_sync_tools": {
+                    "get_package_install_status",
+                    "check_device_policy_sync",
                 },
             }
 
@@ -965,6 +1048,9 @@ def register_dynamic_tools(mcp_server: MCPServer) -> None:
             }
 
 
+# Prompts load in both tool modes: a client only pays for one it requests
+from fortimanager_mcp import prompts  # noqa: E402, F401
+
 # Conditional tool loading based on FMG_TOOL_MODE
 if settings.FMG_TOOL_MODE == "dynamic":
     # Dynamic mode: register discovery tools only
@@ -973,18 +1059,20 @@ if settings.FMG_TOOL_MODE == "dynamic":
 
 else:
     # Full mode: Load all tools (default behavior)
-    logger.info("Loading in FULL mode - all 232 tools")
+    logger.info("Loading in FULL mode - all 253 tools")
 
     # Import all tool modules (registers them with the server)
     from fortimanager_mcp.tools import (  # noqa: E402, F401
         device_config_tools,
         device_group_tools,
+        device_proxy_tools,
         dvm_tools,
         firmware_tools,
         fmg_ops_tools,
         object_tools,
         object_usage_tools,
         policy_lookup_tools,
+        policy_sync_tools,
         policy_tools,
         revision_tools,
         script_tools,

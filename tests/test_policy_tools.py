@@ -1,11 +1,13 @@
 """Tests for policy_tools module."""
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.tools import policy_tools
+from fortimanager_mcp.utils import task_guard
 from fortimanager_mcp.utils.config import get_settings
 from fortimanager_mcp.utils.errors import PermissionError, ResourceNotFoundError
 from tests.conftest import MOCK_POLICIES
@@ -683,22 +685,105 @@ class TestPackageTools:
         assert result["status"] == "success"
         assert "message" in result
 
-    @pytest.mark.asyncio
-    async def test_clone_package_success(
-        self,
-        mock_client: MagicMock,
-        configure_mock_responses: None,
-    ) -> None:
-        """Test cloning policy package."""
-        with patch("fortimanager_mcp.tools.policy_tools.get_fmg_client", return_value=mock_client):
-            result = await policy_tools.clone_package(
-                adom="root",
-                package="default",
-                new_name="default-copy",
+
+class TestClonePackage:
+    """clone_package: dst_name, an unassigned clone, per-policy targets kept.
+
+    Shapes and behaviour verified live on FMG 8.0.2: the clone is a task;
+    without ``scope`` it copies the source's device assignment, with
+    ``scope=[]`` it is unassigned but every policy's install-on is cleared.
+    """
+
+    SOURCE_POLICIES = [
+        {"policyid": 1, "scope member": None},
+        {"policyid": 3, "scope member": [{"name": "emea_spokes"}]},
+        {"policyid": 6, "scope member": [{"name": "branch1", "vdom": "root"}]},
+    ]
+
+    @pytest.fixture(autouse=True)
+    def _clean_slots(self) -> Any:
+        task_guard._reset()
+        yield
+        task_guard._reset()
+
+    def _client(self, state: int = 4) -> MagicMock:
+        client = MagicMock()
+        client.get = AsyncMock(return_value=self.SOURCE_POLICIES)
+        client.clone_package = AsyncMock(return_value={"task": 410})
+        client.get_task = AsyncMock(return_value={"state": state, "percent": 100})
+        client.get_task_line = AsyncMock(
+            return_value=[{"name": "copy", "state": 5, "detail": "name exists", "history": []}]
+        )
+        client.update = AsyncMock(return_value={})
+        return client
+
+    async def _clone(self, client: MagicMock, **kwargs: Any) -> dict[str, Any]:
+        with patch.object(policy_tools, "get_fmg_client", return_value=client):
+            return await policy_tools.clone_package(
+                adom="demo", package="branch_pkg", new_name="v2", **kwargs
             )
 
+    @pytest.mark.asyncio
+    async def test_default_clone_is_unassigned_and_keeps_policy_targets(self) -> None:
+        client = self._client()
+        result = await self._clone(client)
+
+        assert result["status"] == "success", result
+        client.clone_package.assert_awaited_once_with("demo", "branch_pkg", "v2", scope=[])
+        assert result["installation_targets_copied"] is False
+        assert result["policy_targets_restored"] == [3, 6]
+        restored = {
+            call.args[0]: call.kwargs["data"]["scope member"]
+            for call in client.update.await_args_list
+        }
+        assert restored == {
+            "/pm/config/adom/demo/pkg/v2/firewall/policy/3": [{"name": "emea_spokes"}],
+            "/pm/config/adom/demo/pkg/v2/firewall/policy/6": [{"name": "branch1", "vdom": "root"}],
+        }
+        assert task_guard.in_flight() == 0
+
+    @pytest.mark.asyncio
+    async def test_copy_installation_targets_copies_everything_itself(self) -> None:
+        client = self._client()
+        result = await self._clone(client, copy_installation_targets=True)
+
+        assert result["status"] == "success", result
+        client.clone_package.assert_awaited_once_with("demo", "branch_pkg", "v2", scope=None)
+        client.get.assert_not_called()
+        client.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_failed_clone_task_returns_its_lines(self) -> None:
+        client = self._client(state=5)
+        result = await self._clone(client)
+
+        assert result["status"] == "error"
+        assert result["error"] == "clone_failed"
+        assert result["task_lines"][0]["detail"] == "name exists"
+        client.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unrestorable_target_is_a_warning(self) -> None:
+        client = self._client()
+        client.update.side_effect = [RuntimeError("datasrc invalid"), {}]
+        result = await self._clone(client)
+
         assert result["status"] == "success"
-        assert "message" in result
+        assert result["policy_targets_restored"] == [6]
+        assert "policy 3" in result["warnings"][0]
+
+    @pytest.mark.asyncio
+    async def test_client_sends_dst_name(self) -> None:
+        """The 8.0 API takes ``dst_name``; ``new_name`` was rejected as an
+        invalid parameter, so every clone failed."""
+        client = FortiManagerClient.__new__(FortiManagerClient)
+        with patch.object(
+            FortiManagerClient, "execute", AsyncMock(return_value={"task": 1})
+        ) as execute:
+            await client.clone_package("demo", "src", "dst", scope=[])
+        execute.assert_awaited_once_with(
+            "/securityconsole/package/clone", adom="demo", pkg="src", dst_name="dst", scope=[]
+        )
 
 
 class TestGetPolicyServices:
@@ -1648,3 +1733,195 @@ class TestPreviewResultRedaction:
 
         assert "Nested==" not in str(result["preview"])
         assert result["preview"]["data"][0]["device"] == "FGT-01"
+
+
+class TestPolicyInstallOn:
+    """install_on sets a policy's FMG ``scope member`` (its install-on targets)."""
+
+    def _client(self) -> MagicMock:
+        client = MagicMock()
+        client.create_firewall_policy = AsyncMock(return_value={"policyid": 6})
+        client.update_firewall_policy = AsyncMock(return_value={})
+        client.get_firewall_policy = AsyncMock(
+            return_value={"srcaddr": ["lan"], "dstaddr": ["dc"], "service": ["HTTPS"]}
+        )
+        return client
+
+    async def _create(self, client: MagicMock, **kwargs: Any) -> dict[str, Any]:
+        with patch.object(policy_tools, "get_fmg_client", return_value=client):
+            return await policy_tools.create_firewall_policy(
+                adom="demo",
+                package="branch_pkg",
+                name="B1_TO_B2_OUT",
+                srcintf=["port3"],
+                dstintf=["HUB1"],
+                srcaddr=["site_branch1_lan"],
+                dstaddr=["site_branch2_lan"],
+                service=["HTTPS"],
+                **kwargs,
+            )
+
+    @pytest.mark.asyncio
+    async def test_create_sends_devices_and_groups(self) -> None:
+        client = self._client()
+        result = await self._create(
+            client, install_on=[{"name": "branch1", "vdom": "root"}, {"name": "emea_spokes"}]
+        )
+        assert result["status"] == "success", result
+        policy = client.create_firewall_policy.await_args.args[2]
+        assert policy["scope member"] == [
+            {"name": "branch1", "vdom": "root"},
+            {"name": "emea_spokes"},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_create_without_install_on_sends_no_scope(self) -> None:
+        client = self._client()
+        await self._create(client)
+        assert "scope member" not in client.create_firewall_policy.await_args.args[2]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "branch1",
+            [{"vdom": "root"}],
+            [{"name": "branch1", "vdom": "root", "extra": "x"}],
+            [{"name": "branch1", "vdom": "../root"}],
+            [{"name": "../etc"}],
+        ],
+    )
+    async def test_create_refuses_malformed_targets(self, bad: Any) -> None:
+        client = self._client()
+        result = await self._create(client, install_on=bad)
+        assert result["status"] == "error"
+        client.create_firewall_policy.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_update_replaces_and_empty_clears(self) -> None:
+        client = self._client()
+        with patch.object(policy_tools, "get_fmg_client", return_value=client):
+            await policy_tools.update_firewall_policy(
+                adom="demo",
+                package="branch_pkg",
+                policyid=5,
+                install_on=[{"name": "emea_spokes_cloud"}],
+            )
+            await policy_tools.update_firewall_policy(
+                adom="demo", package="branch_pkg", policyid=5, install_on=[]
+            )
+        sent = [call.args[3] for call in client.update_firewall_policy.await_args_list]
+        assert sent == [
+            {"scope member": [{"name": "emea_spokes_cloud"}]},
+            {"scope member": []},
+        ]
+
+
+class TestClonePackageReview:
+    """Review fixes on clone_package (1.13.0): folder names, timeouts, task lines."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_slots(self) -> Any:
+        task_guard._reset()
+        yield
+        task_guard._reset()
+
+    def _client(self, state: int = 4, detail: str = "name exists") -> MagicMock:
+        client = MagicMock()
+        client.get = AsyncMock(return_value=[])
+        client.clone_package = AsyncMock(return_value={"task": 410})
+        client.get_task = AsyncMock(return_value={"state": state, "percent": 100})
+        client.get_task_line = AsyncMock(
+            return_value=[
+                {"name": "copy", "state": 5, "detail": detail, "history": [{"detail": detail}]}
+            ]
+        )
+        client.update = AsyncMock(return_value={})
+        return client
+
+    @pytest.mark.asyncio
+    async def test_folder_path_as_new_name_is_refused(self) -> None:
+        client = self._client()
+        with patch.object(policy_tools, "get_fmg_client", return_value=client):
+            result = await policy_tools.clone_package(
+                adom="demo", package="Corporate/branch", new_name="Corporate/branch-v2"
+            )
+
+        assert result["status"] == "error"
+        assert "package root" in result["message"]
+        client.clone_package.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_folder_qualified_source_is_accepted(self) -> None:
+        client = self._client()
+        with patch.object(policy_tools, "get_fmg_client", return_value=client):
+            result = await policy_tools.clone_package(
+                adom="demo", package="Corporate/branch", new_name="branch-v2"
+            )
+
+        assert result["status"] == "success", result
+        client.clone_package.assert_awaited_once_with(
+            "demo", "Corporate/branch", "branch-v2", scope=[]
+        )
+
+    @pytest.mark.asyncio
+    async def test_task_timeout_is_a_structured_error(self) -> None:
+        client = self._client()
+
+        async def _timeout(*args: Any, **kwargs: Any) -> None:
+            raise TimeoutError("task 410 still running at the deadline")
+
+        with (
+            patch.object(policy_tools, "get_fmg_client", return_value=client),
+            patch.object(policy_tools, "wait_task_terminal", _timeout),
+        ):
+            result = await policy_tools.clone_package(
+                adom="demo", package="branch", new_name="branch-v2"
+            )
+
+        assert result["status"] == "error"
+        assert result["error"] == "task_timeout"
+        assert result["task_id"] == 410
+        client.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_failed_task_lines_are_redacted(self) -> None:
+        token = "a3f9" * 8
+        client = self._client(state=5, detail=f"copy failed: password=hunter2 session {token}")
+        with patch.object(policy_tools, "get_fmg_client", return_value=client):
+            result = await policy_tools.clone_package(
+                adom="demo", package="branch", new_name="branch-v2"
+            )
+
+        assert result["error"] == "clone_failed"
+        rendered = str(result["task_lines"])
+        assert "hunter2" not in rendered
+        assert token not in rendered
+        assert result["task_lines"][0]["detail"].startswith("copy failed: password=")
+
+
+class TestPolicyBlockValidation:
+    """list_policy_block_policies validates the block as one object name."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("block", ["shared/../pkg", "a/b", "..", ""])
+    async def test_path_like_block_names_are_refused(self, block: str) -> None:
+        client = MagicMock()
+        client.list_policy_block_policies = AsyncMock(return_value=[])
+        with patch.object(policy_tools, "get_fmg_client", return_value=client):
+            result = await policy_tools.list_policy_block_policies(adom="demo", block=block)
+
+        assert result["status"] == "error"
+        client.list_policy_block_policies.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_plain_block_name_with_spaces_is_accepted(self) -> None:
+        client = MagicMock()
+        client.list_policy_block_policies = AsyncMock(return_value=[{"policyid": 1}])
+        with patch.object(policy_tools, "get_fmg_client", return_value=client):
+            result = await policy_tools.list_policy_block_policies(
+                adom="demo", block="Shared Rules v2"
+            )
+
+        assert result["status"] == "success", result
+        assert client.list_policy_block_policies.await_args.args[1] == "Shared Rules v2"

@@ -3,7 +3,7 @@
 [![CI](https://github.com/rstierli/fortimanager-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/rstierli/fortimanager-mcp/actions/workflows/ci.yml)
 [![Python Version](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.12.3-green)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.13.0-green)](CHANGELOG.md)
 [![FortiManager](https://img.shields.io/badge/FortiManager-7.0%20%7C%207.2%20%7C%207.4%20%7C%207.6-red)](README.md)
 
 A Model Context Protocol (MCP) server for FortiManager JSON-RPC API. This server enables AI assistants like Claude to interact with FortiManager for centralized firewall policy management, device provisioning, and network configuration.
@@ -29,13 +29,15 @@ This MCP server provides a comprehensive interface to FortiManager's capabilitie
 
 | Category | Capabilities |
 |----------|-------------|
-| **Policy Management** | Create/update/delete firewall policies, manage policy packages, clone packages, security-profile (UTM) inspection fields |
+| **Policy Management** | Create/update/delete firewall policies, per-policy install-on targets, policy packages and policy blocks, clone packages, security-profile (UTM) inspection fields, install preview, package install status and device/package policy comparison |
 | **Object Management** | Addresses, address groups, services, service groups, search objects |
 | **Device Management** | Add/delete devices, bulk operations, device status, VDOM management |
 | **Device Configuration** | Interfaces/VLAN subinterfaces, DHCP scopes, wireless VAPs/SSIDs, FortiAP (WTP) profiles and managed AP registration -- all via the device DB, credential fields stripped from every read |
 | **Script Execution** | Create/run CLI scripts, execute on devices/groups, view execution logs |
-| **Templates** | System templates, CLI template groups, template assignment and validation |
-| **SD-WAN** | SD-WAN templates, rule configuration, template assignment |
+| **Templates** | System templates, CLI templates (read, secrets redacted) and template groups, firmware templates, template assignment and validation |
+| **SD-WAN** | SD-WAN and BGP templates, template assignment, device SD-WAN/BGP/static-route config, live SD-WAN and BGP state, IPsec overlay diagnosis |
+| **Device Proxy** | Read-only FortiOS REST API access to managed devices through FortiManager |
+| **Skills** | 8 troubleshooting and audit procedures served as MCP prompts (see [Skills and Prompts](#skills-and-prompts)) |
 | **System** | System status, ADOM management, task monitoring, workspace locking |
 
 ## Requirements
@@ -227,10 +229,10 @@ FortiManager MCP supports two tool loading modes to optimize context window usag
 
 | Mode | Tools Loaded | Context Usage | Best For |
 |------|-------------|---------------|----------|
-| `full` (default) | All 232 tools | ~100% | Large context windows, full functionality |
+| `full` (default) | All 253 tools | ~100% | Large context windows, full functionality |
 | `dynamic` | 4 discovery tools | ~10% | Smaller context windows, on-demand loading |
 
-**Full Mode** (default): All 232 tools are loaded at startup. Best when you have sufficient context window and need immediate access to all FortiManager operations.
+**Full Mode** (default): All 253 tools are loaded at startup. Best when you have sufficient context window and need immediate access to all FortiManager operations.
 
 **Dynamic Mode**: Only lightweight discovery tools are loaded:
 - `find_fortimanager_tool(operation)` - Search for tools by keyword
@@ -471,7 +473,7 @@ networks:
     external: true
 ```
 
-## Available Tools (232 tools)
+## Available Tools (253 tools)
 
 ### System Tools (17 tools)
 
@@ -490,12 +492,12 @@ networks:
 | `list_packages` | List policy packages in an ADOM |
 | `get_package` | Get policy package details |
 | `install_package` | Install policy package to devices |
-| `install_device_settings` | Install device settings only |
+| `install_device_settings` | Install device settings only, with an optional revision comment (`dev_rev_comments`) |
 | `lock_adom` | Lock ADOM for editing (workspace mode) |
 | `unlock_adom` | Unlock ADOM |
 | `commit_adom` | Commit ADOM changes |
 
-### Device Management Tools (14 tools)
+### Device Management Tools (17 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -503,7 +505,10 @@ networks:
 | `get_device_status` | Get device connection and sync status |
 | `search_devices` | Search devices with filters |
 | `add_device` | Add a new device to FortiManager |
-| `add_model_device` | Add offline model device |
+| `add_model_device` | Add offline model device; optional `device_blueprint` (saved blueprint name or inline blueprint object; every referenced object is checked to exist first), per-device `meta_variables`, `groups`, patch level via `os_version="7.4.12"`, and model HA clusters via `ha_mode`/`ha_group_name`/`ha_members` |
+| `list_metadata_variables` | List an ADOM's metadata variables with their per-device values (password-type values redacted) |
+| `check_device_variables` | Check a device's metadata variables against expected values (match / mismatch / not mapped / undefined) |
+| `set_metadata_variable` | Set a device's value for an existing metadata variable, in every scope the device has unless `vdom` is given |
 | `delete_device` | Remove a device from FortiManager |
 | `add_devices_bulk` | Add multiple devices at once |
 | `delete_devices_bulk` | Remove multiple devices at once |
@@ -544,7 +549,7 @@ nothing talks to the FortiGate directly.
 | `create_device_sniffer` | Create a firewall sniffer definition (`firewall sniffer`) on the device itself, not FortiManager's own local sniffer |
 | `create_device_on_demand_sniffer` | Create a bounded, name-keyed on-demand packet sniffer (`firewall on-demand-sniffer`), distinct from the persistent `firewall sniffer` object |
 
-### Policy Tools (25 tools)
+### Policy Tools (27 tools)
 
 `create_firewall_policy` and `update_firewall_policy` accept security-profile
 (UTM) fields -- `utm_status`, `av_profile`, `ips_sensor`, `webfilter_profile`,
@@ -554,23 +559,37 @@ can actually apply inspection, not just route traffic. `profile_group` is
 mutually exclusive with the individual profile fields it bundles; see
 "Security Profile Field Validation" under Safety Guardrails below.
 
+They also take `install_on`: the devices (`{"name": "branch1", "vdom": "root"}`)
+and device groups (`{"name": "emea_spokes"}`) a policy installs on, stored by
+FortiManager as the policy's `scope member`. Left out, the policy installs on
+every device the package goes to; on update, `[]` clears the targets.
+`list_firewall_policies` and `get_firewall_policy` return each policy's
+`scope member`.
+
+`clone_package` changed in 1.13.0: the clone is **not assigned to any device**
+unless `copy_installation_targets=True`, and each policy's install-on targets
+are copied from the source either way. It now sends the new name as
+`dst_name`, the parameter FNDN documents for `package/clone`.
+
 | Tool | Description |
 |------|-------------|
+| `list_policy_blocks` | List the policy blocks of an ADOM |
+| `list_policy_block_policies` | List the firewall policies held in a policy block |
 | `create_package` | Create a new policy package |
 | `delete_package` | Delete a policy package |
-| `clone_package` | Clone an existing package |
+| `clone_package` | Clone an existing package, unassigned by default (`copy_installation_targets=True` keeps the source's assignment); waits for the clone task |
 | `assign_package` | Assign package to devices |
-| `list_firewall_policies` | List policies in a package |
-| `get_firewall_policy` | Get policy details |
-| `create_firewall_policy` | Create a new firewall policy |
-| `update_firewall_policy` | Update an existing policy |
+| `list_firewall_policies` | List policies in a package, with their install-on targets |
+| `get_firewall_policy` | Get policy details, with its install-on targets |
+| `create_firewall_policy` | Create a new firewall policy (optional `install_on` targets) |
+| `update_firewall_policy` | Update an existing policy (optional `install_on` targets) |
 | `delete_firewall_policy` | Delete a firewall policy |
 | `delete_firewall_policies_bulk` | Bulk delete policies |
 | `move_firewall_policy` | Reorder policy position |
 | `search_firewall_policies` | Search policies with filters |
 | `get_policy_services` | Get policy services with optional group resolution |
-| `preview_install` | Preview installation changes |
-| `get_preview_result` | Get preview results |
+| `preview_install` | Preview the CLI an install would push (package, or device settings with `package=None`) |
+| `get_preview_result` | Re-fetch an install preview result |
 | `create_local_in_policy` | Create a new IPv4 local-in policy |
 | `create_local_in_policy6` | Create a new IPv6 local-in policy |
 | `delete_local_in_policy` | Delete an IPv4 local-in policy |
@@ -581,6 +600,13 @@ mutually exclusive with the individual profile fields it bundles; see
 | `list_local_in_policies6` | List IPv6 local-in policies in a policy package |
 | `update_local_in_policy` | Update an existing IPv4 local-in policy |
 | `update_local_in_policy6` | Update an existing IPv6 local-in policy |
+
+### Policy Sync Tools (2 tools)
+
+| Tool | Description |
+|------|-------------|
+| `get_package_install_status` | Per-device package assignment and install status (installed / modified / out of sync) |
+| `check_device_policy_sync` | Compare a device's firewall policies (latest revision and/or device DB) with its assigned package |
 
 ### Object Tools (25 tools)
 
@@ -629,7 +655,7 @@ mutually exclusive with the individual profile fields it bundles; see
 | `get_script_log_summary` | Get execution history |
 | `get_script_log_output` | Get specific log output |
 
-### Template Tools (15 tools)
+### Template Tools (17 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -640,6 +666,8 @@ mutually exclusive with the individual profile fields it bundles; see
 | `assign_system_template` | Assign template to device |
 | `assign_system_template_bulk` | Bulk assign system template |
 | `unassign_system_template` | Remove template assignment |
+| `list_cli_templates` | List CLI templates without their scripts |
+| `get_cli_template` | Read a CLI template and its script (CLI or Jinja), secrets redacted: `set <secret>` values, ENC blobs, secret-named Jinja `{% set %}` assignments and secret-keyed literals; a bare `{{ var }}` / `$(var)` reference stays visible |
 | `list_cli_template_groups` | List CLI template groups |
 | `get_cli_template_group` | Get CLI template group |
 | `create_cli_template_group` | Create CLI template group |
@@ -649,7 +677,7 @@ mutually exclusive with the individual profile fields it bundles; see
 | `assign_template_group` | Assign template group |
 | `validate_template` | Validate template against device |
 
-### SD-WAN Tools (10 tools)
+### SD-WAN Tools (17 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -662,12 +690,20 @@ mutually exclusive with the individual profile fields it bundles; see
 | `unassign_sdwan_template` | Remove template assignment |
 | `get_device_sdwan` | Read a device's SD-WAN config (members/zones/health-checks/rules) from the device DB — for SD-WAN configured locally, not via a template |
 | `get_device_sdwan_monitor` | Live SD-WAN Monitor via the device proxy — per-member link/bandwidth (`virtual-wan/members`) + per-member SLA health (`virtual-wan/health-check`) |
+| `get_device_bgp_status` | Live BGP state via the device proxy — peer state (`router/bgp/neighbors`), learned paths (`router/bgp/paths`) and BGP routes in the routing table (`router/ipv4`) |
+| `diagnose_ipsec_tunnel` | Diagnose a down overlay tunnel, underlay first: underlay admin status, live link and address, live IKE/phase2 state, SD-WAN member and health-check state and, with `hub_device`, the hub's matching dial-up gateway (by `network-id`). Returns a verdict (`underlay_link_down`, `tunnel_down`, `health_check_down`, ...) with next steps |
+| `get_sdwan_template_config` | Read the body of an SD-WAN (wanprof) template — members, zones, health-checks with SLA thresholds, steering rules. `get_sdwan_template` returns only the template metadata |
+| `get_bgp_template` | Read the `router bgp` body of a BGP provisioning template (AS, router-id, neighbors, neighbor-groups/ranges, networks); neighbor passwords stripped |
+| `update_bgp_template` | Change neighbor-group options in a BGP template: `route-reflector-client`, `next-hop-self`, `next-hop-self-rr`, `soft-reconfiguration`, `advertisement-interval` |
+| `get_device_bgp` | Read a device's `router bgp` config from the device DB; neighbor passwords stripped |
+| `get_device_static_routes` | Read a device's IPv4 static routes from the device DB |
 | `resolve_datasource` | Generic config-DB introspection: resolve the objects a config attribute is allowed to reference (`option: datasrc`) |
 
-### Security Profile Tools (20 tools)
+### Security Profile Tools (21 tools)
 
 | Tool | Description |
 |------|-------------|
+| `get_profile_group` | Read a firewall security profile group |
 | `create_antivirus_profile` | Create an antivirus profile |
 | `create_application_list` | Create an application-control list |
 | `create_dnsfilter_profile` | Create a DNS filter profile |
@@ -741,7 +777,7 @@ mutually exclusive with the individual profile fields it bundles; see
 | Tool | Description |
 |------|-------------|
 | `diff_adom_revision` | Diff a past ADOM DB revision against the CURRENT live ADOM |
-| `diff_device_revision` | Diff a past device DB revision against the CURRENT device DB |
+| `diff_device_revision` | Diff a past device DB revision against the CURRENT device DB; `sections=["router bgp", ...]` limits it to those `config` blocks. Header and blank-line noise is dropped, secrets redacted on both sides |
 | `diff_policy_package` | Diff a policy package's objects at a past ADOM revision against its CURRENT live state |
 | `get_adom_revision` | Get one ADOM DB revision's metadata |
 | `get_device_revision` | Check out one device DB revision's stored configuration text |
@@ -779,10 +815,13 @@ mutually exclusive with the individual profile fields it bundles; see
 | `remove_devices_from_group_bulk` | Remove multiple devices from a device group in one call |
 | `remove_group_from_group` | Remove a nested group from its parent device group |
 
-### Firmware Tools (5 tools)
+### Firmware Tools (8 tools)
 
 | Tool | Description |
 |------|-------------|
+| `create_firmware_template` | Create a firmware template enforcing a version per platform (checked against the firmware catalog, created unassigned) |
+| `delete_firmware_template` | Delete a firmware template (refused while it is assigned) |
+| `list_firmware_templates` | List firmware templates with enforced versions, schedule and assignment |
 | `get_firmware_upgrade_path` | Preview the multi-step firmware upgrade path to a target version |
 | `get_firmware_upgrade_report` | Get the firmware upgrade report for a device under a named profile |
 | `list_available_firmware` | List firmware versions available for a platform |
@@ -801,6 +840,84 @@ mutually exclusive with the individual profile fields it bundles; see
 | Tool | Description |
 |------|-------------|
 | `policy_lookup` | Simulate a firewall policy lookup for a traffic 5-tuple against a managed device |
+
+### Device Proxy Tools (1 tool)
+
+| Tool | Description |
+|------|-------------|
+| `query_device_api` | Read an allowlisted FortiOS `monitor` or `cmdb` diagnostic path on a managed device through `/sys/proxy/json`. GET only, secrets redacted, other paths and file exports refused |
+
+## Skills and Prompts
+
+The server ships eight troubleshooting and audit playbooks ("skills"):
+step-by-step procedures for recurring FortiManager tasks (install failures,
+SD-WAN overlays, policy audits, ...) that say which tools to call, in which
+order, and what to look for. Each one is a `SKILL.md` in the Claude skill
+format under [`src/fortimanager_mcp/skills/`](src/fortimanager_mcp/skills/),
+and the server also serves each one as an **MCP prompt**, so any MCP client
+can use them.
+
+A prompt is picked by the user, not by the model: the client lists the
+server's prompts, you choose one, and its text (the playbook, with what you
+filled in as the argument appended) goes into the conversation. Nothing is
+sent until you ask for a prompt, so the skills add no context to a session
+that does not use them. Prompts load in both `FMG_TOOL_MODE=full` and
+`dynamic`; in dynamic mode they tell the model to call tools through
+`execute_fortimanager_tool`.
+
+The playbooks only read and propose changes: any change, install or device
+command waits for your approval. Running an install preview does create
+FortiManager tasks, and a successful preview allows one install of the same
+package and devices (see `FMG_INSTALL_SAFETY`).
+
+| Prompt | Argument | Skill | Use it for |
+|--------|----------|-------|------------|
+| `troubleshoot_sdwan_overlay` | `symptom` | `fmg-sdwan-overlay-troubleshoot` | Tunnels up but no traffic, BGP not coming up, failures after re-running the SD-WAN Overlay Template |
+| `audit_firewall_policy` | `target` | `fmg-firewall-policy-audit` | Audit a package, or explain why one flow is allowed or blocked |
+| `diagnose_install_status` | `target` | `fmg-install-status-diagnosis` | `conflict`, `out of sync` or `modified` statuses, and whether installing is safe |
+| `diagnose_install_failure` | `symptom` | `fmg-install-failure-diagnosis` | An install or preview that failed |
+| `check_template_rerun` | `context` | `fmg-template-rerun-check` | What a re-run or edited Overlay Template changes |
+| `check_device_health` | `device` | `fmg-device-health` | A FortiGate that looks down or unmanaged, or a general health review |
+| `locate_host` | `host` | `fmg-host-location` | Find a host's FortiSwitch port, VLAN or FortiAP from its IP, MAC or hostname |
+| `trace_flow` | `source`, `destination` | `fmg-faz-flow-trace` | Trace a flow between two IPs: devices, rules, tunnels and logs. Uses the [FortiAnalyzer MCP server](https://github.com/rstierli/fortianalyzer-mcp) when it is connected |
+
+Every argument is optional free text; leave it empty and the model asks.
+`trace_flow` works best with the fortianalyzer MCP server connected too; its
+HTML report template is served as the MCP resource
+`fortimanager://skills/fmg-faz-flow-trace/references/report-template.html`.
+
+### Using a prompt from a client
+
+- **Claude Code:** prompts show up as slash commands named
+  `/mcp__<server>__<prompt>`, where `<server>` is the name you gave the
+  server in your MCP config. With the server registered as `fortimanager`:
+  `/mcp__fortimanager__diagnose_install_failure install of branch1 failed`.
+- **Claude Desktop:** open the attach (+) menu in the message box, pick the
+  FortiManager server and then the prompt, and fill in the argument.
+- **Any other MCP client:** the prompts come from the standard
+  `prompts/list` and `prompts/get` requests; see your client's
+  documentation for where it shows them.
+
+### Using the skills directly in Claude Code
+
+Claude Code can also load the same `SKILL.md` files as skills, which it
+then applies by itself when a request matches the skill's description
+(no slash command needed). Link the skill folders into your skills
+directory, for example from a clone of this repository:
+
+```bash
+ln -s "$PWD"/src/fortimanager_mcp/skills/* ~/.claude/skills/
+```
+
+### Not the same as `faz_skill`
+
+The [FortiAnalyzer MCP server](https://github.com/rstierli/fortianalyzer-mcp)
+exposes its procedures through a **tool**, `faz_skill`, which the model
+calls by itself to fetch a procedure mid-task. This server has no such tool:
+its skills are prompts that you pick, so they never appear in the tool
+list and do not count toward the 253 tools. When both servers are
+connected, `trace_flow` uses FortiAnalyzer's tools for the log half of the
+trace; it does not call `faz_skill`.
 
 ## Usage Examples
 

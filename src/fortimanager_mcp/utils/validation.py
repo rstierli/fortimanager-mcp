@@ -564,6 +564,56 @@ def validate_device_dict_list(devices: Any) -> list[dict[str, Any]]:
     return cast(list[dict[str, Any]], devices)
 
 
+def validate_install_scope(devices: Any) -> list[dict[str, str]]:
+    """Check an install/preview scope: a non-empty list of {"name", "vdom"} dicts.
+
+    An empty scope is refused rather than sent: the preview staging call
+    accepts it and spawns a task that has nothing to stage.
+    """
+    devices = validate_device_dict_list(devices)
+    if not devices:
+        raise ValidationError("devices must name at least one target device")
+    for index, device in enumerate(devices):
+        if not isinstance(device.get("name"), str):
+            raise ValidationError(f"devices[{index}] needs a 'name'")
+        validate_device_name(device["name"])
+        if "vdom" in device:
+            vdom = device["vdom"]
+            if not isinstance(vdom, str) or not ADOM_PATTERN.match(vdom):
+                raise ValidationError(f"devices[{index}] has an invalid vdom {vdom!r}")
+    return cast(list[dict[str, str]], devices)
+
+
+def validate_install_on(targets: Any) -> list[dict[str, str]]:
+    """Check a policy's install-on targets, as FMG stores them in ``scope member``.
+
+    Each entry is a device, ``{"name": "branch1", "vdom": "root"}``, or a
+    device group, ``{"name": "emea_spokes"}`` (no vdom). An empty list is
+    valid: it clears the targets, so the policy installs on every device
+    the package is installed to.
+    """
+    if isinstance(targets, dict | str) or not isinstance(targets, list):
+        raise ValidationError(
+            "install_on must be a list of {'name', 'vdom'} devices or {'name'} groups, "
+            f"not {type(targets).__name__}"
+        )
+    out: list[dict[str, str]] = []
+    for index, target in enumerate(targets):
+        if not isinstance(target, dict) or not isinstance(target.get("name"), str):
+            raise ValidationError(f"install_on[{index}] must be a dict with a 'name'")
+        extra = set(target) - {"name", "vdom"}
+        if extra:
+            raise ValidationError(f"install_on[{index}] has unknown keys {sorted(extra)}")
+        if "vdom" in target:
+            vdom = target["vdom"]
+            if not isinstance(vdom, str) or not ADOM_PATTERN.match(vdom):
+                raise ValidationError(f"install_on[{index}] has an invalid vdom {vdom!r}")
+            out.append({"name": validate_device_name(target["name"]), "vdom": vdom})
+        else:
+            out.append({"name": validate_object_name(target["name"], "device group")})
+    return out
+
+
 def obj_base(adom: str) -> str:
     """The object-database path segment for an ADOM, Global included.
 
