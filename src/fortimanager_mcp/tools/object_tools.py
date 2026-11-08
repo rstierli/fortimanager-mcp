@@ -14,7 +14,12 @@ from typing import Any
 from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_default_adom
-from fortimanager_mcp.utils.errors import AuthenticationError, ConnectionError, client_safe_error
+from fortimanager_mcp.utils.errors import (
+    AuthenticationError,
+    ConnectionError,
+    PermissionError,
+    client_safe_error,
+)
 from fortimanager_mcp.utils.validation import (
     ValidationError,
     and_filters,
@@ -54,12 +59,14 @@ _TCP_UDP_PROBE_SERVICES = ("ALL_TCP", "all_tcp", "HTTPS", "HTTP", "DNS")
 
 # Errors after which the next probe would fail the same way: a failed connect
 # (with connect_on_demand every request connects first, waiting out the connect
-# timeout), a network error, which the request has already retried, or a failed
+# timeout), a network error, which the request has already retried, a failed
 # login, where every probe would log in again with the same wrong password and
-# seven attempts pass FortiManager's default admin-lockout-threshold of 3. A -1
-# or not-found on one probe says nothing about the next name, so those keep
-# probing.
-_STOP_PROBING = (ConnectionError, OSError, AuthenticationError)
+# seven attempts pass FortiManager's default admin-lockout-threshold of 3, or a
+# denied permission: -11 is also what a stale session gets, so the client has
+# already logged in again and retried, and a -11 that survives a fresh login
+# means the service table itself is denied. A -1 or not-found on one probe says
+# nothing about the next name, so those keep probing.
+_STOP_PROBING = (ConnectionError, OSError, AuthenticationError, PermissionError)
 
 
 def _port_based_protocol(service: Any) -> int | None:
