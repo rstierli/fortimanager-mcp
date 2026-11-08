@@ -1821,3 +1821,113 @@ class TestPolicyInstallOn:
             {"scope member": [{"name": "emea_spokes_cloud"}]},
             {"scope member": []},
         ]
+
+
+class TestClonePackageReview:
+    """Review fixes on clone_package (1.13.0): folder names, timeouts, task lines."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_slots(self) -> Any:
+        task_guard._reset()
+        yield
+        task_guard._reset()
+
+    def _client(self, state: int = 4, detail: str = "name exists") -> MagicMock:
+        client = MagicMock()
+        client.get = AsyncMock(return_value=[])
+        client.clone_package = AsyncMock(return_value={"task": 410})
+        client.get_task = AsyncMock(return_value={"state": state, "percent": 100})
+        client.get_task_line = AsyncMock(
+            return_value=[
+                {"name": "copy", "state": 5, "detail": detail, "history": [{"detail": detail}]}
+            ]
+        )
+        client.update = AsyncMock(return_value={})
+        return client
+
+    @pytest.mark.asyncio
+    async def test_folder_path_as_new_name_is_refused(self) -> None:
+        client = self._client()
+        with patch.object(policy_tools, "get_fmg_client", return_value=client):
+            result = await policy_tools.clone_package(
+                adom="production", package="Corporate/branch", new_name="Corporate/branch-v2"
+            )
+
+        assert result["status"] == "error"
+        assert "package root" in result["message"]
+        client.clone_package.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_folder_qualified_source_is_accepted(self) -> None:
+        client = self._client()
+        with patch.object(policy_tools, "get_fmg_client", return_value=client):
+            result = await policy_tools.clone_package(
+                adom="production", package="Corporate/branch", new_name="branch-v2"
+            )
+
+        assert result["status"] == "success", result
+        client.clone_package.assert_awaited_once_with(
+            "production", "Corporate/branch", "branch-v2", scope=[]
+        )
+
+    @pytest.mark.asyncio
+    async def test_task_timeout_is_a_structured_error(self) -> None:
+        client = self._client()
+
+        async def _timeout(*args: Any, **kwargs: Any) -> None:
+            raise TimeoutError("task 410 still running at the deadline")
+
+        with (
+            patch.object(policy_tools, "get_fmg_client", return_value=client),
+            patch.object(policy_tools, "wait_task_terminal", _timeout),
+        ):
+            result = await policy_tools.clone_package(
+                adom="production", package="branch", new_name="branch-v2"
+            )
+
+        assert result["status"] == "error"
+        assert result["error"] == "task_timeout"
+        assert result["task_id"] == 410
+        client.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_failed_task_lines_are_redacted(self) -> None:
+        token = "a3f9" * 8
+        client = self._client(state=5, detail=f"copy failed: password=hunter2 session {token}")
+        with patch.object(policy_tools, "get_fmg_client", return_value=client):
+            result = await policy_tools.clone_package(
+                adom="production", package="branch", new_name="branch-v2"
+            )
+
+        assert result["error"] == "clone_failed"
+        rendered = str(result["task_lines"])
+        assert "hunter2" not in rendered
+        assert token not in rendered
+        assert result["task_lines"][0]["detail"].startswith("copy failed: password=")
+
+
+class TestPolicyBlockValidation:
+    """list_policy_block_policies validates the block as one object name."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("block", ["shared/../pkg", "a/b", "..", ""])
+    async def test_path_like_block_names_are_refused(self, block: str) -> None:
+        client = MagicMock()
+        client.list_policy_block_policies = AsyncMock(return_value=[])
+        with patch.object(policy_tools, "get_fmg_client", return_value=client):
+            result = await policy_tools.list_policy_block_policies(adom="production", block=block)
+
+        assert result["status"] == "error"
+        client.list_policy_block_policies.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_plain_block_name_with_spaces_is_accepted(self) -> None:
+        client = MagicMock()
+        client.list_policy_block_policies = AsyncMock(return_value=[{"policyid": 1}])
+        with patch.object(policy_tools, "get_fmg_client", return_value=client):
+            result = await policy_tools.list_policy_block_policies(
+                adom="production", block="Shared Rules v2"
+            )
+
+        assert result["status"] == "success", result
+        assert client.list_policy_block_policies.await_args.args[1] == "Shared Rules v2"
