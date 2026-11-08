@@ -80,3 +80,195 @@ def test_the_catalog_does_not_advertise_tools_that_do_not_exist() -> None:
     catalog_tools = _strings_under(CATALOG_NAME) & _strings_under(DISPATCH_NAME)
     phantom = catalog_tools - _decorated_tool_names()
     assert not phantom, f"catalog advertises tool(s) that no module defines: {sorted(phantom)}"
+
+
+# ---------------------------------------------------------------------------
+# Module ownership: the dispatch allowlist must name the module that really
+# defines each tool. execute_fortimanager_tool imports the module it finds the
+# name under and reads the attribute, so a tool listed under the wrong module
+# is discoverable, allowlisted, and still answers "Tool not found" in dynamic
+# mode. list_policy_blocks and list_policy_block_policies shipped that way,
+# listed under system_tools while policy_tools defines them.
+# ---------------------------------------------------------------------------
+
+
+def _decorated_tools_by_module() -> dict[str, set[str]]:
+    """Module stem -> every ``@mcp.tool()`` function it defines."""
+    out: dict[str, set[str]] = {}
+    for path in sorted((SRC / "tools").glob("*.py")):
+        tree = ast.parse(path.read_text(), filename=str(path))
+        names = {
+            node.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.AsyncFunctionDef | ast.FunctionDef)
+            and any(
+                isinstance(t := (d.func if isinstance(d, ast.Call) else d), ast.Attribute)
+                and t.attr == "tool"
+                for d in node.decorator_list
+            )
+        }
+        if names:
+            out[path.stem] = names
+    return out
+
+
+def _dict_literal(assigned_name: str) -> ast.Dict:
+    tree = ast.parse((SRC / "server.py").read_text(), filename="server.py")
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == assigned_name for t in node.targets)
+            and isinstance(node.value, ast.Dict)
+        ):
+            return node.value
+    raise AssertionError(f"{assigned_name} not found in server.py")
+
+
+def _dispatch_by_module() -> dict[str, set[str]]:
+    """``_TOOL_MODULES`` as module -> tool names."""
+    node = _dict_literal(DISPATCH_NAME)
+    out: dict[str, set[str]] = {}
+    for key, value in zip(node.keys, node.values, strict=True):
+        assert isinstance(key, ast.Constant) and isinstance(value, ast.Set)
+        out[key.value] = {e.value for e in value.elts if isinstance(e, ast.Constant)}
+    return out
+
+
+def _catalog_by_category() -> dict[str, list[str]]:
+    """``tool_catalog`` as category -> tool names, in listing order."""
+    node = _dict_literal(CATALOG_NAME)
+    out: dict[str, list[str]] = {}
+    for key, value in zip(node.keys, node.values, strict=True):
+        assert isinstance(key, ast.Constant) and isinstance(value, ast.List)
+        out[key.value] = [
+            e.elts[0].value
+            for e in value.elts
+            if isinstance(e, ast.Tuple) and isinstance(e.elts[0], ast.Constant)
+        ]
+    return out
+
+
+def _category_labels() -> tuple[int, dict[str, int]]:
+    """``total_tools`` and per-category ``count`` from list_fortimanager_categories."""
+    tree = ast.parse((SRC / "server.py").read_text(), filename="server.py")
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "list_fortimanager_categories":
+            ret = next(n for n in ast.walk(node) if isinstance(n, ast.Return))
+            assert isinstance(ret.value, ast.Dict)
+            fields = {
+                k.value: v
+                for k, v in zip(ret.value.keys, ret.value.values, strict=True)
+                if isinstance(k, ast.Constant)
+            }
+            total = fields["total_tools"]
+            cats = fields["categories"]
+            assert isinstance(total, ast.Constant) and isinstance(cats, ast.Dict)
+            counts: dict[str, int] = {}
+            for ck, cv in zip(cats.keys, cats.values, strict=True):
+                assert isinstance(ck, ast.Constant) and isinstance(cv, ast.Dict)
+                for k, v in zip(cv.keys, cv.values, strict=True):
+                    if isinstance(k, ast.Constant) and k.value == "count":
+                        assert isinstance(v, ast.Constant)
+                        counts[ck.value] = v.value
+            return total.value, counts
+    raise AssertionError("list_fortimanager_categories not found")
+
+
+def test_every_dispatch_entry_names_the_module_that_defines_the_tool() -> None:
+    defined = _decorated_tools_by_module()
+    wrong = {
+        f"{tool} (listed under {module}, defined in "
+        f"{[m for m, names in defined.items() if tool in names] or 'no module'})"
+        for module, tools in _dispatch_by_module().items()
+        for tool in tools
+        if tool not in defined.get(module, set())
+    }
+    assert not wrong, f"dynamic mode would answer 'Tool not found' for: {sorted(wrong)}"
+
+
+def test_every_dispatch_entry_resolves_to_a_callable_at_runtime() -> None:
+    """The same lookup execute_fortimanager_tool does, for every tool."""
+    import importlib
+
+    unresolved = [
+        f"{module}.{tool}"
+        for module, tools in _dispatch_by_module().items()
+        for tool in sorted(tools)
+        if not callable(
+            getattr(importlib.import_module(f"fortimanager_mcp.tools.{module}"), tool, None)
+        )
+    ]
+    assert not unresolved, f"allowlisted but not resolvable: {unresolved}"
+
+
+def test_no_tool_is_allowlisted_under_two_modules() -> None:
+    seen: dict[str, str] = {}
+    duplicated = []
+    for module, tools in _dispatch_by_module().items():
+        for tool in tools:
+            if tool in seen:
+                duplicated.append(f"{tool} ({seen[tool]}, {module})")
+            seen[tool] = module
+    assert not duplicated, f"first match wins, so the second listing is dead: {duplicated}"
+
+
+#: Categories whose module is not ``<category>_tools``.
+_CATEGORY_MODULE_EXCEPTIONS = {"device": "dvm_tools"}
+
+
+def test_each_catalog_category_lists_exactly_its_module() -> None:
+    """Category ``x`` is module ``x_tools`` (``device`` is ``dvm_tools``): the
+    same tools, no more, no fewer.
+
+    Keeps the dynamic-mode categories in step with the full-mode modules and
+    the per-module tables in README and docs/SETUP_GUIDE.md.
+    """
+    defined = _decorated_tools_by_module()
+    catalog = _catalog_by_category()
+
+    def module_of(category: str) -> str:
+        return _CATEGORY_MODULE_EXCEPTIONS.get(category, f"{category}_tools")
+
+    assert {module_of(c) for c in catalog} == set(defined), "category set != module set"
+    mismatched = {
+        category: {
+            "missing": sorted(defined[module_of(category)] - set(tools)),
+            "foreign": sorted(set(tools) - defined[module_of(category)]),
+        }
+        for category, tools in catalog.items()
+        if set(tools) != defined[module_of(category)]
+    }
+    assert not mismatched, mismatched
+
+
+def test_category_labels_match_the_catalog() -> None:
+    total, counts = _category_labels()
+    catalog = _catalog_by_category()
+    assert counts == {c: len(t) for c, t in catalog.items()}
+    assert total == len(_decorated_tool_names())
+
+
+def test_tool_count_claims_in_server_match_the_modules() -> None:
+    """health_check, the module docstring and the full-mode log line state the count."""
+    import re
+
+    count = len(_decorated_tool_names())
+    text = (SRC / "server.py").read_text()
+    claims = re.findall(r"\b[Aa]ll (\d+) tools\b", text)
+    assert claims, "no 'all N tools' claim found in server.py"
+    assert set(claims) == {str(count)}, (
+        f"server.py claims {sorted(set(claims))}, modules have {count}"
+    )
+    assert f"({count} tools total)" in text
+
+
+def test_full_mode_imports_every_tool_module() -> None:
+    """A module missing from the full-mode import list never registers its tools."""
+    tree = ast.parse((SRC / "server.py").read_text(), filename="server.py")
+    imported = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == "fortimanager_mcp.tools"
+        for alias in node.names
+    }
+    assert imported == set(_decorated_tools_by_module())
