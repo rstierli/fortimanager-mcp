@@ -252,8 +252,9 @@ class Settings(BaseSettings):
     FMG_INSTALL_SAFETY: Literal["strict", "warn", "disabled"] = Field(
         default="strict",
         description="Preview-before-install gate. 'strict' refuses install_package without "
-        "a verified preview_install for the same ADOM/package/device set. 'warn' installs "
-        "but returns a warning. 'disabled' skips the gate.",
+        "a verified preview_install for the same ADOM/package/device set, and "
+        "install_device_settings without one run with package=None for the same "
+        "ADOM/device set. 'warn' installs but returns a warning. 'disabled' skips the gate.",
     )
 
     # Testing Configuration

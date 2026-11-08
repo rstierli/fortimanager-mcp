@@ -1,10 +1,12 @@
 """Tests for system_tools module."""
 
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from fortimanager_mcp.api.client import FortiManagerClient
+from fortimanager_mcp.utils.config import get_settings
 from tests.conftest import MOCK_ADOMS, MOCK_DEVICES, MOCK_PACKAGES, MOCK_SYSTEM_STATUS
 
 
@@ -135,7 +137,19 @@ class TestPackageTools:
 
 
 class TestInstallDeviceSettings:
-    """install_device_settings forwards an optional revision comment."""
+    """install_device_settings forwards an optional revision comment.
+
+    The preview gate it shares with install_package is covered in
+    test_install_preview.py; it is switched off here.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_gate(self, monkeypatch: pytest.MonkeyPatch) -> Any:
+        monkeypatch.setenv("FORTIMANAGER_HOST", "test.example.com")
+        monkeypatch.setenv("FMG_INSTALL_SAFETY", "disabled")
+        get_settings.cache_clear()
+        yield
+        get_settings.cache_clear()
 
     @pytest.mark.asyncio
     async def test_comment_is_sent(

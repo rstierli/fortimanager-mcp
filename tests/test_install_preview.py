@@ -137,7 +137,7 @@ class TestPreviewFlow:
     async def test_records_the_render_task_for_the_install_gate(self) -> None:
         await _preview(_client())
         assert install_gate.find_preview("demo", "branch_pkg", DEVICES) == 12
-        assert install_gate.recorded_revision("demo", "branch_pkg", DEVICES) == 10
+        assert install_gate.recorded_fingerprint("demo", "branch_pkg", DEVICES) == {"package": 10}
 
     @pytest.mark.asyncio
     async def test_device_settings_preview_stages_install_device(self) -> None:
@@ -149,8 +149,10 @@ class TestPreviewFlow:
             adom="demo", scope=DEVICES, flags=["preview"]
         )
         client.install_package.assert_not_called()
-        # No package, nothing for the package install gate to authorize.
-        assert install_gate._PREVIEWS == {}
+        # Recorded under the device-settings target, not under any package:
+        # it authorizes install_device_settings, never install_package.
+        assert install_gate.find_preview("demo", None, DEVICES) == 12
+        assert install_gate.find_preview("demo", "branch_pkg", DEVICES) is None
 
     @pytest.mark.asyncio
     async def test_releases_task_slots(self) -> None:
@@ -478,3 +480,267 @@ class TestGateEndToEnd:
             result = await system_tools.install_package("demo", "branch_pkg", [])
         assert result["status"] == "error"
         client.install_package.assert_not_called()
+
+
+async def _install_settings(client: MagicMock, **kwargs: Any) -> Any:
+    with patch.object(system_tools, "get_fmg_client", return_value=client):
+        return await system_tools.install_device_settings("demo", DEVICES, **kwargs)
+
+
+class TestDeviceSettingsGate:
+    """install_device_settings goes through the same preview gate as
+    install_package: a preview_install with package=None for the same
+    ADOM and devices authorizes exactly one install (M2, 1.13.1 audit)."""
+
+    @pytest.mark.asyncio
+    async def test_strict_refuses_without_preview(self) -> None:
+        client = _client()
+        result = await _install_settings(client)
+
+        assert result["status"] == "error"
+        assert result["error"] == "preview_required"
+        assert result["recommendation"] == "preview_install"
+        assert result["operation"] == "install_device_settings"
+        assert "package=None" in result["message"]
+        client.install_device.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_one_preview_one_install(self) -> None:
+        client = _client()
+        await _preview(client, package=None)
+        client.install_device.reset_mock()
+        client.install_device.return_value = {"task": 60}
+
+        first = await _install_settings(client, dev_rev_comments="reviewed")
+        second = await _install_settings(client)
+
+        assert first["status"] == "success", first
+        assert first["task_id"] == 60
+        assert "warning" not in first
+        client.install_device.assert_awaited_once_with(
+            adom="demo", scope=DEVICES, dev_rev_comments="reviewed"
+        )
+        assert second["error"] == "preview_required"
+
+    @pytest.mark.asyncio
+    async def test_package_preview_does_not_authorize_device_settings(self) -> None:
+        client = _client()
+        await _preview(client)
+        result = await _install_settings(client)
+        assert result["error"] == "preview_required"
+        client.install_device.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_device_settings_preview_does_not_authorize_a_package(self) -> None:
+        client = _client()
+        await _preview(client, package=None)
+        client.install_package.reset_mock()
+        with patch.object(system_tools, "get_fmg_client", return_value=client):
+            result = await system_tools.install_package("demo", "branch_pkg", DEVICES)
+        assert result["error"] == "preview_required"
+        client.install_package.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_nothing_to_install_authorizes_nothing(self) -> None:
+        client = _client(stage_state=8)
+        client.get_task_line = AsyncMock(
+            return_value=[{"name": "demo:", "state": 8, "detail": "no changes on device"}]
+        )
+        await _preview(client, package=None)
+        result = await _install_settings(client)
+        assert result["error"] == "preview_required"
+        assert "found nothing to install" in result["message"]
+        client.install_device.assert_awaited_once_with(
+            adom="demo", scope=DEVICES, flags=["preview"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_older_build_records_the_render_task(self) -> None:
+        """Below 7.6.7 / 8.0.2 the render-only preview is recorded like a
+        package preview there: the gate checks the render task finished."""
+        client = _client(version=(7, 4, 8))
+        previewed = await _preview(client, package=None)
+        assert previewed["staged"] is False
+        assert install_gate.find_preview("demo", None, DEVICES) == 12
+
+        client.install_device.return_value = {"task": 61}
+        result = await _install_settings(client)
+        assert result["status"] == "success", result
+        assert result["task_id"] == 61
+
+    @pytest.mark.asyncio
+    async def test_warn_mode_installs_with_warning(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("FMG_INSTALL_SAFETY", "warn")
+        get_settings.cache_clear()
+        client = _client()
+        result = await _install_settings(client)
+        assert result["status"] == "success"
+        assert "without a verified preview" in result["warning"]
+
+    @pytest.mark.asyncio
+    async def test_disabled_mode_skips_gate(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("FMG_INSTALL_SAFETY", "disabled")
+        get_settings.cache_clear()
+        client = _client()
+        result = await _install_settings(client)
+        assert result["status"] == "success"
+        assert "warning" not in result
+        client.get_task.assert_not_called()
+
+
+class TestRePreview:
+    """A preview attempt drops the record of any earlier preview of the
+    same target first, so a failed re-preview cannot leave an older
+    successful one authorizing the install (L5)."""
+
+    @pytest.mark.asyncio
+    async def test_failed_re_preview_drops_the_older_preview(self) -> None:
+        client = _client()
+        await _preview(client)
+        assert install_gate.find_preview("demo", "branch_pkg", DEVICES) == 12
+
+        failing = _client(stage_state=5)
+        result = await _preview(failing)
+        assert result["error"] == "preview_failed"
+        assert install_gate.find_preview("demo", "branch_pkg", DEVICES) is None
+
+        with patch.object(system_tools, "get_fmg_client", return_value=failing):
+            install = await system_tools.install_package("demo", "branch_pkg", DEVICES)
+        assert install["error"] == "preview_required"
+
+    @pytest.mark.asyncio
+    async def test_re_preview_that_raises_drops_the_older_preview(self) -> None:
+        await _preview(_client())
+        broken = _client()
+        broken.install_package.side_effect = RuntimeError("connection reset")
+        result = await _preview(broken)
+        assert result["status"] == "error"
+        assert install_gate.find_preview("demo", "branch_pkg", DEVICES) is None
+
+
+class TestPreviewRedactionFailsClosed:
+    """Every string in a preview result is redacted, whatever envelope
+    FortiManager wraps it in (L3): JSON is decoded first, at any depth."""
+
+    async def _preview_text(self, result: Any) -> str:
+        return json.dumps(await _preview(_client(result=result)))
+
+    @pytest.mark.asyncio
+    async def test_message_json_that_is_a_dict(self) -> None:
+        rendered = await self._preview_text(
+            {"message": json.dumps({"name": "branch1", "result": PREVIEW_CLI})}
+        )
+        assert "LiveSecret" not in rendered
+        assert "set psksecret ***REDACTED***" in rendered
+
+    @pytest.mark.asyncio
+    async def test_message_list_with_a_non_dict_element(self) -> None:
+        message = json.dumps(
+            [{"name": "branch1", "result": PREVIEW_CLI}, "config x\n  set password Hunter2\nend"]
+        )
+        rendered = await self._preview_text({"message": message})
+        assert "LiveSecret" not in rendered
+        assert "Hunter2" not in rendered
+
+    @pytest.mark.asyncio
+    async def test_list_typed_result(self) -> None:
+        message = json.dumps([{"name": "branch1", "result": PREVIEW_CLI.split("\n")}])
+        result = await _preview(_client(result={"message": message}))
+        assert "LiveSecret" not in json.dumps(result)
+        assert result["devices"][0]["has_changes"] is True
+
+    @pytest.mark.asyncio
+    async def test_json_nested_in_a_string_value(self) -> None:
+        inner = json.dumps({"cli": PREVIEW_CLI})
+        rendered = await self._preview_text({"message": json.dumps({"data": inner})})
+        assert "LiveSecret" not in rendered
+
+    @pytest.mark.asyncio
+    async def test_get_preview_result_with_a_dict_message(self) -> None:
+        client = _client(result={"message": json.dumps({"name": "branch1", "result": PREVIEW_CLI})})
+        with patch.object(policy_tools, "get_fmg_client", return_value=client):
+            result = await policy_tools.get_preview_result("demo", DEVICES, 11)
+        assert result["status"] == "success"
+        assert "LiveSecret" not in json.dumps(result)
+
+    @pytest.mark.asyncio
+    async def test_truncated_json_message(self) -> None:
+        """JSON that does not parse is still redacted, its escapes read as
+        line breaks."""
+        message = json.dumps([{"name": "branch1", "result": PREVIEW_CLI}])[:-20]
+        client = _client(result={"message": message})
+        with patch.object(policy_tools, "get_fmg_client", return_value=client):
+            result = await policy_tools.get_preview_result("demo", DEVICES, 11)
+        assert "LiveSecret" not in json.dumps(result)
+
+    @pytest.mark.asyncio
+    async def test_get_preview_result_with_a_list_result(self) -> None:
+        message = json.dumps([{"name": "branch1", "result": PREVIEW_CLI.split("\n")}])
+        client = _client(result={"message": message})
+        with patch.object(policy_tools, "get_fmg_client", return_value=client):
+            result = await policy_tools.get_preview_result("demo", DEVICES, 11)
+        assert "LiveSecret" not in json.dumps(result)
+
+
+class TestTaskLineRedaction:
+    """Task-line detail and history can quote CLI: the CLI-form redactor
+    runs over them, not only the key=value one (L4)."""
+
+    LINES = [
+        {
+            "name": "branch1",
+            "state": 5,
+            "detail": "set psksecret ENC DetailSecret==",
+            "history": [
+                {"detail": "edit HUB1\n    set psksecret ENC HistorySecret==\nnext"},
+                {"detail": "failed at: set password InlineSecret"},
+            ],
+        }
+    ]
+
+    def test_summarize_task_lines(self) -> None:
+        rendered = json.dumps(install_preview.summarize_task_lines(self.LINES))
+        for secret in ("DetailSecret", "HistorySecret", "InlineSecret"):
+            assert secret not in rendered
+        assert "set psksecret" in rendered
+
+    def test_policy_tools_redact_task_lines(self) -> None:
+        raw = [
+            {
+                "name": "copy",
+                "detail": "set psksecret ENC DetailSecret==",
+                "history": ["edit HUB1\n    set password HistorySecret\nnext"],
+            }
+        ]
+        rendered = json.dumps(policy_tools._redact_task_lines(raw))
+        assert "DetailSecret" not in rendered
+        assert "HistorySecret" not in rendered
+
+    @pytest.mark.asyncio
+    async def test_failed_preview_returns_redacted_lines(self) -> None:
+        client = _client(stage_state=5)
+        client.get_task_line = AsyncMock(return_value=self.LINES)
+        result = await _preview(client)
+        assert result["error"] == "preview_failed"
+        assert "DetailSecret" not in json.dumps(result)
+
+
+class TestScopeWithoutVdom:
+    """Measured live on FMG 8.0.2 with 1.13.0: a preview of FGT/root let an
+    install_package of the same device with no vdom through the gate, and
+    FMG ran it (M5). Regression for that exact pair."""
+
+    @pytest.mark.asyncio
+    async def test_root_preview_does_not_authorize_a_vdomless_install(self) -> None:
+        client = _client()
+        await _preview(client)  # scope [{"name": "branch1", "vdom": "root"}]
+        client.install_package.reset_mock()
+
+        with patch.object(system_tools, "get_fmg_client", return_value=client):
+            result = await system_tools.install_package("demo", "branch_pkg", [{"name": "branch1"}])
+
+        assert result["status"] == "error"
+        assert result["error"] == "preview_required"
+        client.install_package.assert_not_called()
+        # The root preview is untouched and still authorizes its own scope.
+        assert install_gate.find_preview("demo", "branch_pkg", DEVICES) == 12

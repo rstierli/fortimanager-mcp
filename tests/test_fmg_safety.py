@@ -127,6 +127,8 @@ class TestPreviewBeforeInstallGate:
         assert result["status"] == "error"
         assert "not finished" in result["message"]
         client.install_package.assert_not_called()
+        # A refusal leaves the preview on record: once it finishes, it counts.
+        assert install_gate.find_preview("root", "default", DEVICES) == 7
 
     @pytest.mark.asyncio
     async def test_strict_refuses_failed_preview(self) -> None:
@@ -417,11 +419,11 @@ class TestPreviewRevisionGate:
                 adom="root", package="default", devices=DEVICES
             )
         assert result["status"] == "success"
-        assert install_gate.recorded_revision("root", "default", DEVICES) == 5
+        assert install_gate.recorded_fingerprint("root", "default", DEVICES) == {"package": 5}
 
     @pytest.mark.asyncio
     async def test_unchanged_revision_installs(self) -> None:
-        install_gate.record_preview("root", "default", DEVICES, 7, revision=5)
+        install_gate.record_preview("root", "default", DEVICES, 7, fingerprint={"package": 5})
         client = _client(
             install_package={"return_value": {"task": 2}},
             get_task={"return_value": {"state": 4}},
@@ -432,7 +434,7 @@ class TestPreviewRevisionGate:
 
     @pytest.mark.asyncio
     async def test_changed_revision_refuses_stale_and_expires(self) -> None:
-        install_gate.record_preview("root", "default", DEVICES, 7, revision=5)
+        install_gate.record_preview("root", "default", DEVICES, 7, fingerprint={"package": 5})
         client = _client(
             install_package={"return_value": {"task": 2}},
             get_task={"return_value": {"state": 4}},
@@ -466,7 +468,7 @@ class TestPreviewRevisionGate:
     async def test_unverifiable_revision_refuses_in_strict(self) -> None:
         """Recorded revision exists but the install-time fetch fails: strict
         mode must refuse rather than install unverified."""
-        install_gate.record_preview("root", "default", DEVICES, 7, revision=5)
+        install_gate.record_preview("root", "default", DEVICES, 7, fingerprint={"package": 5})
         client = _client(
             install_package={"return_value": {"task": 2}},
             get_task={"return_value": {"state": 4}},
@@ -484,7 +486,7 @@ class TestPreviewRevisionGate:
     ) -> None:
         monkeypatch.setenv("FMG_INSTALL_SAFETY", "warn")
         get_settings.cache_clear()
-        install_gate.record_preview("root", "default", DEVICES, 7, revision=5)
+        install_gate.record_preview("root", "default", DEVICES, 7, fingerprint={"package": 5})
         client = _client(
             install_package={"return_value": {"task": 2}},
             get_task={"return_value": {"state": 4}},
@@ -493,3 +495,175 @@ class TestPreviewRevisionGate:
         result = await _install(client)
         assert result["status"] == "success"
         assert "changed since the preview" in result["warning"]
+
+
+class TestScopeKey:
+    """The gate's scope key holds exactly what FMG installs to: name and
+    vdom, stripped; a missing vdom is not "root" (M5)."""
+
+    def test_missing_vdom_is_not_root(self) -> None:
+        install_gate.record_preview("root", "default", [{"name": "FGT1", "vdom": "root"}], 7)
+        assert install_gate.find_preview("root", "default", [{"name": "FGT1"}]) is None
+
+    def test_missing_vdom_preview_does_not_authorize_root(self) -> None:
+        install_gate.record_preview("root", "default", [{"name": "FGT1"}], 7)
+        assert install_gate.find_preview("root", "default", DEVICES) is None
+        assert install_gate.find_preview("root", "default", [{"name": "FGT1"}]) == 7
+
+    def test_only_name_and_vdom_count_and_are_stripped(self) -> None:
+        install_gate.record_preview(
+            "root", "default", [{"name": " FGT1 ", "vdom": "root ", "oid": "5"}], 7
+        )
+        assert install_gate.find_preview("root", "default", DEVICES) == 7
+
+    def test_separator_in_a_name_cannot_forge_another_scope(self) -> None:
+        install_gate.record_preview("root", "default", [{"name": "A/x,B", "vdom": "y"}], 7)
+        forged = [{"name": "A", "vdom": "x"}, {"name": "B", "vdom": "y"}]
+        assert install_gate.find_preview("root", "default", forged) is None
+
+
+class TestFingerprint:
+    """The gate compares a fingerprint, not one hard-wired field (M6)."""
+
+    @pytest.mark.asyncio
+    async def test_package_fingerprint_is_its_revision(self) -> None:
+        client = _client(get_package={"return_value": {"obj ver": 5}})
+        assert await install_gate.preview_fingerprint(client, "root", "default") == {"package": 5}
+
+    @pytest.mark.asyncio
+    async def test_unreadable_revision_is_no_fingerprint(self) -> None:
+        client = _client(get_package={"side_effect": RuntimeError("down")})
+        assert await install_gate.preview_fingerprint(client, "root", "default") is None
+
+    @pytest.mark.asyncio
+    async def test_device_settings_have_no_fingerprint(self) -> None:
+        client = _client(get_package={"return_value": {"obj ver": 5}})
+        assert await install_gate.preview_fingerprint(client, "root", None) is None
+        client.get_package.assert_not_called()
+
+
+async def _install_unpatched() -> dict[str, Any]:
+    return await system_tools.install_package(adom="root", package="default", devices=DEVICES)
+
+
+class TestParallelInstalls:
+    """One preview authorizes one install even when installs race (M4).
+
+    get_fmg_client is patched once around the gather: patch contexts
+    entered by concurrent calls unwind out of order and leak the mock.
+    """
+
+    @staticmethod
+    def _racing_client() -> MagicMock:
+        async def slow_task(task_id: int) -> dict[str, Any]:
+            await asyncio.sleep(0.01)  # yields: the other call runs meanwhile
+            return {"state": 4}
+
+        return _client(
+            install_package={"return_value": {"task": 2}},
+            get_task={"side_effect": slow_task},
+        )
+
+    @pytest.mark.asyncio
+    async def test_two_parallel_installs_only_one_runs(self) -> None:
+        install_gate.record_preview("root", "default", DEVICES, 7)
+        client = self._racing_client()
+
+        with patch.object(system_tools, "get_fmg_client", return_value=client):
+            results = await asyncio.gather(_install_unpatched(), _install_unpatched())
+
+        assert sorted(r["status"] for r in results) == ["error", "success"]
+        assert [r for r in results if r["status"] == "error"][0]["error"] == "preview_required"
+        client.install_package.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_parallel_device_settings_installs_only_one_runs(self) -> None:
+        install_gate.record_preview("root", None, DEVICES, 7)
+        client = self._racing_client()
+        client.install_device = AsyncMock(return_value={"task": 3})
+
+        with patch.object(system_tools, "get_fmg_client", return_value=client):
+            results = await asyncio.gather(
+                system_tools.install_device_settings("root", DEVICES),
+                system_tools.install_device_settings("root", DEVICES),
+            )
+
+        assert sorted(r["status"] for r in results) == ["error", "success"]
+        client.install_device.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_installs_of_one_target_are_serialized(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Even where the gate lets both through (warn), the same target is
+        never installed by two calls at once."""
+        monkeypatch.setenv("FMG_INSTALL_SAFETY", "warn")
+        get_settings.cache_clear()
+        running = 0
+        overlap = 0
+
+        async def install(**kwargs: Any) -> dict[str, Any]:
+            nonlocal running, overlap
+            running += 1
+            overlap = max(overlap, running)
+            await asyncio.sleep(0.01)
+            running -= 1
+            return {"task": 2}
+
+        client = _client(install_package={"side_effect": install})
+        with patch.object(system_tools, "get_fmg_client", return_value=client):
+            results = await asyncio.gather(*(_install_unpatched() for _ in range(3)))
+
+        assert all(r["status"] == "success" for r in results)
+        assert overlap == 1
+        assert not install_gate._INSTALL_LOCKS
+
+    @pytest.mark.asyncio
+    async def test_failed_gate_check_restores_the_preview(self) -> None:
+        install_gate.record_preview("root", "default", DEVICES, 7)
+        client = _client(get_task={"side_effect": RuntimeError("timeout")})
+        result = await _install(client)
+        assert result["error"] == "preview_required"
+        assert install_gate.find_preview("root", "default", DEVICES) == 7
+
+    @pytest.mark.asyncio
+    async def test_failed_install_call_does_not_restore_the_preview(self) -> None:
+        """The install may have reached FortiManager: fail closed."""
+        install_gate.record_preview("root", "default", DEVICES, 7)
+        client = _client(
+            install_package={"side_effect": RuntimeError("connection reset")},
+            get_task={"return_value": {"state": 4}},
+        )
+        result = await _install(client)
+        assert result["status"] == "error"
+        assert install_gate.find_preview("root", "default", DEVICES) is None
+
+    @pytest.mark.asyncio
+    async def test_preview_recorded_during_a_refused_install_wins(self) -> None:
+        """A restore never overwrites a preview recorded while the gate
+        check was running."""
+        install_gate.record_preview("root", "default", DEVICES, 7)
+
+        async def task(task_id: int) -> dict[str, Any]:
+            install_gate.record_preview("root", "default", DEVICES, 8)
+            return {"state": 1}
+
+        client = _client(get_task={"side_effect": task})
+        result = await _install(client)
+        assert result["error"] == "preview_required"
+        assert install_gate.find_preview("root", "default", DEVICES) == 8
+
+    @pytest.mark.asyncio
+    async def test_preview_started_during_a_refused_install_is_not_undone(self) -> None:
+        """A preview attempt that starts while the gate check runs drops the
+        old record (L5); the refused install must not bring it back."""
+        install_gate.record_preview("root", "default", DEVICES, 7)
+
+        async def task(task_id: int) -> dict[str, Any]:
+            install_gate.consume_preview("root", "default", DEVICES)
+            return {"state": 1}
+
+        client = _client(get_task={"side_effect": task})
+        result = await _install(client)
+        assert result["error"] == "preview_required"
+        assert install_gate.find_preview("root", "default", DEVICES) is None

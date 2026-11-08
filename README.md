@@ -492,7 +492,7 @@ networks:
 | `list_packages` | List policy packages in an ADOM |
 | `get_package` | Get policy package details |
 | `install_package` | Install policy package to devices |
-| `install_device_settings` | Install device settings only, with an optional revision comment (`dev_rev_comments`) |
+| `install_device_settings` | Install device settings only, with an optional revision comment (`dev_rev_comments`); needs a `preview_install` with `package=None` first (`FMG_INSTALL_SAFETY`) |
 | `lock_adom` | Lock ADOM for editing (workspace mode) |
 | `unlock_adom` | Unlock ADOM |
 | `commit_adom` | Commit ADOM changes |
@@ -868,7 +868,8 @@ that does not use them. Prompts load in both `FMG_TOOL_MODE=full` and
 The playbooks only read and propose changes: any change, install or device
 command waits for your approval. Running an install preview does create
 FortiManager tasks, and a successful preview allows one install of the same
-package and devices (see `FMG_INSTALL_SAFETY`).
+package (or device settings, with `package=None`) and devices (see
+`FMG_INSTALL_SAFETY`).
 
 | Prompt | Argument | Skill | Use it for |
 |--------|----------|-------|------------|

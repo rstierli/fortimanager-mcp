@@ -19,11 +19,12 @@ from fortimanager_mcp.utils.install_preview import (
     DEFAULT_PREVIEW_TIMEOUT,
     parse_preview_message,
     preview_install_response,
+    redact_task_text,
     summarize_task_lines,
     wait_task_terminal,
 )
 from fortimanager_mcp.utils.install_preview import redact_preview as _redact_preview
-from fortimanager_mcp.utils.responses import error_response, redact
+from fortimanager_mcp.utils.responses import error_response
 from fortimanager_mcp.utils.task_guard import TaskSlotsExhausted, spawn_guarded
 from fortimanager_mcp.utils.validation import (
     ValidationError,
@@ -55,17 +56,18 @@ def _get_client() -> FortiManagerClient:
 
 
 def _redact_task_lines(lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Run the free-text redactor over the detail and history of task lines.
+    """Run the task-text redactor over the detail and history of task lines.
 
     ``error_response`` redacts its ``message`` but merges extras verbatim,
     and a task line's detail is FortiManager's own text about the object it
-    failed on, which can quote the offending value.
+    failed on, which can quote the offending value, as ``key=value`` or as
+    CLI (``set psksecret ENC ...``).
     """
     return [
         {
             **line,
-            "detail": redact(d) if isinstance(d := line.get("detail"), str) else d,
-            "history": [redact(str(h)) for h in line.get("history") or []],
+            "detail": redact_task_text(d) if isinstance(d := line.get("detail"), str) else d,
+            "history": [redact_task_text(str(h)) for h in line.get("history") or []],
         }
         for line in lines
     ]
@@ -296,6 +298,22 @@ async def clone_package(
             )
         client = _get_client()
 
+        # The install-on restore below writes into new_name by name: run
+        # against a package that already exists, it would rewrite that
+        # package's policies. Anything but "not found" refuses the clone.
+        try:
+            await client.get_package(adom, new_name)
+        except ResourceNotFoundError:
+            pass
+        else:
+            return error_response(
+                error="package_exists",
+                message=f"A package named '{new_name}' already exists in ADOM '{adom}'",
+                operation="clone_package",
+                adom=adom,
+                package=package,
+            )
+
         targets: dict[int, list[dict[str, Any]]] = {}
         if not copy_installation_targets:
             source = await client.get(
@@ -315,29 +333,41 @@ async def clone_package(
             ),
         )
         task_id = result.get("task") if isinstance(result, dict) else None
-        if task_id is not None:
-            try:
-                task = await wait_task_terminal(client, int(task_id), deadline)
-            except TimeoutError as e:
-                return error_response(
-                    error="task_timeout",
-                    message=f"{e}; the clone may still finish, check with get_task",
-                    operation="clone_package",
-                    adom=adom,
-                    package=package,
-                    task_id=int(task_id),
-                )
-            if task_state(task) != "done":
-                lines = summarize_task_lines(await client.get_task_line(int(task_id)))
-                return error_response(
-                    error="clone_failed",
-                    message=f"Clone task {task_id} ended in state '{task_state(task)}'",
-                    operation="clone_package",
-                    adom=adom,
-                    package=package,
-                    task_id=int(task_id),
-                    task_lines=_redact_task_lines(lines),
-                )
+        if task_id is None:
+            # Nothing to wait for, so nothing shows the clone exists: do not
+            # write install-on targets into a package that may not be ours.
+            return error_response(
+                error="clone_failed",
+                message=(
+                    "FortiManager returned no clone task; the clone was not verified, "
+                    f"check with get_package for '{new_name}'"
+                ),
+                operation="clone_package",
+                adom=adom,
+                package=package,
+            )
+        try:
+            task = await wait_task_terminal(client, int(task_id), deadline)
+        except TimeoutError as e:
+            return error_response(
+                error="task_timeout",
+                message=f"{e}; the clone may still finish, check with get_task",
+                operation="clone_package",
+                adom=adom,
+                package=package,
+                task_id=int(task_id),
+            )
+        if task_state(task) != "done":
+            lines = summarize_task_lines(await client.get_task_line(int(task_id)))
+            return error_response(
+                error="clone_failed",
+                message=f"Clone task {task_id} ended in state '{task_state(task)}'",
+                operation="clone_package",
+                adom=adom,
+                package=package,
+                task_id=int(task_id),
+                task_lines=_redact_task_lines(lines),
+            )
 
         restored: list[int] = []
         warnings: list[str] = []
@@ -1611,8 +1641,11 @@ async def preview_install(
     administrator's install wizard (see ``utils/install_preview.py``).
 
     A successful package preview also authorizes one install_package of the
-    same ADOM/package/devices (FMG_INSTALL_SAFETY gate). A preview that
-    finds nothing to install does not: there is nothing to push.
+    same ADOM/package/devices (FMG_INSTALL_SAFETY gate); with package=None
+    it authorizes one install_device_settings of the same ADOM/devices
+    instead. A preview that finds nothing to install does not: there is
+    nothing to push. Starting a preview drops any earlier preview of the
+    same target, so only the latest attempt can authorize.
 
     Args:
         adom: ADOM name

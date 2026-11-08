@@ -34,7 +34,7 @@ This compares stored values, so a field can differ without any change to push: i
 - Ask the user before calling a local change a mistake: it can be a deliberate fix.
 
 ## 4. See what an install would do
-`preview_install` renders the CLI an install would push without touching the device. It is not free of side effects: it creates FortiManager tasks, and a successful package preview authorizes one `install_package` of the same package and devices. Say so before running it. Run it with the package, and with `package=None` for device settings. Read every line and report:
+`preview_install` renders the CLI an install would push without touching the device. It is not free of side effects: it creates FortiManager tasks, and a successful package preview authorizes one `install_package` of the same package and devices (a `package=None` preview, one `install_device_settings`). Say so before running it. Run it with the package, and with `package=None` for device settings. Read every line and report:
 - what goes beyond the expected change, such as a password or a pending policy;
 - what an install would overwrite on the device, and what it would delete;
 - that devices in a shared template must usually be installed together when values move between them;

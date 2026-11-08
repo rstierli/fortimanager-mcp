@@ -715,6 +715,7 @@ class TestClonePackage:
             return_value=[{"name": "copy", "state": 5, "detail": "name exists", "history": []}]
         )
         client.update = AsyncMock(return_value={})
+        client.get_package = AsyncMock(side_effect=ResourceNotFoundError("Object does not exist"))
         return client
 
     async def _clone(self, client: MagicMock, **kwargs: Any) -> dict[str, Any]:
@@ -760,6 +761,39 @@ class TestClonePackage:
         assert result["status"] == "error"
         assert result["error"] == "clone_failed"
         assert result["task_lines"][0]["detail"] == "name exists"
+        client.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_existing_new_name_is_refused_before_cloning(self) -> None:
+        """Restoring install-on targets into an existing package would
+        rewrite that package's policies (L6)."""
+        client = self._client()
+        client.get_package = AsyncMock(return_value={"name": "v2", "obj ver": 3})
+        result = await self._clone(client)
+
+        assert result["status"] == "error"
+        assert result["error"] == "package_exists"
+        client.get_package.assert_awaited_once_with("demo", "v2")
+        client.clone_package.assert_not_called()
+        client.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unverifiable_new_name_is_refused(self) -> None:
+        client = self._client()
+        client.get_package = AsyncMock(side_effect=RuntimeError("connection reset"))
+        result = await self._clone(client)
+
+        assert result["status"] == "error"
+        client.clone_package.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_clone_without_task_id_is_refused(self) -> None:
+        client = self._client()
+        client.clone_package = AsyncMock(return_value={})
+        result = await self._clone(client)
+
+        assert result["status"] == "error"
+        assert result["error"] == "clone_failed"
         client.update.assert_not_called()
 
     @pytest.mark.asyncio
@@ -1837,6 +1871,7 @@ class TestClonePackageReview:
             ]
         )
         client.update = AsyncMock(return_value={})
+        client.get_package = AsyncMock(side_effect=ResourceNotFoundError("Object does not exist"))
         return client
 
     @pytest.mark.asyncio
