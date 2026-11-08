@@ -34,8 +34,10 @@ Security release from an audit of everything added since 1.12.3. The audit found
   - Only ASCII API paths are accepted.
   - The managed-switch monitor allowlist is narrowed to `status`.
 - **Output masking (`FMG_MASKING`):** entry names and response keys that are addresses are masked in `query_device_api` output; addresses followed by punctuation in free text are masked; `username`, `user` and `user_name` (as user names) and `srcname` (as host name) are masked.
-- **CLI template reads (`get_cli_template`) mask secrets in more Jinja forms**: assignments behind a secret `set` line, `pw`-style names, filtered block sets, dict literals and set lines after a comment.
-- **Install preview and task output are redacted whatever envelope FortiManager returns**, and task-line details and history in install, preview, clone and `add_model_device` errors redact CLI-form secrets. `add_model_device` task details are also bounded in length and count.
+- **CLI template redaction (`get_cli_template`) fails closed.** Templates are tokenized instead of matched per construct: a secret `set` value is masked wherever it appears in the template text, and when a template can build a secret from its own constants, all of its literal constants are masked.
+- **SNMP community strings are masked in CLI config text and templates** (`set name` under the community tables of system SNMP and the switch and wireless controllers).
+- **Error and device messages mask every FortiOS secret field name** (psksecret, private-key, passphrase and others) in CLI, key=value and JSON spellings; the free-text and CLI secret lists now come from one source.
+- **Install preview and task output are redacted whatever envelope FortiManager returns**, including escaped or JSON-encoded text that does not parse, and task-line details and history in install, preview, clone and `add_model_device` errors redact CLI-form secrets. `add_model_device` task details are also bounded in length and count.
 - **`add_model_device`:**
   - It no longer suggests deleting a device that existed before the call. Partial creation is reported only when this call created the device.
   - It asks for confirmation before applying a blueprint that enforces a firmware version.
