@@ -1,5 +1,7 @@
 """Tests for device_proxy_tools module."""
 
+import re
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -36,7 +38,7 @@ def _client(answer: Any) -> AsyncMock:
 async def _query(client: AsyncMock | None, path: str, **kwargs: Any) -> dict[str, Any]:
     with patch.object(device_proxy_tools, "get_fmg_client", return_value=client):
         kwargs.setdefault("device", "branch1")
-        kwargs.setdefault("adom", "production")
+        kwargs.setdefault("adom", "demo")
         return await device_proxy_tools.query_device_api(path, **kwargs)
 
 
@@ -49,7 +51,7 @@ class TestQueryDeviceApi:
         client.proxy_call.assert_awaited_once_with(
             action="get",
             resource="/api/v2/monitor/system/status",
-            target=["/adom/production/device/branch1"],
+            target=["/adom/demo/device/branch1"],
         )
         assert result["results"] == [{"name": "wan1"}]
         assert result["http_status"] == 200
@@ -103,11 +105,135 @@ class TestQueryDeviceApi:
         assert result == {"error": "device unreachable", "error_code": "device_proxy_error"}
 
     @pytest.mark.asyncio
+    async def test_proxy_error_message_is_scrubbed(self) -> None:
+        """The message is the device's text: no API path, no secret, one line."""
+        message = (
+            "branch1(228) error: GET /api/v2/cmdb/system/admin failed\n"
+            "password=hunter2 token: 0123456789abcdef0123456789abcdef\n"
+        )
+        client = _client([{"status": {"code": -1, "message": message}}])
+        result = await _query(client, "/api/v2/monitor/system/status")
+
+        assert result["error_code"] == "device_proxy_error"
+        assert "/api/" not in result["error"]
+        assert "hunter2" not in result["error"]
+        assert "0123456789abcdef0123456789abcdef" not in result["error"]
+        assert "\n" not in result["error"]
+        assert result["error"].startswith("branch1(228) error:")
+
+    @pytest.mark.asyncio
+    async def test_proxy_error_keeps_the_device_http_status(self) -> None:
+        """Measured on 8.0.2: an unknown endpoint is code -6 "Invalid url", HTTP 404."""
+        client = _client(
+            [
+                {
+                    "status": {"code": -6, "message": "Invalid url"},
+                    "response": {"http_status": 404, "status": "error"},
+                }
+            ]
+        )
+        result = await _query(client, "/api/v2/monitor/router/bgp/neighbors")
+        assert result == {
+            "error": "Invalid url",
+            "error_code": "device_proxy_error",
+            "http_status": 404,
+        }
+
+    @pytest.mark.asyncio
     async def test_device_http_error_is_reported(self) -> None:
         client = _client(_envelope(None, status="error", http_status=404))
-        result = await _query(client, "/api/v2/monitor/no/such")
+        result = await _query(client, "/api/v2/monitor/router/no-such")
         assert result["error_code"] == "device_api_error"
         assert result["http_status"] == 404
+
+    @pytest.mark.asyncio
+    async def test_vdom_is_validated(self) -> None:
+        client = _client(_envelope([]))
+        result = await _query(client, "/api/v2/monitor/system/status", vdom="../x")
+        assert result["error_code"] == "validation_error"
+        client.proxy_call.assert_not_awaited()
+
+
+SKILLS_DIR = Path(device_proxy_tools.__file__).resolve().parent.parent / "skills"
+
+
+def _skill_paths() -> list[str]:
+    paths: set[str] = set()
+    for skill in SKILLS_DIR.glob("*/SKILL.md"):
+        paths.update(re.findall(r"/api/v2/(?:monitor|cmdb)/[A-Za-z0-9_./-]+", skill.read_text()))
+    return sorted(p.rstrip(".") for p in paths)
+
+
+class TestAllowlist:
+    def test_the_skills_name_paths(self) -> None:
+        """Guard for the test below: it must have something to check."""
+        assert len(_skill_paths()) >= 5
+
+    @pytest.mark.parametrize("path", _skill_paths())
+    def test_every_path_a_skill_calls_is_allowed(self, path: str) -> None:
+        assert device_proxy_tools._validate_path(path) == path
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/api/v2/monitor/switch-controller/managed-switch/status",
+            "/api/v2/monitor/switch-controller/detected-device",
+            "/api/v2/monitor/router/bgp/neighbors",
+            "/api/v2/monitor/router/lookup",
+            "/api/v2/monitor/system/interface",
+            "/api/v2/monitor/vpn/ipsec",
+            "/api/v2/monitor/firewall/policy",
+            "/api/v2/monitor/wifi/client",
+            "/api/v2/monitor/system/ha-peer",
+            "/api/v2/cmdb/firewall/address/srv-web",
+            "/api/v2/cmdb/vpn.ipsec/phase1-interface",
+            "/api/v2/cmdb/system.snmp/community",
+            "/api/v2/cmdb/router/static",
+        ],
+    )
+    def test_diagnostic_paths_are_allowed(self, path: str) -> None:
+        assert device_proxy_tools._validate_path(path) == path
+
+    def test_matching_ignores_case_and_sends_the_path_as_given(self) -> None:
+        path = "/api/v2/Monitor/System/Status"
+        assert device_proxy_tools._validate_path(path) == path
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/api/v2/cmdb/system/admin",
+            "/api/v2/cmdb/system/api-user",
+            "/api/v2/cmdb/user/local",
+            "/api/v2/monitor/system/config-revision/file",
+            "/api/v2/monitor/system/com-log/dump",
+            "/api/v2/monitor/system/config/backup",
+            "/api/v2/monitor/system/ha-peerx",
+            "/api/v2/cmdb/system/ha-monitor",
+            "/api/v2/monitor/log/device/state",
+        ],
+    )
+    def test_everything_else_is_refused_with_the_list(self, path: str) -> None:
+        with pytest.raises(device_proxy_tools.ValidationError) as caught:
+            device_proxy_tools._validate_path(path)
+        message = str(caught.value)
+        assert "refused" in message or "monitor/router" in message
+
+    def test_a_refusal_names_the_allowed_prefixes(self) -> None:
+        with pytest.raises(device_proxy_tools.ValidationError) as caught:
+            device_proxy_tools._validate_path("/api/v2/cmdb/system/admin")
+        message = str(caught.value)
+        for prefix in device_proxy_tools._ALLOWED_PREFIXES:
+            assert prefix in message
+
+    @pytest.mark.parametrize("segment", ["backup", "Download", "DUMP", "file", "raw"])
+    def test_a_file_segment_is_refused_even_under_an_allowed_prefix(self, segment: str) -> None:
+        with pytest.raises(device_proxy_tools.ValidationError):
+            device_proxy_tools._validate_path(f"/api/v2/monitor/router/{segment}")
+
+    def test_no_allowed_prefix_is_a_file_export(self) -> None:
+        for prefix in device_proxy_tools._ALLOWED_PREFIXES:
+            assert not device_proxy_tools._FILE_SEGMENTS.intersection(prefix.split("/"))
+            assert prefix == prefix.lower()
 
 
 class TestRefusals:
@@ -118,6 +244,7 @@ class TestRefusals:
             "/api/v2/monitor/system/config/backup",
             "/api/v2/monitor/system/debug/download",
             "/api/v2/monitor/../cmdb/system/admin",
+            "/api/v2/cmdb/system/admin",
             "/api/v2/monitor/system/status?plain-text-password=1",
             "/api/v2/monitor/system%2Fstatus",
             "/api/v2/log/disk/event",
@@ -140,7 +267,7 @@ class TestRefusals:
     )
     async def test_param_is_refused_before_any_call(self, params: dict[str, Any]) -> None:
         client = _client([])
-        result = await _query(client, "/api/v2/cmdb/system/admin", params=params)
+        result = await _query(client, "/api/v2/cmdb/firewall/address", params=params)
 
         assert "error" in result
         client.proxy_call.assert_not_awaited()
@@ -161,7 +288,7 @@ class TestRedaction:
                 ]
             )
         )
-        result = await _query(client, "/api/v2/cmdb/system/admin")
+        result = await _query(client, "/api/v2/cmdb/vpn.ipsec/phase1-interface")
 
         entry = result["results"][0]
         assert entry["name"] == "admin"
@@ -191,3 +318,62 @@ class TestRedaction:
 
         assert "ENC abc" not in result["results"]["config"]
         assert 'set name "a"' in result["results"]["config"]
+
+
+class TestSnmpCommunities:
+    """A community string is the entry's ``name``: a field-name match misses it."""
+
+    @pytest.mark.asyncio
+    async def test_the_community_table_has_its_names_masked(self) -> None:
+        client = _client(
+            _envelope(
+                [
+                    {
+                        "id": 1,
+                        "q_origin_key": 1,
+                        "name": "s3cret-community",
+                        "status": "enable",
+                        "hosts": [{"id": 1, "ip": "192.0.2.10 255.255.255.255"}],
+                    }
+                ]
+            )
+        )
+        result = await _query(client, "/api/v2/cmdb/system.snmp/community")
+
+        entry = result["results"][0]
+        assert entry["name"] == MASK_VALUE
+        assert entry["status"] == "enable"
+        assert entry["hosts"] == [{"id": 1, "ip": "192.0.2.10 255.255.255.255"}]
+        assert "s3cret-community" not in str(result)
+
+    @pytest.mark.asyncio
+    async def test_a_single_community_read_is_masked_too(self) -> None:
+        client = _client(_envelope({"id": 1, "name": "s3cret-community"}))
+        result = await _query(client, "/api/v2/cmdb/system.snmp/community/1")
+        assert result["results"]["name"] == MASK_VALUE
+
+    @pytest.mark.asyncio
+    async def test_a_nested_switch_community_is_masked(self) -> None:
+        client = _client(
+            _envelope(
+                [
+                    {
+                        "switch-id": "S108EP0000000001",
+                        "name": "sw1",
+                        "snmp-community": [{"id": 1, "name": "s3cret-community"}],
+                    }
+                ]
+            )
+        )
+        result = await _query(client, "/api/v2/cmdb/switch-controller/managed-switch")
+
+        entry = result["results"][0]
+        assert entry["name"] == "sw1"
+        assert entry["snmp-community"][0]["name"] == MASK_VALUE
+        assert "s3cret-community" not in str(result)
+
+    @pytest.mark.asyncio
+    async def test_other_tables_keep_their_names(self) -> None:
+        client = _client(_envelope([{"name": "srv-web", "subnet": "192.0.2.10 255.255.255.255"}]))
+        result = await _query(client, "/api/v2/cmdb/firewall/address")
+        assert result["results"][0]["name"] == "srv-web"
