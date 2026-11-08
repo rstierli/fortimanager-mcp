@@ -276,3 +276,29 @@ def test_one_megabyte_redacts_quickly(fn: Any, payload: Any) -> None:
     start = time.perf_counter()
     fn(payload)
     assert time.perf_counter() - start < 3.0
+
+
+class TestReaudit3:
+    """Third re-audit: an end in one Jinja branch, escapes inside literals."""
+
+    def test_end_in_one_branch_keeps_the_community_block_open(self) -> None:
+        script = (
+            'config system snmp community\n edit 1\n{% if a %}\n  set name "X"\n next\nend\n'
+            '{% else %}\n  set name "S3CRb"\n next\nend\n{% endif %}\n'
+        )
+        assert "S3CRb" not in template_tools.redact_cli_template_script(script)
+
+    def test_community_value_from_a_variable_in_the_other_branch(self) -> None:
+        script = (
+            "{% set cb = 'S3CRc' %}config system snmp community\n edit 1\n{% if a %}\n"
+            "  set name x\n next\nend\n{% else %}\n  set name {{ cb }}\n next\nend\n{% endif %}\n"
+        )
+        assert "S3CRc" not in template_tools.redact_cli_template_script(script)
+
+    @pytest.mark.parametrize(
+        "literal",
+        ["edit a\\nset password S3CRf\\nnext", "x\\tset password S3CRf", "set\\tpassword S3CRf"],
+    )
+    def test_escaped_line_breaks_in_a_literal(self, literal: str) -> None:
+        script = "{% set blk = '" + literal + "' %}{{ blk }}"
+        assert "S3CRf" not in template_tools.redact_cli_template_script(script)

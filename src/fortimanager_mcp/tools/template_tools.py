@@ -269,7 +269,11 @@ def _secret_value_start(text: str, after_tag: bool, tag_follows: bool, community
 
 def _holds_directive(content: str) -> bool:
     """Whether a string literal spells a secret directive, or one left open."""
-    return any(_secret_value_start(line, False, True, False) >= 0 for line in content.split("\n"))
+    # Jinja decodes escapes in a literal, so "edit a\\nset password x" is two
+    # CLI lines once rendered: split on the escapes too.
+    content = re.sub(r"\\t|\\x09", " ", content)
+    lines = re.split(r"\n|\r|\\[nrfv]|\\x0[aAdD]", content)
+    return any(_secret_value_start(line, False, True, False) >= 0 for line in lines)
 
 
 def _tag_end(script: str, i: int, kind: str) -> int:
@@ -410,7 +414,8 @@ class _Scanner:
         self.blocks: list[tuple[str, bool]] = []  # open capturing blocks
         self.secret_blocks = 0
         self.depth = 0
-        self.communities: list[bool] = []  # open config blocks
+        # Open config blocks: (community?, Jinja depth at the config line).
+        self.communities: list[tuple[bool, int]] = []
         self.in_community = 0
         self.builds_directive = False
 
@@ -542,10 +547,17 @@ class _Scanner:
             # A path a tag writes could be a community table.
             unknown = any(kind in _TAG_KINDS for kind, _ in line[at + 1 :])
             community = unknown or is_snmp_community_block(match.group("path"))
-            self.communities.append(community)
+            self.communities.append((community, self.depth))
             self.in_community += community
-        elif _END_LINE.match(line[at][1]) and self.communities:
-            self.in_community -= self.communities.pop()
+        elif (
+            _END_LINE.match(line[at][1])
+            and self.communities
+            and self.depth <= self.communities[-1][1]
+        ):
+            # An end nested deeper than its config (one branch of an
+            # if/else) does not close it for the other branch: the block
+            # stays open, which over-masks later names rather than leaking.
+            self.in_community -= self.communities.pop()[0]
 
     def _line(self, index: int, line: list[_Token]) -> _Value | None:
         """Render a line of plain text and tags; return a value it leaves open."""

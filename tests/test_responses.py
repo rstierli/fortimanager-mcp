@@ -6,6 +6,8 @@ adapted for FortiManager's field names (``task_id``, ``package``, ``device``
 instead of FAZ's ``tid``/``logtype``).
 """
 
+import pytest
+
 from fortimanager_mcp.utils.responses import (
     error_response,
     redact,
@@ -250,3 +252,29 @@ class TestStripDeviceCredentials:
         out = strip_device_credentials(deep)
 
         assert "s3cret" not in repr(out)
+
+
+class TestCompoundKeysAndCredentials:
+    """Third re-audit: compound secret keys, HTTP auth schemes, URL userinfo."""
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "admin_password=S3CRi",
+            "AdminPassword: S3CRk",
+            "session_id=S3CRr",
+            "sessionid=S3CRs",
+            "sessionkey=S3CRC",
+            "Authorization: Bearer S3CRoooo",
+            "authorization=Basic S3CRpppp",
+            "connect to https://admin:S3CR3@fmg.example/jsonrpc failed",
+        ],
+    )
+    def test_value_is_masked(self, text: str) -> None:
+        assert "S3CR" not in redact(text)
+
+    @pytest.mark.parametrize(
+        "text", ["inside: 3 rules", "policy 12 deny", "https://fmg.example/jsonrpc"]
+    )
+    def test_ordinary_text_is_kept(self, text: str) -> None:
+        assert redact(text) == text

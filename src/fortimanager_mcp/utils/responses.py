@@ -46,9 +46,20 @@ _KEY_ALTERNATION = "|".join(
 # (``{\"password\": \"...\"}``), be ``=>`` or a full-width colon; a quoted
 # value runs to its closing quote past backslash escapes (``"ab\"cd"``),
 # optionally behind a Python bytes/str prefix (``b'...'``).
+#
+# The key may be compounded: ``admin_password``, ``AdminPassword`` (a
+# lower-case run before a capital, matched case-sensitively), ``session_id``,
+# ``sessionid``/``sessionkey``. A bare run glued in front (``inside``) is
+# not, and nor is a longer word after the key (``password-expire``).
+_KEY_PREFIX = r"(?:[A-Za-z0-9]+[-_]|(?-i:[A-Za-z0-9]*[a-z0-9](?=[A-Z])))?"
+_KEY_SUFFIX = r"(?:[-_]?(?:id|key))?"
 _KV_PATTERN = re.compile(
     r"(?i)\b(?P<key>"
+    + _KEY_PREFIX
+    + r"(?:"
     + _KEY_ALTERNATION
+    + r")"
+    + _KEY_SUFFIX
     + r")\b(?P<sep>\\?[\"']?\s*(?:=>|[=:\uff1a])\s*\\?)"
     + r"(?P<value>[bru]?\"(?:\\.|[^\"\\])*\"?|[bru]?'(?:\\.|[^'\\])*'?|[^\s\"'&,;]+)",
     re.DOTALL,
@@ -57,6 +68,12 @@ _KV_PATTERN = re.compile(
 _KV_ENC_PATTERN = re.compile(r"(?i)\b(?P<key>" + _KEY_ALTERNATION + r")\b(?P<sep>\s+)ENC\s+\S+")
 #: An ENC blob anywhere: how FortiOS writes a stored secret, whatever its key.
 _ENC_BLOB_PATTERN = re.compile(r"\bENC\s+[A-Za-z0-9+/=]{16,}")
+#: An HTTP credential after its scheme word (``Authorization: Bearer x``).
+_AUTH_SCHEME_PATTERN = re.compile(
+    r"(?i)\b(?P<scheme>Bearer|Basic|Digest|Token)\s+[A-Za-z0-9._~+/=-]{3,}"
+)
+#: The password in URL userinfo (``https://user:pw@host``).
+_URL_USERINFO_PATTERN = re.compile(r"(?i)(?P<head>\b[a-z][a-z0-9+.-]*://[^/\s:@]*:)[^@\s/]+@")
 # Opaque token-like run (mirrors sanitize_for_logging's hex>20 heuristic).
 _HEX_TOKEN_PATTERN = re.compile(r"\b[a-fA-F0-9]{20,}\b")
 
@@ -134,10 +151,14 @@ def redact(text: str) -> str:
         quote = value[0] if value[:1] in ("'", '"') else ""
         return f"{m.group('key')}{m.group('sep')}{quote}{MASK_VALUE}{quote}"
 
-    redacted = _KV_PATTERN.sub(mask, text)
+    # The scheme rule first: as a key=value, ``Authorization: Bearer x``
+    # would mask the scheme word and leave the credential after it.
+    redacted = _AUTH_SCHEME_PATTERN.sub(lambda m: f"{m.group('scheme')} {MASK_VALUE}", text)
+    redacted = _KV_PATTERN.sub(mask, redacted)
     redacted = _KV_ENC_PATTERN.sub(
         lambda m: f"{m.group('key')}{m.group('sep')}{MASK_VALUE}", redacted
     )
+    redacted = _URL_USERINFO_PATTERN.sub(lambda m: f"{m.group('head')}{MASK_VALUE}@", redacted)
     redacted = _ENC_BLOB_PATTERN.sub(MASK_VALUE, redacted)
     redacted = _HEX_TOKEN_PATTERN.sub(MASK_VALUE, redacted)
     return redacted

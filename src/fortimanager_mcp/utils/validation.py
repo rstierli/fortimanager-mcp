@@ -364,7 +364,9 @@ def redact_config_text_secrets(text: str) -> str:
     closes it is dropped rather than partially kept -- those lines carry
     only secret content, nothing a reader needs.
     """
-    lines = text.split("\n")
+    # A lone CR or a Unicode line separator ends a line too (FortiOS reads a
+    # bare CR as one); CRLF stays as it is.
+    lines = re.sub(r"\r(?!\n)|[\u2028\u2029]", "\n", text).split("\n")
     out: list[str] = []
     # Open config blocks (True for a community table) and how many of those
     # are community tables: a counter, not a scan of the stack per line.

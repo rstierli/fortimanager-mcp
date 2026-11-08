@@ -1697,3 +1697,9 @@ class TestSnmpCommunityNames:
         out = redact_config_text_secrets(text)
         assert "c1" not in out.split("config firewall address")[0]
         assert "set name addr1" in out
+
+
+@pytest.mark.parametrize("sep", ["\r", "\u2028"])
+def test_lone_cr_and_line_separator_end_a_config_line(sep: str) -> None:
+    text = sep.join(["config system admin", "edit a", "set password S3CR4", "next", "end"])
+    assert "S3CR4" not in redact_config_text_secrets(text)
