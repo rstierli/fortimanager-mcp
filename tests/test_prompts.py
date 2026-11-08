@@ -272,6 +272,25 @@ class TestServedPrompts:
         assert "{{HOPS_TABLE}}" in contents[0].content
         assert uri in _skill_text(_SKILLS_DIR / "fmg-faz-flow-trace")
 
+    def test_report_template_locks_down_what_the_page_can_load(self) -> None:
+        """The filled page carries device data, so it gets a CSP that allows
+        only its own inline styles, and sends no referrer (audit L2)."""
+        html = (
+            _SKILLS_DIR / "fmg-faz-flow-trace" / "references" / "report-template.html"
+        ).read_text("utf-8")
+        head = html.split("</head>", 1)[0]
+        csp = (
+            '<meta http-equiv="Content-Security-Policy" '
+            "content=\"default-src 'none'; style-src 'unsafe-inline'; img-src data:\">"
+        )
+        assert csp in head
+        assert '<meta name="referrer" content="no-referrer">' in head
+        # The policy is in force before anything it governs is parsed.
+        assert head.index(csp) < head.index("<style>")
+        # Nothing the policy would block: no script, no external resource.
+        assert "<script" not in html.lower()
+        assert not re.search(r"(?:src|href)\s*=|url\(|@import|https?:", html, re.IGNORECASE)
+
 
 class TestBundledFiles:
     def test_every_skill_folder_has_a_prompt_and_back(self) -> None:
