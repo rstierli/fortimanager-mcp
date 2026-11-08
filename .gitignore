@@ -146,6 +146,9 @@ tests/.env.test
 .claude/
 CLAUDE.md
 SKILL.md
+# The bundled skills ship in the wheel, and hatchling leaves out what this file
+# ignores: keep them, and their references/ files, unignored. Checked by
+# tests/test_prompts.py.
 !src/fortimanager_mcp/skills/*/SKILL.md
 docs/agents/
 .cursor/
