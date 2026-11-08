@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from fortimanager_mcp.tools import firmware_tools
+from fortimanager_mcp.utils.errors import PermissionError, ValidationError
 
 CAMPUS_EMEA = {
     "name": "campus_emea",
@@ -80,7 +81,7 @@ async def _call(client: MagicMock, tool: str, **kwargs: Any) -> dict[str, Any]:
 class TestListFirmwareTemplates:
     @pytest.mark.asyncio
     async def test_decodes_enums_and_assignment(self) -> None:
-        result = await _call(_client(), "list_firmware_templates", adom="production")
+        result = await _call(_client(), "list_firmware_templates", adom="demo")
 
         assert result["status"] == "success"
         [template] = result["templates"]
@@ -108,7 +109,7 @@ class TestCreateFirmwareTemplate:
             "create_firmware_template",
             name="branch3_upgrade",
             versions=self.VERSIONS,
-            adom="production",
+            adom="demo",
         )
 
         assert result["status"] == "success", result
@@ -213,13 +214,65 @@ class TestDeleteFirmwareTemplate:
     @pytest.mark.asyncio
     async def test_unassigned_template_is_deleted(self) -> None:
         client = _client([{**CAMPUS_EMEA, "name": "spare", "scope member": None}])
-        result = await _call(client, "delete_firmware_template", name="spare", adom="production")
+        result = await _call(client, "delete_firmware_template", name="spare", adom="demo")
 
         assert result["status"] == "success"
-        client.delete_firmware_template.assert_awaited_once_with("production", "spare")
+        client.delete_firmware_template.assert_awaited_once_with("demo", "spare")
 
     @pytest.mark.asyncio
     async def test_missing_template(self) -> None:
         client = _client()
         result = await _call(client, "delete_firmware_template", name="nope")
         assert result["error"] == "not_found"
+
+
+class TestTemplateTableRefused:
+    """FMG 8.0.2 answers -6 "Invalid url" for the template table of a missing
+    ADOM and for /pm URLs it does not know; the tools name both causes
+    instead of returning a bare "Invalid URL"."""
+
+    @staticmethod
+    def _refusing_client(code: int) -> MagicMock:
+        client = _client()
+        client.list_firmware_templates = AsyncMock(
+            side_effect=ValidationError("Invalid URL: Invalid url", code=code)
+        )
+        return client
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("code", [-6, -3])
+    @pytest.mark.parametrize(
+        ("tool", "kwargs"),
+        [
+            ("list_firmware_templates", {}),
+            (
+                "create_firmware_template",
+                {"name": "t", "versions": [{"platform": "FortiGate-VM64-KVM", "version": "7.4.9"}]},
+            ),
+            ("delete_firmware_template", {"name": "t"}),
+        ],
+    )
+    async def test_refused_table_is_explained(
+        self, code: int, tool: str, kwargs: dict[str, Any]
+    ) -> None:
+        client = self._refusing_client(code)
+        result = await _call(client, tool, adom="demo", **kwargs)
+
+        assert result["status"] == "error"
+        assert result["error_code"] == "firmware_templates_unavailable"
+        assert "ADOM 'demo'" in result["message"]
+        assert "the ADOM does not exist" in result["message"]
+        assert "8.0.2" in result["message"]
+        client.create_firmware_template.assert_not_called()
+        client.delete_firmware_template.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_other_errors_keep_their_category(self) -> None:
+        client = _client()
+        client.list_firmware_templates = AsyncMock(
+            side_effect=PermissionError("No permission", code=-11)
+        )
+        result = await _call(client, "list_firmware_templates", adom="demo")
+
+        assert result["status"] == "error"
+        assert result["error_code"] == "permission_denied"

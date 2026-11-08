@@ -19,6 +19,7 @@ from fortimanager_mcp.utils.responses import (
     strip_device_credentials,
 )
 from fortimanager_mcp.utils.validation import (
+    MASK_VALUE,
     ValidationError,
     and_filters,
     coerce_device_name_list,
@@ -26,7 +27,9 @@ from fortimanager_mcp.utils.validation import (
     validate_adom,
     validate_device_dict_list,
     validate_device_name,
+    validate_device_serial,
     validate_object_name,
+    validate_package_name,
 )
 
 logger = logging.getLogger(__name__)
@@ -51,8 +54,16 @@ def _validate_meta_variables(meta_variables: Any) -> dict[str, str]:
     """Validate per-device meta-variable values for a model device.
 
     FMG stores every value as a string, so numbers are coerced; anything
-    else (a list, a dict, None) is refused rather than stringified into a
-    value no template expects.
+    else (a list, a dict, None) is refused rather than stringified.
+
+    A value is pasted verbatim into every CLI template that references it
+    as ``$(name)`` and is installed with the next install_device_settings,
+    so a newline in a value would add CLI lines of its own. Control
+    characters are therefore refused, as is the redaction marker this
+    server puts in place of password values (writing it back would store
+    the marker as the secret). This keeps a value on one CLI line; it does
+    not make arbitrary text safe in every template position, so a template
+    still has to quote what it substitutes where that matters.
     """
     if not isinstance(meta_variables, dict):
         raise ValidationError("meta_variables must be an object of name -> value")
@@ -69,6 +80,16 @@ def _validate_meta_variables(meta_variables: Any) -> dict[str, str]:
             raise ValidationError(
                 f"Meta-variable {key!r} is longer than {_META_VARIABLE_MAX_VALUE} characters"
             )
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in text):
+            raise ValidationError(
+                f"Meta-variable {key!r} cannot contain control characters or newlines: "
+                "templates substitute the value into CLI as is"
+            )
+        if MASK_VALUE in text:
+            raise ValidationError(
+                f"Meta-variable {key!r} holds the redaction marker {MASK_VALUE!r}, "
+                "not a value; pass the real value"
+            )
         validated[key] = text
     return validated
 
@@ -77,6 +98,8 @@ def _validate_meta_variables(meta_variables: Any) -> dict[str, str]:
 #: values that describe a FortiGate FGCP cluster).
 _MODEL_HA_MODES = frozenset({"AP", "AA"})
 _HA_PRIORITY_MAX = 255
+#: dvmcmd ADD_DEV_ATTRS ``ha_group_name`` is a 36-byte string.
+_HA_GROUP_NAME_MAX = 36
 
 
 def _validate_ha_priority(value: Any, label: str) -> int:
@@ -119,6 +142,7 @@ def _build_ha_slave(
         sn = member.get("serial_number") or member.get("sn")
         if not isinstance(sn, str) or not sn:
             raise ValidationError(f"HA member {name!r} needs a serial_number")
+        sn = validate_device_serial(sn)
         if sn in seen_sn or name in seen_names:
             raise ValidationError(f"HA member {name!r} repeats a name or serial in the cluster")
         seen_sn.add(sn)
@@ -175,13 +199,19 @@ _BLUEPRINT_LIST_FIELDS = frozenset(
         "cluster-worker",
         "dev-group",
         "ha-monitor",
-        "prerun-cliprof",
         "templates",
     }
 )
 #: dvm/cmd/add/device flags (8.0 dvmcmd ADD_DEV_FLAGS_OPTIONS subset).
 _ADD_DEVICE_FLAGS = frozenset({"none", "create_task", "nonblocking", "log_dev"})
 _BLUEPRINT_PROV_TYPES = frozenset({"none", "templates", "template-group"})
+#: String attributes that name an ADOM object. Each one is looked up by URL
+#: before the add (see _check_blueprint_references), so it is held to the
+#: object-name rules: a "/" or ".." in it would address another object.
+_BLUEPRINT_NAMED_STRINGS = {
+    "firmware-template": "firmware template",
+    "template-group": "template group",
+}
 #: Sent by the GUI alongside the schema attributes; accepted and passed on.
 _BLUEPRINT_GUI_FIELDS = frozenset({"download_from_fgd"})
 
@@ -208,13 +238,17 @@ def _validate_inline_blueprint(blueprint: dict[str, Any]) -> dict[str, Any]:
         elif key in _BLUEPRINT_STRING_FIELDS:
             if not isinstance(value, str):
                 raise ValidationError(f"Blueprint {key!r} must be a string")
+            if value and key == "pkg":
+                value = validate_package_name(value)
+            elif value and key in _BLUEPRINT_NAMED_STRINGS:
+                value = validate_object_name(value, _BLUEPRINT_NAMED_STRINGS[key])
             if value:
                 validated[key] = value
         elif key in _BLUEPRINT_SINGLE_REF_FIELDS:
             refs = [value] if isinstance(value, str) else value
             if not isinstance(refs, list) or not all(isinstance(i, str) for i in refs):
                 raise ValidationError(f"Blueprint {key!r} must be a name")
-            refs = [i for i in refs if i]
+            refs = [validate_object_name(i, f"blueprint {key}") for i in refs if i]
             if len(refs) > 1:
                 raise ValidationError(f"Blueprint {key!r} takes a single name")
             if refs:
@@ -223,7 +257,7 @@ def _validate_inline_blueprint(blueprint: dict[str, Any]) -> dict[str, Any]:
             items = [value] if isinstance(value, str) else value
             if not isinstance(items, list) or not all(isinstance(i, str) for i in items):
                 raise ValidationError(f"Blueprint {key!r} must be a string or list of strings")
-            validated[key] = [i for i in items if i]
+            validated[key] = [validate_object_name(i, f"blueprint {key}") for i in items if i]
         elif key == "prov-type":
             if value not in _BLUEPRINT_PROV_TYPES:
                 raise ValidationError(
@@ -769,10 +803,21 @@ async def add_model_device(
     dialog sends. Nothing is pushed to a real FortiGate: a model device is
     a placeholder until a FortiGate with this serial registers.
 
+    API coverage: ``device blueprint``, ``patch`` and the HA attributes
+    (``ha_mode``, ``ha_group_name``, ``ha_slave``) are in the bundled dvmcmd
+    schema (7.2 to 8.0), the HA ones flagged internal; a model HA cluster
+    was verified on FortiManager 8.0.2. The ``meta variables`` key is not in
+    the bundled API reference: it is what the 8.0 GUI sends, verified on
+    FortiManager 8.0.2, where each entry becomes a "global" per-device
+    mapping and a name the ADOM does not have yet is created as a new
+    metadata variable with an empty default (so a misspelt name leaves a
+    stray variable behind; check names with list_metadata_variables).
+
     Args:
         adom: ADOM name where device will be added
         name: Device display name
-        serial_number: Device serial number (e.g., "FGVM020000123456")
+        serial_number: Device serial number (e.g., "FGVM020000123456");
+            checked against the FortiGate/Fortinet serial format
         platform: Platform type (default: "FortiGate-VM64")
         os_version: FortiOS version, "7.4" or with patch "7.4.12"
             (default: "7.0")
@@ -788,15 +833,19 @@ async def add_model_device(
             and the add is refused if one does not exist. A saved blueprint
             name is checked the same way.
         meta_variables: Per-device meta-variable values, e.g.
-            {"hostname": "b1", "branch_id": "1", "port3": "10.1.0.1/24"}
+            {"hostname": "b1", "branch_id": "1", "port3": "192.0.2.1/24"}.
+            Values are strings or numbers, at most 255 characters, with no
+            newlines or other control characters (templates paste them into
+            CLI as is)
         groups: Device group names to add the device to (root VDOM)
         ha_mode: Declare a model HA cluster: "AP" (active-passive) or "AA".
             ``name``/``serial_number`` are then the primary member and the
             cluster's device name in FMG.
-        ha_group_name: HA cluster group name (required with ha_mode)
+        ha_group_name: HA cluster group name (required with ha_mode, max 36
+            characters)
         ha_priority: HA priority of the primary member (default 128)
         ha_members: Secondary members, each
-            {"name": "branch3_jp-1", "serial_number": "FGVM...", "priority": 100}
+            {"name": "branch3-1", "serial_number": "FGVM...", "priority": 100}
         flags: dvm/cmd/add/device flags, e.g. ["create_task"] (the GUI sends
             ["create_task", "nonblocking"]); the task ID is returned
 
@@ -817,33 +866,34 @@ async def add_model_device(
 
         >>> # From a blueprint, with the variables its templates use
         >>> result = await add_model_device(
-        ...     adom="production",
-        ...     name="branch1_jp",
-        ...     serial_number="FGVMMLTM26014552",
+        ...     adom="demo",
+        ...     name="branch1",
+        ...     serial_number="FGVM020000123456",
         ...     platform="FortiGate-VM64-KVM",
         ...     os_version="7.4.12",
         ...     device_blueprint="sites_BRANCH_DBP_STANDALONE",
-        ...     meta_variables={"hostname": "branch1_jp", "branch_id": "1"},
+        ...     meta_variables={"hostname": "branch1", "branch_id": "1"},
         ... )
 
         >>> # A two-member active-passive model cluster
         >>> result = await add_model_device(
-        ...     adom="production",
-        ...     name="branch3_jp",
-        ...     serial_number="FGVMMLTM26014560",
+        ...     adom="demo",
+        ...     name="branch3",
+        ...     serial_number="FGVM020000123457",
         ...     platform="FortiGate-VM64-KVM",
         ...     os_version="7.4.12",
         ...     device_blueprint="sites_BRANCH_DBP_CLUSTER",
         ...     ha_mode="AP",
         ...     ha_group_name="branch3_cluster",
         ...     ha_priority=200,
-        ...     ha_members=[{"name": "branch3_jp-1",
-        ...                  "serial_number": "FGVMMLTM26014529", "priority": 100}],
+        ...     ha_members=[{"name": "branch3-1",
+        ...                  "serial_number": "FGVM020000123458", "priority": 100}],
         ... )
     """
     try:
         adom = validate_adom(adom)
         name = validate_device_name(name)
+        serial_number = validate_device_serial(serial_number)
         inline_blueprint: dict[str, Any] | None = None
         if isinstance(device_blueprint, dict):
             inline_blueprint = _validate_inline_blueprint(device_blueprint)
@@ -865,6 +915,10 @@ async def add_model_device(
             if not ha_group_name:
                 raise ValidationError("ha_group_name is required with ha_mode")
             ha_group_name = validate_object_name(ha_group_name, "HA group name")
+            if len(ha_group_name) > _HA_GROUP_NAME_MAX:
+                raise ValidationError(
+                    f"ha_group_name is longer than {_HA_GROUP_NAME_MAX} characters"
+                )
             ha_slave = _build_ha_slave(name, serial_number, ha_priority, ha_members)
         elif ha_members or ha_group_name:
             raise ValidationError("ha_members and ha_group_name need ha_mode")
@@ -992,7 +1046,6 @@ async def add_model_device(
 
 #: fmg/variable ``type`` values whose content must not be echoed back.
 _SECRET_VARIABLE_TYPES = frozenset({1, "1", "password"})
-_REDACTED = "<redacted>"
 
 
 def _summarize_metadata_variable(raw: dict[str, Any]) -> dict[str, Any]:
@@ -1008,7 +1061,7 @@ def _summarize_metadata_variable(raw: dict[str, Any]) -> dict[str, Any]:
                     {
                         "device": scope["name"],
                         "vdom": scope.get("vdom"),
-                        "value": _REDACTED if secret else entry.get("value"),
+                        "value": MASK_VALUE if secret else entry.get("value"),
                     }
                 )
     default = raw.get("value")
@@ -1016,7 +1069,7 @@ def _summarize_metadata_variable(raw: dict[str, Any]) -> dict[str, Any]:
         "name": raw.get("name"),
         "type": "password" if secret else raw.get("type"),
         "description": raw.get("description") or None,
-        "default": _REDACTED if secret and default else default,
+        "default": MASK_VALUE if secret and default else default,
         "mappings": mappings,
     }
 
@@ -1106,7 +1159,8 @@ async def set_metadata_variable(
         adom: ADOM name
         name: Variable name (it must already exist)
         device: Managed device name
-        value: New value
+        value: New value: one line, at most 255 characters, no newlines or
+            other control characters (templates paste it into CLI as is)
         vdom: Only this scope (optional, e.g. "global" or "root")
 
     Returns:
@@ -1123,7 +1177,7 @@ async def set_metadata_variable(
 
         raw = await client.get_metadata_variables(adom)
         records = raw if isinstance(raw, list) else [raw] if isinstance(raw, dict) else []
-        variable = next((v for v in records if v.get("name") == name), None)
+        variable = next((v for v in records if isinstance(v, dict) and v.get("name") == name), None)
         if variable is None:
             return {
                 "status": "error",
@@ -1132,10 +1186,13 @@ async def set_metadata_variable(
             }
 
         current = {
-            scope.get("vdom"): entry.get("value")
+            scope["vdom"]: entry.get("value")
             for entry in variable.get("dynamic_mapping") or []
+            if isinstance(entry, dict)
             for scope in entry.get("_scope") or []
-            if scope.get("name") == device
+            if isinstance(scope, dict)
+            and scope.get("name") == device
+            and isinstance(scope.get("vdom"), str)
         }
         scopes = [vdom] if vdom else sorted(current) or ["global"]
         changes = []
@@ -1148,8 +1205,8 @@ async def set_metadata_variable(
             changes.append(
                 {
                     "vdom": scope,
-                    "old": _REDACTED if secret else current.get(scope),
-                    "new": _REDACTED if secret else text,
+                    "old": MASK_VALUE if secret else current.get(scope),
+                    "new": MASK_VALUE if secret else text,
                 }
             )
         return {
@@ -1182,7 +1239,7 @@ async def check_device_variables(
 
     Args:
         adom: ADOM name
-        device: Device name (e.g. "branch1_jp")
+        device: Device name (e.g. "branch1")
         expected: Variable name -> expected value, e.g. the CSV row
             {"branch_id": "1", "hostname": "branch1"}
 
@@ -1313,8 +1370,8 @@ async def add_devices_bulk(
 
     Example:
         >>> devices = [
-        ...     {"name": "FGT-Site1", "ip": "10.0.1.1", "adm_usr": "admin", "adm_pass": "pass1"},
-        ...     {"name": "FGT-Site2", "ip": "10.0.2.1", "adm_usr": "admin", "adm_pass": "pass2"},
+        ...     {"name": "FGT-Site1", "ip": "192.0.2.1", "adm_usr": "admin", "adm_pass": "pass1"},
+        ...     {"name": "FGT-Site2", "ip": "192.0.2.2", "adm_usr": "admin", "adm_pass": "pass2"},
         ... ]
         >>> result = await add_devices_bulk("root", devices)
     """
@@ -1608,7 +1665,7 @@ async def get_device_interfaces(
         client = _get_client()
 
         # Without include_vlan the monitor leaves VLAN interfaces out, so a LAN
-        # on a VLAN such as branch3's vl_lan reads as missing.
+        # on a VLAN interface reads as missing.
         result = await client.proxy_call(
             action="get",
             resource="/api/v2/monitor/system/interface?include_vlan=true",

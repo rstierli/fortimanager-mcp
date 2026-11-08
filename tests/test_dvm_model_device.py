@@ -12,6 +12,7 @@ import pytest
 
 from fortimanager_mcp.tools import dvm_tools
 from fortimanager_mcp.utils.errors import ResourceNotFoundError
+from fortimanager_mcp.utils.validation import MASK_VALUE
 
 
 async def _add(os_version: str) -> dict[str, Any]:
@@ -197,9 +198,9 @@ async def _add_with(
     client.get = get or AsyncMock(return_value={})
     with patch.object(dvm_tools, "get_fmg_client", return_value=client):
         result = await dvm_tools.add_model_device(
-            adom="production",
-            name="branch1_jp",
-            serial_number="FGVMMLTM26014552",
+            adom="demo",
+            name="branch1",
+            serial_number="FGVM020000123456",
             platform="FortiGate-VM64-KVM",
             **kwargs,
         )
@@ -226,15 +227,15 @@ class TestModelDeviceBlueprint:
         result, client = await _add_with(
             os_version="7.4",
             device_blueprint="sites_BRANCH_DBP_STANDALONE",
-            meta_variables={"hostname": "branch1_jp", "branch_id": 1, "port3": "10.1.0.1/24"},
+            meta_variables={"hostname": "branch1", "branch_id": 1, "port3": "192.0.2.1/24"},
         )
         assert result["status"] == "success", result
         device = client.add_device.call_args.kwargs["device"]
         assert device["device blueprint"] == "sites_BRANCH_DBP_STANDALONE"
         assert device["meta variables"] == {
-            "hostname": "branch1_jp",
+            "hostname": "branch1",
             "branch_id": "1",
-            "port3": "10.1.0.1/24",
+            "port3": "192.0.2.1/24",
         }
 
     @pytest.mark.asyncio
@@ -256,16 +257,51 @@ class TestModelDeviceBlueprint:
         [
             {"bad name": "x"},
             {"$(inject)": "x"},
-            {"port1": ["10.0.0.1"]},
+            {"port1": ["192.0.2.1"]},
             {"port1": None},
             {"flag": True},
             {"long": "x" * 256},
             ["not", "a", "dict"],
+            # A template pastes the value into CLI as is: a line break would
+            # add CLI lines to the next install.
+            {"hostname": "b1\nconfig system admin\nedit evil"},
+            {"hostname": "b1\rend"},
+            {"hostname": "b1\tx"},
+            {"hostname": "b1\x00"},
+            {"hostname": "b1\x7f"},
+            # The marker this server puts in place of a password value.
+            {"psk": MASK_VALUE},
         ],
     )
     async def test_invalid_meta_variables_are_refused_before_any_call(self, meta: Any) -> None:
         result, client = await _add_with(meta_variables=meta)
         assert result["status"] == "error"
+        assert result["error_code"] == "validation_error"
+        client.add_device.assert_not_called()
+        client.get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_meta_variable_value_with_spaces_and_symbols_is_kept(self) -> None:
+        result, client = await _add_with(
+            meta_variables={"banner": "Branch 1 (EMEA) - $site #1", "port3": "192.0.2.1/24"}
+        )
+        assert result["status"] == "success", result
+        assert client.add_device.call_args.kwargs["device"]["meta variables"] == {
+            "banner": "Branch 1 (EMEA) - $site #1",
+            "port3": "192.0.2.1/24",
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("serial", ["", "NOTASERIAL", "FGVM0200;rm", "FG12"])
+    async def test_invalid_primary_serial_is_refused(self, serial: str) -> None:
+        client = MagicMock()
+        client.add_device = AsyncMock(return_value={"device": {}})
+        with patch.object(dvm_tools, "get_fmg_client", return_value=client):
+            result = await dvm_tools.add_model_device(
+                adom="demo", name="branch1", serial_number=serial
+            )
+        assert result["status"] == "error"
+        assert result["error_code"] == "validation_error"
         client.add_device.assert_not_called()
 
     @pytest.mark.asyncio
@@ -275,7 +311,7 @@ class TestModelDeviceBlueprint:
         client.add_device.assert_not_called()
 
 
-_SECONDARY = {"name": "branch3_jp-1", "serial_number": "FGVMMLTM26014529", "priority": 100}
+_SECONDARY = {"name": "branch3-1", "serial_number": "FGVM020000123458", "priority": 100}
 
 
 class TestModelHaCluster:
@@ -296,20 +332,32 @@ class TestModelHaCluster:
         assert device["ha_group_name"] == "branch3_cluster"
         assert device["ha_slave"] == [
             {
-                "name": "branch1_jp",
-                "sn": "FGVMMLTM26014552",
+                "name": "branch1",
+                "sn": "FGVM020000123456",
                 "prio": 200,
                 "role": "master",
                 "idx": 0,
             },
             {
-                "name": "branch3_jp-1",
-                "sn": "FGVMMLTM26014529",
+                "name": "branch3-1",
+                "sn": "FGVM020000123458",
                 "prio": 100,
                 "role": "slave",
                 "idx": 1,
             },
         ]
+
+    @pytest.mark.asyncio
+    async def test_member_serial_is_normalized(self) -> None:
+        result, client = await _add_with(
+            ha_mode="AP",
+            ha_group_name="c",
+            ha_members=[{**_SECONDARY, "serial_number": " fgvm020000123458 "}],
+        )
+        assert result["status"] == "success", result
+        assert client.add_device.call_args.kwargs["device"]["ha_slave"][1]["sn"] == (
+            "FGVM020000123458"
+        )
 
     @pytest.mark.asyncio
     async def test_standalone_sends_no_ha_fields(self) -> None:
@@ -328,7 +376,7 @@ class TestModelHaCluster:
             {
                 "ha_mode": "AP",
                 "ha_group_name": "c",
-                "ha_members": [{**_SECONDARY, "serial_number": "FGVMMLTM26014552"}],
+                "ha_members": [{**_SECONDARY, "serial_number": "FGVM020000123456"}],
             },
             {
                 "ha_mode": "AP",
@@ -337,6 +385,24 @@ class TestModelHaCluster:
             },
             {"ha_mode": "AP", "ha_group_name": "c", "ha_members": [{"name": "x"}]},
             {"ha_mode": "AP", "ha_group_name": "c", "ha_priority": -1, "ha_members": [_SECONDARY]},
+            # Member serials are held to the same format as the primary's.
+            {
+                "ha_mode": "AP",
+                "ha_group_name": "c",
+                "ha_members": [{**_SECONDARY, "serial_number": "not-a-serial"}],
+            },
+            {
+                "ha_mode": "AP",
+                "ha_group_name": "c",
+                "ha_members": [{**_SECONDARY, "serial_number": "FGVM0200;00123458"}],
+            },
+            # The primary's serial in another case is still the primary.
+            {
+                "ha_mode": "AP",
+                "ha_group_name": "c",
+                "ha_members": [{**_SECONDARY, "serial_number": "fgvm020000123456"}],
+            },
+            {"ha_mode": "AP", "ha_group_name": "c" * 37, "ha_members": [_SECONDARY]},
         ],
     )
     async def test_invalid_cluster_is_refused_before_any_call(self, kwargs: dict[str, Any]) -> None:
@@ -351,7 +417,7 @@ _VARIABLES = [
         "type": 0,
         "value": "default-host",
         "dynamic_mapping": [
-            {"_scope": [{"name": "branch2_jp", "vdom": "global"}], "value": "branch2"},
+            {"_scope": [{"name": "branch2", "vdom": "global"}], "value": "branch2"},
         ],
     },
     {"name": "branch_id", "type": 0, "value": "0", "dynamic_mapping": None},
@@ -359,7 +425,7 @@ _VARIABLES = [
         "name": "psk",
         "type": "password",
         "value": "s3cret",
-        "dynamic_mapping": [{"_scope": [{"name": "branch2_jp", "vdom": "global"}], "value": "x"}],
+        "dynamic_mapping": [{"_scope": [{"name": "branch2", "vdom": "global"}], "value": "x"}],
     },
 ]
 
@@ -375,21 +441,21 @@ class TestMetadataVariables:
     async def test_list_flattens_mappings_and_redacts_passwords(self) -> None:
         client = _var_client()
         with patch.object(dvm_tools, "get_fmg_client", return_value=client):
-            result = await dvm_tools.list_metadata_variables(adom="production")
+            result = await dvm_tools.list_metadata_variables(adom="demo")
         assert result["status"] == "success", result
-        client.get_metadata_variables.assert_awaited_once_with("production")
+        client.get_metadata_variables.assert_awaited_once_with("demo")
         by_name = {v["name"]: v for v in result["variables"]}
         assert by_name["hostname"]["mappings"] == [
-            {"device": "branch2_jp", "vdom": "global", "value": "branch2"}
+            {"device": "branch2", "vdom": "global", "value": "branch2"}
         ]
         assert by_name["branch_id"]["mappings"] == []
         assert "s3cret" not in str(result) and ": 'x'" not in str(result)
-        assert by_name["psk"]["default"] == "<redacted>"
+        assert by_name["psk"]["default"] == MASK_VALUE
 
     @pytest.mark.asyncio
     async def test_list_for_device_gives_effective_values(self) -> None:
         with patch.object(dvm_tools, "get_fmg_client", return_value=_var_client()):
-            result = await dvm_tools.list_metadata_variables(adom="production", device="branch2_jp")
+            result = await dvm_tools.list_metadata_variables(adom="demo", device="branch2")
         assert result["device_values"]["hostname"] == {"value": "branch2", "source": "device"}
         assert result["device_values"]["branch_id"] == {"value": "0", "source": "default"}
 
@@ -397,8 +463,8 @@ class TestMetadataVariables:
     async def test_check_classifies_each_variable(self) -> None:
         with patch.object(dvm_tools, "get_fmg_client", return_value=_var_client()):
             result = await dvm_tools.check_device_variables(
-                adom="production",
-                device="branch2_jp",
+                adom="demo",
+                device="branch2",
                 expected={"hostname": "branch2", "branch_id": 2, "nope": "1"},
             )
         assert result["status"] == "success", result
@@ -411,20 +477,21 @@ class TestMetadataVariables:
     async def test_check_reports_mismatch_and_ok(self) -> None:
         with patch.object(dvm_tools, "get_fmg_client", return_value=_var_client()):
             bad = await dvm_tools.check_device_variables(
-                adom="production", device="branch2_jp", expected={"hostname": "other"}
+                adom="demo", device="branch2", expected={"hostname": "other"}
             )
             good = await dvm_tools.check_device_variables(
-                adom="production", device="branch2_jp", expected={"hostname": "branch2"}
+                adom="demo", device="branch2", expected={"hostname": "branch2"}
             )
         assert bad["mismatch"] == [{"name": "hostname", "expected": "other", "actual": "branch2"}]
         assert good["ok"] is True
 
     @pytest.mark.asyncio
-    async def test_check_refuses_invalid_expected(self) -> None:
+    @pytest.mark.parametrize("expected", [{"bad name": "x"}, {"hostname": "b2\nend"}])
+    async def test_check_refuses_invalid_expected(self, expected: dict[str, Any]) -> None:
         client = _var_client()
         with patch.object(dvm_tools, "get_fmg_client", return_value=client):
             result = await dvm_tools.check_device_variables(
-                adom="production", device="branch2_jp", expected={"bad name": "x"}
+                adom="demo", device="branch2", expected=expected
             )
         assert result["status"] == "error"
         client.get_metadata_variables.assert_not_called()
@@ -486,15 +553,12 @@ class TestInlineBlueprint:
         get = AsyncMock(return_value={})
         await _add_with(get=get, device_blueprint=_GUI_BLUEPRINT)
         urls = [c.args[0] for c in get.call_args_list]
-        assert "/pm/pkg/adom/production/sites_BRANCH_PPKG" in urls
-        assert "/pm/tmplgrp/adom/production/sites_BRANCH" in urls
-        assert "/dvmdb/adom/production/group/emea_spokes" in urls
-        assert (
-            "/pm/config/adom/production/obj/fmg/fabric/authorization/template/sites_BRANCH_FAT"
-            in urls
-        )
-        assert "/pm/config/adom/production/obj/cli/template/cluster_bootstrap" in urls
-        assert "/pm/fwmprof/adom/production/campus_emea" in urls
+        assert "/pm/pkg/adom/demo/sites_BRANCH_PPKG" in urls
+        assert "/pm/tmplgrp/adom/demo/sites_BRANCH" in urls
+        assert "/dvmdb/adom/demo/group/emea_spokes" in urls
+        assert "/pm/config/adom/demo/obj/fmg/fabric/authorization/template/sites_BRANCH_FAT" in urls
+        assert "/pm/config/adom/demo/obj/cli/template/cluster_bootstrap" in urls
+        assert "/pm/fwmprof/adom/demo/campus_emea" in urls
 
     @pytest.mark.asyncio
     async def test_missing_reference_refuses_the_add(self) -> None:
@@ -556,6 +620,14 @@ class TestInlineBlueprint:
             {"pkg": ["a"]},
             {"port-provisioning": -1},
             {"prerun-cliprof": ["a", "b"]},
+            # Names are looked up by URL: a "/" or ".." would address
+            # another object than the one named.
+            {"dev-group": ["spokes/../other"]},
+            {"template-group": "../sites_BRANCH"},
+            {"firmware-template": "a/b"},
+            {"prerun-cliprof": "a/../b"},
+            {"cliprofs": ["x;y"]},
+            {"pkg": "../pkg"},
         ],
     )
     async def test_invalid_inline_blueprint_is_refused(self, blueprint: dict[str, Any]) -> None:
@@ -571,14 +643,14 @@ class TestPartialCreation:
         client = MagicMock()
         client.get = AsyncMock(return_value={})
         client.add_device = AsyncMock(side_effect=RuntimeError("boom"))
-        client.get_device = AsyncMock(return_value={"name": "branch1_jp"})
+        client.get_device = AsyncMock(return_value={"name": "branch1"})
         with patch.object(dvm_tools, "get_fmg_client", return_value=client):
             result = await dvm_tools.add_model_device(
-                adom="production", name="branch1_jp", serial_number="FGVMMLTM26014552"
+                adom="demo", name="branch1", serial_number="FGVM020000123456"
             )
         assert result["status"] == "error"
         assert result["partially_created"] is True
-        client.get_device.assert_awaited_once_with("branch1_jp", adom="production")
+        client.get_device.assert_awaited_once_with("branch1", adom="demo")
 
     @pytest.mark.asyncio
     async def test_failed_add_without_device_is_plain_error(self) -> None:
@@ -588,7 +660,7 @@ class TestPartialCreation:
         client.get_device = AsyncMock(side_effect=ResourceNotFoundError("nope", code=-3))
         with patch.object(dvm_tools, "get_fmg_client", return_value=client):
             result = await dvm_tools.add_model_device(
-                adom="production", name="branch1_jp", serial_number="FGVMMLTM26014552"
+                adom="demo", name="branch1", serial_number="FGVM020000123456"
             )
         assert result["status"] == "error"
         assert "partially_created" not in result
@@ -602,9 +674,9 @@ class TestModelDeviceFlags:
         client.add_device = AsyncMock(return_value={"device": {}, "taskid": 42})
         with patch.object(dvm_tools, "get_fmg_client", return_value=client):
             result = await dvm_tools.add_model_device(
-                adom="production",
-                name="branch5_jp",
-                serial_number="FGVMMLTM26014558",
+                adom="demo",
+                name="branch5",
+                serial_number="FGVM020000123459",
                 flags=["create_task"],
             )
         assert result["status"] == "success", result
@@ -646,7 +718,7 @@ def _task_client(*task_states: dict[str, Any]) -> MagicMock:
     client.get = AsyncMock(return_value={})
     client.add_device = AsyncMock(return_value={"taskid": 337})
     client.get_task = AsyncMock(side_effect=list(task_states))
-    client.get_device = AsyncMock(return_value={"name": "branch5_jp"})
+    client.get_device = AsyncMock(return_value={"name": "branch5"})
     return client
 
 
@@ -657,9 +729,9 @@ class TestBlueprintAddRunsAsTask:
             patch.object(dvm_tools.asyncio, "sleep", AsyncMock()),
         ):
             return await dvm_tools.add_model_device(
-                adom="production",
-                name="branch5_jp",
-                serial_number="FGVMMLTM26014558",
+                adom="demo",
+                name="branch5",
+                serial_number="FGVM020000123459",
                 device_blueprint={"pkg": "sites_BRANCH_PPKG"},
                 **kwargs,
             )

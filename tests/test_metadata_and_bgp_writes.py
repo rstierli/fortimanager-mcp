@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from fortimanager_mcp.tools import dvm_tools, sdwan_tools, security_profile_tools
+from fortimanager_mcp.utils.validation import MASK_VALUE
 
 BRANCH_ID = {
     "name": "branch_id",
@@ -27,7 +28,7 @@ def _dvm_client(variable: dict[str, Any] = BRANCH_ID) -> MagicMock:
 
 
 async def _set(client: MagicMock, **kwargs: Any) -> dict[str, Any]:
-    kwargs = {"adom": "production", "name": "branch_id", "device": "branch1", **kwargs}
+    kwargs = {"adom": "demo", "name": "branch_id", "device": "branch1", **kwargs}
     kwargs.setdefault("value", "1")
     with patch.object(dvm_tools, "_get_client", return_value=client):
         return await dvm_tools.set_metadata_variable(**kwargs)
@@ -52,7 +53,7 @@ class TestSetMetadataVariable:
         await _set(client, vdom="root")
 
         client.update_metadata_mapping.assert_awaited_once_with(
-            "production", "branch_id", "branch1", "root", "1"
+            "demo", "branch_id", "branch1", "root", "1"
         )
 
     @pytest.mark.asyncio
@@ -61,7 +62,7 @@ class TestSetMetadataVariable:
         await _set(client, device="branch9")
 
         client.add_metadata_mapping.assert_awaited_once_with(
-            "production", "branch_id", "branch9", "global", "1"
+            "demo", "branch_id", "branch9", "global", "1"
         )
 
     @pytest.mark.asyncio
@@ -74,22 +75,57 @@ class TestSetMetadataVariable:
         client.add_metadata_mapping.assert_not_awaited()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", ["1\nconfig system admin", "1\r", "1\x00"])
+    async def test_control_characters_are_refused(self, value: str) -> None:
+        client = _dvm_client()
+        result = await _set(client, value=value)
+
+        assert result["error_code"] == "validation_error"
+        client.get_metadata_variables.assert_not_awaited()
+        client.update_metadata_mapping.assert_not_awaited()
+        client.add_metadata_mapping.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_redaction_marker_is_not_written_back(self) -> None:
+        client = _dvm_client({**BRANCH_ID, "type": 1})
+        result = await _set(client, value=MASK_VALUE)
+
+        assert result["error_code"] == "validation_error"
+        client.update_metadata_mapping.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_mapping_without_vdom_is_ignored(self) -> None:
+        client = _dvm_client(
+            {
+                **BRANCH_ID,
+                "dynamic_mapping": [
+                    {"_scope": [{"name": "branch1"}], "value": "7"},
+                    {"_scope": [{"name": "branch1", "vdom": "root"}], "value": "3"},
+                ],
+            }
+        )
+        result = await _set(client)
+
+        assert result["changes"] == [{"vdom": "root", "old": "3", "new": "1"}]
+
+    @pytest.mark.asyncio
     async def test_password_values_are_not_echoed(self) -> None:
         client = _dvm_client({**BRANCH_ID, "type": 1})
         result = await _set(client, value="hunter2")
 
         assert "hunter2" not in str(result)
         assert "3" not in str(result["changes"])
+        assert {c["new"] for c in result["changes"]} == {MASK_VALUE}
 
     @pytest.mark.asyncio
     async def test_client_addresses_a_mapping_by_device_and_vdom(
         self, mock_client: Any, mock_fmg_instance: MagicMock
     ) -> None:
         mock_fmg_instance.update.return_value = (0, {})
-        await mock_client.update_metadata_mapping("production", "branch_id", "b1", "root", "1")
+        await mock_client.update_metadata_mapping("demo", "branch_id", "b1", "root", "1")
 
         assert mock_fmg_instance.update.call_args[0][0] == (
-            "/pm/config/adom/production/obj/fmg/variable/branch_id/dynamic_mapping/b1/root"
+            "/pm/config/adom/demo/obj/fmg/variable/branch_id/dynamic_mapping/b1/root"
         )
 
 
