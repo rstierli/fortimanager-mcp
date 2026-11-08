@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.12.3] - 2026-11-08
+
+Patch release: fewer pointless FortiManager logins when it is unreachable or the login fails, results that match what FortiManager 8.0 actually returns, an empty `search_objects` term refused, and `mcp` held to 2.x.
+
 ### Fixed
 
 - **Creating a TCP/UDP service when FortiManager is unreachable or the login fails now makes one connect attempt, not seven (#107).** `create_service_tcp_udp` discovers the ADOM's TCP/UDP protocol code before the create by fetching up to five predefined services by name, then scanning the service list. With `connect_on_demand` every request connects first, and each probe swallowed its failed connect and tried the next name, so one call made five probe connects, one for the scan and one for the create. Against an unreachable appliance each waited out `FORTIMANAGER_TIMEOUT`; with username/password auth and a wrong password each was a failed login, seven per call, past FortiManager's default `admin-lockout-threshold` of 3. The probe and the scan now raise on a `ConnectionError`, a network error (`OSError`, already retried inside the request) or an `AuthenticationError`; a not-found or any other per-object error still moves on to the next name, and nothing is cached on failure. Measured against 192.0.2.1 with `FORTIMANAGER_TIMEOUT=3`: the call fails after 3.0 s with one failed connect (was 21.0 s with seven), same error envelope. The failed-login case is pinned by a test (one login attempt, was seven) and was not reproduced against an appliance, since that would trip the lockout it is about.
@@ -18,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`mcp` is held to the 2.x major: `mcp>=2.0.0,<3` (#109).** The floor had no ceiling since the 2.x port (#92), so a fresh install would resolve mcp 3.0 the day it ships. That is the failure #38 fixed for 2.0: an unbounded spec let a new major in, and the server stopped importing. The server depends on more than the public import path: the masking wrapper patches `mcp.tool`, and the 2.0 bump moved `stateless_http` and `transport_security` out of the constructor, where dropping them would have left the HTTP deployment unbound by `MCP_ALLOWED_HOSTS` with nothing reporting it. The ceiling matches fortianalyzer-mcp, which already declares `<3`, and moves when the server is ported to the next major. No installed version changes: the resolver still picks mcp 2.3.0. `tests/test_dependency_contract.py` pins the spec.
 - **Dependabot keeps the SHA-pinned GitHub Actions current (#110).** Every action has been pinned to a full commit SHA with its release as a trailing comment since 1.9.0, which stops a moved tag from changing what CI runs but also stops the pins from moving at all: they still name the releases current when they were last bumped by hand. `.github/dependabot.yml` now updates them weekly, comment and SHA together, minor and patch releases as one grouped pull request and a major release on its own. One pin is corrected with it: `codecov/codecov-action` named the SHA of its annotated `v6` tag object rather than a commit, and now names the commit that tag points at (v6.0.2), the same code.
+- **`get_ha_status` describes what FortiManager returns (#117).** The docstring promised the HA mode, the cluster members, the sync status and the role, with an example reading `result['data']['mode']`. On a standalone unit `/sys/ha/status` returns only `{"HA Health Status": "OK"}` (7.6.8 and 8.0.2), so the example raised `KeyError`. The docstring now says so and points to `get_system_status`'s `"HA Mode"`. The tool's behaviour is unchanged.
 
 ## [1.12.2] - 2026-11-06
 
