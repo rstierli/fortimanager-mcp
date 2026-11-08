@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from fortimanager_mcp.tools import firmware_tools
+from fortimanager_mcp.utils import validation
 from fortimanager_mcp.utils.errors import PermissionError, ValidationError
 
 CAMPUS_EMEA = {
@@ -276,3 +277,19 @@ class TestTemplateTableRefused:
 
         assert result["status"] == "error"
         assert result["error_code"] == "permission_denied"
+
+
+class TestPatternsAreStrict:
+    """The version and time patterns take ASCII digits only and anchor at the very end."""
+
+    @pytest.mark.parametrize("version", ["7.4.٣", "٧.4.3", "7.4.3-b1\n2"])
+    def test_malformed_version_is_refused(self, version: str) -> None:
+        with pytest.raises(validation.ValidationError):
+            firmware_tools._validate_firmware_version(version)
+
+    def test_plain_version_is_kept(self) -> None:
+        assert firmware_tools._validate_firmware_version(" 7.6.4-b3596-GA ") == "7.6.4-b3596-GA"
+
+    @pytest.mark.parametrize("value", ["02:00\n", "0٢:00"])
+    def test_time_pattern_refuses_trailing_newline_and_non_ascii_digits(self, value: str) -> None:
+        assert not firmware_tools._TIME_PATTERN.match(value)
