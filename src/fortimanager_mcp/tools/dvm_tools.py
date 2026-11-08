@@ -805,9 +805,13 @@ async def add_model_device(
 
     API coverage: ``device blueprint``, ``patch`` and the HA attributes
     (``ha_mode``, ``ha_group_name``, ``ha_slave``) are in the bundled dvmcmd
-    schema (7.2 to 8.0), the HA ones flagged internal. The ``meta variables``
-    key is not in the bundled API reference: it is what the 8.0 GUI sends,
-    verified on FortiManager 8.0.2.
+    schema (7.2 to 8.0), the HA ones flagged internal; a model HA cluster
+    was verified on FortiManager 8.0.2. The ``meta variables`` key is not in
+    the bundled API reference: it is what the 8.0 GUI sends, verified on
+    FortiManager 8.0.2, where each entry becomes a "global" per-device
+    mapping and a name the ADOM does not have yet is created as a new
+    metadata variable with an empty default (so a misspelt name leaves a
+    stray variable behind; check names with list_metadata_variables).
 
     Args:
         adom: ADOM name where device will be added
