@@ -44,7 +44,8 @@ _CLI_TEMPLATE_TYPES: dict[Any, str] = {0: "cli", 1: "jinja"}
 # - The value is often a variable reference ("{{ psk }}", "$(psk)"), which is
 #   not a secret and is the useful part to see: it says where the value comes
 #   from. Only a bare reference is kept; anything with a filter, literal or
-#   expression in it is masked.
+#   expression in it is masked. A Jinja variable a secret "set" line reads is
+#   a secret whatever it is called, so its own "{% set %}" is masked too.
 #
 # Single quotes are tracked as well as double quotes, since a template author
 # may write either; a multi-line quoted value is dropped up to its closing
@@ -54,6 +55,8 @@ _CLI_TEMPLATE_TYPES: dict[Any, str] = {0: "cli", 1: "jinja"}
 #: A variable name containing one of these is treated as holding a secret.
 _SECRET_NAME_HINTS = (
     "pass",
+    "passwd",
+    "pw",
     "pwd",
     "psk",
     "secret",
@@ -64,8 +67,9 @@ _SECRET_NAME_HINTS = (
 )
 _SECRET_NAME = rf"[\w.]*(?:{'|'.join(_SECRET_NAME_HINTS)})[\w.]*"
 
+#: ``{% set name %}...{% endset %}``, optionally filtered (``{% set name | trim %}``).
 _JINJA_BLOCK_SET = re.compile(
-    r"(?P<open>\{%-?\s*set\s+(?P<name>[\w.]+)\s*-?%\})(?P<body>.*?)"
+    r"(?P<open>\{%-?\s*set\s+(?P<name>[\w.]+)(?:\s*\|[^%]*?)?\s*-?%\})(?P<body>.*?)"
     r"(?P<close>\{%-?\s*endset\s*-?%\})",
     re.DOTALL,
 )
@@ -80,9 +84,15 @@ _JINJA_SECRET_LITERAL = re.compile(
     r"(?P<lq>[\"'])(?:\\.|(?!(?P=lq)).)*(?P=lq)",
     re.DOTALL,
 )
+#: A "set" line, at the start of a line or right after a Jinja tag,
+#: expression or comment.
 _SET_LINE = re.compile(
-    r"(?P<lead>^|%\}|\}\})(?P<prefix>\s*set\s+(?P<directive>\S+)\s+)(?P<rest>.*)$"
+    r"(?P<lead>^|%\}|\}\}|#\})(?P<prefix>\s*set\s+(?P<directive>\S+)\s+)(?P<rest>.*)$"
 )
+_JINJA_EXPRESSION = re.compile(r"\{\{.*?\}\}", re.DOTALL)
+#: A name a Jinja expression reads: an identifier not after a "." (so
+#: ``creds`` of ``creds.v``, not ``v``).
+_JINJA_ROOT_NAME = re.compile(r"(?<![\w.])[A-Za-z_]\w*")
 _ENC_VALUE = re.compile(r"^[\"']?ENC\s")
 _VARIABLE_REFERENCE = re.compile(
     r"^(?P<q>[\"']?)(?:\{\{-?\s*[A-Za-z_][\w.]*\s*-?\}\}|\$\([A-Za-z_]\w*\))(?P=q)$"
@@ -107,16 +117,67 @@ def _closes_quote(text: str, quote: str) -> bool:
     return False
 
 
+def _is_secret_directive(directive: str, value: str) -> bool:
+    return directive in CONFIG_TEXT_SECRET_DIRECTIVES or bool(_ENC_VALUE.match(value))
+
+
+def _assigned_names(names: str) -> list[str]:
+    """Root names a ``{% set %}`` assigns (``a, b`` -> a, b; ``ns.x`` -> ns)."""
+    return [n.strip().split(".")[0] for n in names.split(",")]
+
+
+def _secret_reference_names(text: str) -> set[str]:
+    """Jinja variables whose value ends up in a secret "set" line.
+
+    Starts from every name read inside ``{{ }}`` on a secret line, then adds
+    the names those variables' own assignments read, until nothing new is
+    found, so ``{% set a = 'x' %}{% set b = a %}set password {{ b }}`` masks
+    both assignments.
+    """
+    names: set[str] = set()
+    for line in text.split("\n"):
+        match = _SET_LINE.search(line)
+        if not match or not _is_secret_directive(match.group("directive"), match.group("rest")):
+            continue
+        for expr in _JINJA_EXPRESSION.findall(match.group("rest")):
+            names.update(_JINJA_ROOT_NAME.findall(expr[2:-2]))
+    assignments = [
+        (_assigned_names(m.group("name")), m.group("value"))
+        for m in _JINJA_INLINE_SET.finditer(text)
+    ] + [
+        (_assigned_names(m.group("name")), m.group("body")) for m in _JINJA_BLOCK_SET.finditer(text)
+    ]
+    changed = True
+    while changed:
+        changed = False
+        for assigned, value in assignments:
+            if not names.intersection(assigned):
+                continue
+            new = set(_JINJA_ROOT_NAME.findall(value)) - names
+            if new:
+                names |= new
+                changed = True
+    return names
+
+
 def _redact_jinja(text: str) -> str:
-    """Mask secret-named Jinja assignments and secret-keyed string literals."""
+    """Mask secret Jinja assignments and secret-keyed string literals.
+
+    An assignment is secret when its name looks like one or when a secret
+    "set" line reads it (see _secret_reference_names).
+    """
+    referenced = _secret_reference_names(text)
+
+    def secret(names: str) -> bool:
+        return _is_secret_name(names) or bool(referenced.intersection(_assigned_names(names)))
 
     def block(m: re.Match[str]) -> str:
-        if not _is_secret_name(m.group("name")):
+        if not secret(m.group("name")):
             return m.group(0)
         return f"{m.group('open')}{MASK_VALUE}{m.group('close')}"
 
     def inline(m: re.Match[str]) -> str:
-        if not _is_secret_name(m.group("name")):
+        if not secret(m.group("name")):
             return m.group(0)
         return f"{m.group('head')}{MASK_VALUE}{m.group('tail')}"
 
@@ -149,9 +210,7 @@ def redact_cli_template_script(script: str) -> str:
         cut = rest.find("{%")
         value, tail = (rest[:cut], rest[cut:]) if cut > 0 else (rest, "")
         value = value.rstrip()
-        secret = match.group("directive") in CONFIG_TEXT_SECRET_DIRECTIVES or bool(
-            _ENC_VALUE.match(value)
-        )
+        secret = _is_secret_directive(match.group("directive"), value)
         if not secret or _VARIABLE_REFERENCE.match(value) or value == MASK_VALUE:
             out.append(line)
             continue

@@ -224,6 +224,69 @@ class TestCliTemplateRedaction:
         )
         assert self._redact(script) == script
 
+    def test_set_after_a_jinja_comment_on_the_same_line(self) -> None:
+        out = self._redact("{# note #}set password Secr3t\n{#- n -#}  set psksecret Secr3t")
+        assert "Secr3t" not in out
+        assert out.startswith("{# note #}set password ***REDACTED***")
+
+    def test_pw_names_are_secret(self) -> None:
+        out = self._redact(
+            "{% set pw = 'Secr3t1' %}\n{% set admin_pwd = 'Secr3t2' %}\n"
+            "{% set root_passwd = 'Secr3t3' %}"
+        )
+        for leaked in ("Secr3t1", "Secr3t2", "Secr3t3"):
+            assert leaked not in out, leaked
+
+    def test_assignment_behind_a_secret_set_reference_is_masked(self) -> None:
+        script = (
+            "{% set x = 'Secr3t' %}\n"
+            "{% set y %}Secr3t2{% endset %}\n"
+            "{% set creds = namespace(v='Secr3t3') %}\n"
+            "set password {{ x }}\n"
+            "set psksecret {{ y | trim }}\n"
+            'set passwd "{{ creds.v }}"\n'
+        )
+        out = self._redact(script)
+        for leaked in ("Secr3t", "Secr3t2", "Secr3t3"):
+            assert leaked not in out, leaked
+        # The reference itself stays visible: it says where the value is from.
+        assert "set password {{ x }}" in out
+        assert 'set passwd "{{ creds.v }}"' in out
+
+    def test_secret_keys_inside_a_dict_literal_are_masked(self) -> None:
+        out = self._redact(
+            "{% set admin = {'name':'x','pw':'Secr3t'} %}\n"
+            '{% set wifi = {"ssid": "corp", "wifi_passphrase": "Secr3t2"} %}'
+        )
+        assert "Secr3t" not in out
+        assert "'name':'x'" in out
+        assert '"ssid": "corp"' in out
+
+    def test_block_set_with_a_filter_is_masked(self) -> None:
+        out = self._redact(
+            "{% set psk | trim %}Secr3t{% endset %}\n"
+            "{%- set tunnel_key | replace('a', 'b') -%}\nSecr3t2\n{%- endset -%}\nnext"
+        )
+        assert "Secr3t" not in out
+        assert out.endswith("next")
+
+    def test_legit_jinja_template_is_untouched(self) -> None:
+        script = (
+            "{# Branch bootstrap #}\n"
+            "{% set wan = 'port1' %}\n"
+            "{% set site = {'name': 'b1', 'id': 1} %}\n"
+            "{% set banner | upper %}welcome{% endset %}\n"
+            "config system interface\n"
+            '    edit "{{ wan }}"\n'
+            "        set alias {{ site.name }}\n"
+            "        set description {{ banner }}\n"
+            "    next\n"
+            "end\n"
+            "{# admin #}set password {{ admin_password }}\n"
+            "set psksecret $(psk)"
+        )
+        assert self._redact(script) == script
+
     @pytest.mark.asyncio
     async def test_get_cli_template_uses_the_template_redactor(
         self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
