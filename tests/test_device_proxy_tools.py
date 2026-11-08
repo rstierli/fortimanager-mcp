@@ -580,3 +580,16 @@ class TestQueryOracles:
 
         assert "error" not in result
         client.proxy_call.assert_awaited_once()
+
+
+class TestCommunityChildTableSelectors:
+    """Re-audit: a selector on a community child table probes hidden names."""
+
+    @pytest.mark.parametrize(
+        "field", ["snmp-community.name", "snmp-community", "SNMP-Community/name", "community"]
+    )
+    def test_community_child_fields_are_secret(self, field: str) -> None:
+        assert device_proxy_tools._is_secret_field(field)
+
+    def test_plain_fields_are_not(self) -> None:
+        assert not device_proxy_tools._is_secret_field("name")

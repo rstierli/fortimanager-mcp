@@ -281,7 +281,8 @@ class TestServedPrompts:
         head = html.split("</head>", 1)[0]
         csp = (
             '<meta http-equiv="Content-Security-Policy" '
-            "content=\"default-src 'none'; style-src 'unsafe-inline'; img-src data:\">"
+            "content=\"default-src 'none'; style-src 'unsafe-inline'; img-src data:; "
+            "form-action 'none'; base-uri 'none'\">"
         )
         assert csp in head
         assert '<meta name="referrer" content="no-referrer">' in head

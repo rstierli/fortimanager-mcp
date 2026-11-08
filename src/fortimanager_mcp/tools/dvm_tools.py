@@ -52,12 +52,13 @@ _META_VARIABLE_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_\-]{0,63}")
 _META_VARIABLE_MAX_VALUE = 255
 #: Text a meta-variable value cannot hold, with what it would do in the
 #: template that pastes it in: end a quoted CLI value, escape the next
-#: character, start a FortiOS comment, open a Jinja expression, statement or
-#: comment, or read another meta variable (a password one included).
+#: character, open a Jinja expression, statement or comment, or read another
+#: meta variable (a password one included). A bare ``#`` is allowed: real
+#: values hold it (``Store #12``, PSKs), and inside a quoted CLI value it is
+#: literal.
 _META_VALUE_FORBIDDEN = {
     '"': "would end a quoted CLI value",
     "\\": "would escape the next CLI character",
-    "#": "starts a FortiOS CLI comment",
     "{{": "opens a Jinja expression",
     "{%": "opens a Jinja statement",
     "{#": "opens a Jinja comment",

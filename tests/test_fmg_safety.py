@@ -667,3 +667,44 @@ class TestParallelInstalls:
         result = await _install(client)
         assert result["error"] == "preview_required"
         assert install_gate.find_preview("root", "default", DEVICES) is None
+
+
+class TestPreviewSurvivesWhatWasNeverSent:
+    """Re-audit: an install refused before it was sent keeps the preview."""
+
+    @pytest.mark.asyncio
+    async def test_full_task_slots_keep_the_preview(self) -> None:
+        install_gate.record_preview("root", "default", DEVICES, 7)
+        client = _client(
+            install_package={"return_value": {"task": 2}},
+            get_task={"return_value": {"state": 4}},
+        )
+
+        async def no_slot(kind: str, submit: Any) -> dict[str, Any]:
+            raise task_guard.TaskSlotsExhausted("no slot")
+
+        with patch.object(system_tools, "spawn_guarded", side_effect=no_slot):
+            result = await _install(client)
+
+        assert result["status"] == "error", result
+        client.install_package.assert_not_called()
+        assert install_gate.find_preview("root", "default", DEVICES) == 7
+
+    @pytest.mark.asyncio
+    async def test_warn_mode_spends_the_preview_it_installs_past(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("FMG_INSTALL_SAFETY", "warn")
+        get_settings.cache_clear()
+        install_gate.record_preview("root", "default", DEVICES, 7)
+        # Preview task still running: a refusal strict would put back.
+        client = _client(
+            install_package={"return_value": {"task": 2}},
+            get_task={"return_value": {"state": 1}},
+        )
+
+        result = await _install(client)
+
+        assert result["status"] == "success" and "warning" in result, result
+        client.install_package.assert_awaited_once()
+        assert install_gate.find_preview("root", "default", DEVICES) is None

@@ -333,9 +333,16 @@ def _masking_enabled() -> bool:
 
 
 def _is_secret_field(field: str) -> bool:
-    """A selector field naming a secret, whole or as any dotted/slashed part."""
-    return _is_secret_key(field) or any(
-        _is_secret_key(part) for part in re.split(r"[./]", field) if part
+    """A selector field naming a secret, whole or as any dotted/slashed part.
+
+    A community child table counts too: ``snmp-community.name=@x`` on a
+    managed switch would test the community names the redaction hides.
+    """
+    parts = [part for part in re.split(r"[./]", field) if part]
+    return (
+        _is_secret_key(field)
+        or any(_is_secret_key(part) for part in parts)
+        or any(part.lower() in _COMMUNITY_SEGMENTS for part in parts)
     )
 
 

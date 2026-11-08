@@ -755,7 +755,9 @@ async def _gated_install(
             gate_result = await _check_install_preview(client, adom, package, taken)
             if gate_result:
                 gate_error, gate_problem = gate_result
-                if gate_error != "preview_stale":
+                # Only a refusal puts the record back: in warn mode the
+                # install goes out below, and a sent install spends it.
+                if gate_mode == "strict" and gate_error != "preview_stale":
                     taken.restore()
                 if gate_mode == "strict":
                     if package is None:
@@ -780,7 +782,12 @@ async def _gated_install(
                     )
                 gate_warning = f"Installing without a verified preview: {gate_problem}"
 
-        result = await spawn_guarded(operation, start)
+        try:
+            result = await spawn_guarded(operation, start)
+        except TaskSlotsExhausted:
+            # Refused before anything was sent: the preview still holds.
+            taken.restore()
+            raise
 
     response: dict[str, Any] = {"status": "success", "task_id": result.get("task")}
     if gate_warning:

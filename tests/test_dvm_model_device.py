@@ -279,11 +279,10 @@ class TestModelDeviceBlueprint:
             {"hostname": "b1\x7f"},
             # The marker this server puts in place of a password value.
             {"psk": MASK_VALUE},
-            # A value that ends a quoted CLI value, escapes, starts a comment,
-            # or reads as a template expression or another variable.
+            # A value that ends a quoted CLI value, escapes, or reads as a
+            # template expression or another variable.
             {"desc": 'x" next'},
             {"desc": "x\\"},
-            {"desc": "Branch #1"},
             {"desc": "{{ psk }}"},
             {"desc": "{% if 1 %}"},
             {"desc": "{# c #}"},
@@ -314,8 +313,13 @@ class TestModelDeviceBlueprint:
 
     @pytest.mark.asyncio
     async def test_refused_meta_character_is_named_in_the_error(self) -> None:
-        result, _ = await _add_with(meta_variables={"desc": "Branch #1"})
-        assert "'#'" in result["message"], result
+        result, _ = await _add_with(meta_variables={"desc": 'Branch "1"'})
+        assert "'\"'" in result["message"], result
+
+    @pytest.mark.asyncio
+    async def test_a_hash_in_a_meta_value_is_kept(self) -> None:
+        result, client = await _add_with(meta_variables={"desc": "Store #12"})
+        assert result["status"] == "success", result
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("serial", ["", "NOTASERIAL", "FGVM0200;rm", "FG12"])

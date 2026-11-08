@@ -40,7 +40,7 @@ This compares stored values, so a field can differ without any change to push: i
 - that devices in a shared template must usually be installed together when values move between them;
 - lines that come back in every preview, which the device is not keeping: check the value with `query_device_api`.
 
-Before accepting an object deletion, check that nothing uses it. For an ADOM object, run `find_object_usage`. On the device, `query_device_api` on the cmdb table, for example `/api/v2/cmdb/firewall/address/<object>` with `params={"with_meta": 1}`, returns `q_ref`, which counts references on that device only.
+Before accepting an object deletion, check that nothing uses it. For an ADOM object, run `find_object_usage`. On the device, `query_device_api` on the cmdb table, for example `/api/v2/cmdb/firewall/address` with `params={"with_meta": 1, "filter": "name==<object>"}`, returns `q_ref`, which counts references on that device only. With output masking on, `query_device_api` refuses `filter`; use `find_object_usage` alone then.
 
 ## Report
 Give the difference per device, its origin, and a recommendation: install, retrieve the device config first, or fix a value and preview again. Installing overwrites a local change, and retrieving overwrites a pending one, so leave that choice to the user.
