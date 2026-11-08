@@ -531,7 +531,9 @@ async def list_policy_block_policies(
     Args:
         adom: ADOM name
         block: Policy block name (see list_policy_blocks, or the
-            ``_policy_block`` field of a package entry)
+            ``_policy_block`` field of a package entry). A block that does
+            not exist answers "No permission for the resource" (FMG -11),
+            not "not found" (measured on 8.0.2)
         fields: Specific fields to return (optional)
         limit: Maximum number of policies to return (optional)
         offset: Starting position for pagination (default: 0)
