@@ -19,6 +19,7 @@ from fortimanager_mcp.utils.errors import client_safe_error
 from fortimanager_mcp.utils.validation import (
     CONFIG_TEXT_SECRET_DIRECTIVES,
     MASK_VALUE,
+    redact_snmp_community_names,
     validate_adom,
     validate_device_name,
     validate_object_name,
@@ -415,7 +416,9 @@ def redact_cli_template_script(script: str) -> str:
             out.append(MASK_VALUE)
         else:
             out.append(part.text)
-    return "".join(out)
+    # What only block context shows: an SNMP community's ``set name`` is its
+    # community string.
+    return redact_snmp_community_names("".join(out))
 
 
 # =============================================================================

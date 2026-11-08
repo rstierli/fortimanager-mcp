@@ -1661,3 +1661,39 @@ class TestInstallScopeShape:
         scope = [{"name": " branch1 "}]
         assert validate_install_scope(scope) == [{"name": "branch1"}]
         assert scope == [{"name": " branch1 "}]
+
+
+class TestSnmpCommunityNames:
+    """An SNMP community's name is its community string."""
+
+    def test_community_name_is_masked(self) -> None:
+        text = (
+            "config system snmp community\n"
+            "    edit 1\n"
+            '        set name "s3cr3tcomm"\n'
+            "        set status enable\n"
+            "    next\n"
+            "end\n"
+            "config system interface\n"
+            "    edit port1\n"
+            '        set name "keep-me"\n'
+            "    next\n"
+            "end"
+        )
+        out = redact_config_text_secrets(text)
+        assert "s3cr3tcomm" not in out
+        assert "keep-me" in out and "set status enable" in out
+
+    @pytest.mark.parametrize("block", ["config snmp-community", "config community"])
+    def test_controller_community_tables_are_masked(self, block: str) -> None:
+        text = f"{block}\n    edit 1\n        set name pubcomm\n    next\nend"
+        assert "pubcomm" not in redact_config_text_secrets(text)
+
+    def test_name_after_the_block_ends_is_kept(self) -> None:
+        text = (
+            "config system snmp community\n    edit 1\n        set name c1\n    next\nend\n"
+            "config firewall address\n    edit a\n        set name addr1\n    next\nend"
+        )
+        out = redact_config_text_secrets(text)
+        assert "c1" not in out.split("config firewall address")[0]
+        assert "set name addr1" in out

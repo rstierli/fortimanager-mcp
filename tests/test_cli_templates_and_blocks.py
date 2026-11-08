@@ -368,3 +368,8 @@ class TestCliTemplateRedaction:
         body = result["cli_template"]["script"]
         assert "k1" not in body
         assert "set psksecret {{ psk }}" in body
+
+
+def test_snmp_community_name_in_a_cli_template_is_masked() -> None:
+    script = "config system snmp community\n    edit 1\n        set name tmplcomm\n    next\nend"
+    assert "tmplcomm" not in template_tools.redact_cli_template_script(script)

@@ -318,6 +318,37 @@ def _has_unescaped_quote(text: str) -> bool:
     return False
 
 
+# An SNMP community's ``name`` is the community string itself, so under
+# ``config system snmp community`` (and the switch and wireless controllers'
+# ``config snmp-community`` / ``config community``) ``set name`` is a secret
+# though the directive is not one anywhere else.
+_CONFIG_BLOCK_LINE = re.compile(r"^\s*config\s+(?P<path>.+?)\s*$")
+_CONFIG_END_LINE = re.compile(r"^\s*end\s*$")
+_COMMUNITY_BLOCKS = frozenset({"community", "snmp-community"})
+_CONFIG_TEXT_NAME_LINE = re.compile(r"^(?P<prefix>\s*set\s+name\s+)(?P<rest>.*)$")
+
+
+def redact_snmp_community_names(text: str) -> str:
+    """Mask ``set name`` inside SNMP community blocks of FortiOS CLI text.
+
+    Only this rule, for text whose other secrets are handled elsewhere (CLI
+    templates, where a bare variable reference is kept readable).
+    """
+    lines = text.split("\n")
+    blocks: list[str] = []
+    for i, line in enumerate(lines):
+        block = _CONFIG_BLOCK_LINE.match(line)
+        if block:
+            blocks.append(block.group("path").split()[-1].lower())
+        elif _CONFIG_END_LINE.match(line) and blocks:
+            blocks.pop()
+        elif _COMMUNITY_BLOCKS.intersection(blocks):
+            name = _CONFIG_TEXT_NAME_LINE.match(line)
+            if name:
+                lines[i] = name.group("prefix") + MASK_VALUE
+    return "\n".join(lines)
+
+
 def redact_config_text_secrets(text: str) -> str:
     """Mask secret-bearing directive values in raw FortiOS CLI config text.
 
@@ -341,10 +372,18 @@ def redact_config_text_secrets(text: str) -> str:
     """
     lines = text.split("\n")
     out: list[str] = []
+    blocks: list[str] = []
     i = 0
     while i < len(lines):
         line = lines[i]
+        block = _CONFIG_BLOCK_LINE.match(line)
+        if block:
+            blocks.append(block.group("path").split()[-1].lower())
+        elif _CONFIG_END_LINE.match(line) and blocks:
+            blocks.pop()
         match = _CONFIG_TEXT_SECRET_LINE.match(line) or _CONFIG_TEXT_ENC_LINE.match(line)
+        if not match and _COMMUNITY_BLOCKS.intersection(blocks):
+            match = _CONFIG_TEXT_NAME_LINE.match(line)
         if not match:
             out.append(line)
             i += 1
