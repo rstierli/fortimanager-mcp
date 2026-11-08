@@ -19,6 +19,7 @@ from typing import Any
 from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_default_adom, get_default_device
 from fortimanager_mcp.utils.errors import ResourceNotFoundError, client_safe_error
+from fortimanager_mcp.utils.redaction import safe_device_message, strip_secret_fields
 from fortimanager_mcp.utils.validation import (
     ValidationError,
     validate_adom,
@@ -121,25 +122,6 @@ _SDWAN_SECRET_FIELDS = frozenset({"password"})
 _BGP_SECRET_FIELDS = frozenset({"password"})
 
 
-def _strip_secret_fields(result: Any, secret_fields: frozenset[str]) -> Any:
-    """Strip named credential fields from anything FMG echoes back.
-
-    Recurses through dict values and list items at any depth -- see the
-    identical helper in device_config_tools.py for why a shallow strip is
-    not safe: both secrets here sit one table down (``health-check[]``,
-    ``neighbor[]``), never at the top level.
-    """
-    if isinstance(result, dict):
-        return {
-            k: _strip_secret_fields(v, secret_fields)
-            for k, v in result.items()
-            if k not in secret_fields
-        }
-    if isinstance(result, list):
-        return [_strip_secret_fields(item, secret_fields) for item in result]
-    return result
-
-
 def _summarize_sdwan(sdwan: dict[str, Any]) -> dict[str, Any]:
     """Condense a raw ``system/sdwan`` object into a compact summary.
 
@@ -197,7 +179,7 @@ async def get_device_sdwan(
     returns nothing) yet you still need its members, zones and steering rules.
 
     Args:
-        device: Managed device name (e.g. "myfw01")
+        device: Managed device name (e.g. "branch1")
         vdom: VDOM name (default: "root")
 
     Returns:
@@ -216,7 +198,7 @@ async def get_device_sdwan(
         device = validate_device_name(device)
         vdom = validate_object_name(vdom, "VDOM")
         sdwan = await client.get_device_sdwan(device=device, vdom=vdom)
-        sdwan = _strip_secret_fields(sdwan, _SDWAN_SECRET_FIELDS)
+        sdwan = strip_secret_fields(sdwan, _SDWAN_SECRET_FIELDS)
         summary = _summarize_sdwan(sdwan) if isinstance(sdwan, dict) else None
         return {
             "device": device,
@@ -262,7 +244,7 @@ async def get_sdwan_template_config(
         adom = validate_adom(adom)
         name = validate_object_name(name, "SD-WAN template")
         sdwan = await client.get_sdwan_template_config(adom=adom, name=name)
-        sdwan = _strip_secret_fields(sdwan, _SDWAN_SECRET_FIELDS)
+        sdwan = strip_secret_fields(sdwan, _SDWAN_SECRET_FIELDS)
         summary = _summarize_sdwan(sdwan) if isinstance(sdwan, dict) else None
         return {"adom": adom, "name": name, "sdwan": sdwan, "summary": summary}
     except Exception as e:
@@ -339,9 +321,14 @@ async def get_bgp_template(
     SD-WAN Overlay Template generates for its hub and branches. Values may
     be ``$(variable)`` placeholders resolved per device at install.
 
+    The template body path is not in the bundled FNDN specs; it is verified
+    live on FortiManager 8.0.2 (see ``get_bgp_template_config`` in the
+    client for the details and the 7.x fallback).
+
     Args:
         adom: ADOM name
-        name: BGP template name (``list_templates`` entries with stype router_bgp)
+        name: BGP template name (``list_templates`` entries whose
+            ``template setting.stype`` is router_bgp)
 
     Returns:
         dict with keys:
@@ -359,7 +346,7 @@ async def get_bgp_template(
         adom = validate_adom(adom)
         name = validate_object_name(name, "template")
         bgp = await client.get_bgp_template_config(adom=adom, name=name)
-        bgp = _strip_secret_fields(bgp, _BGP_SECRET_FIELDS)
+        bgp = strip_secret_fields(bgp, _BGP_SECRET_FIELDS)
         summary = _summarize_bgp(bgp) if isinstance(bgp, dict) else None
         return {"adom": adom, "name": name, "bgp": bgp, "summary": summary}
     except Exception as e:
@@ -410,9 +397,13 @@ async def update_bgp_template(
     for example ``execute router clear bgp all soft out``, before peers receive
     what a new route-reflector client should get.
 
+    The neighbor-group path is not in the bundled FNDN specs; it is verified
+    live on FortiManager 8.0.2 only.
+
     Args:
         adom: ADOM name
-        name: BGP template name (``list_templates`` entries with stype router_bgp)
+        name: BGP template name (``list_templates`` entries whose
+            ``template setting.stype`` is router_bgp)
         neighbor_group: Neighbor group name, e.g. "EDGE"
         settings: Options to change: route-reflector-client, next-hop-self,
             next-hop-self-rr, soft-reconfiguration ("enable"/"disable") and
@@ -484,7 +475,7 @@ async def get_device_bgp(
         device = validate_device_name(device)
         vdom = validate_object_name(vdom, "VDOM")
         bgp = await client.get_device_bgp(device=device, vdom=vdom)
-        bgp = _strip_secret_fields(bgp, _BGP_SECRET_FIELDS)
+        bgp = strip_secret_fields(bgp, _BGP_SECRET_FIELDS)
         summary = _summarize_bgp(bgp) if isinstance(bgp, dict) else None
         if summary_only:
             return {"device": device, "vdom": vdom, "summary": summary}
@@ -845,13 +836,31 @@ def _since(epoch: Any) -> str | None:
 
 
 def _proxy_error(raw: Any) -> str | None:
-    """The proxy-level error message, when the device did not answer."""
+    """Why the device did not answer, or None when it did.
+
+    Two layers can fail: the FMG proxy (``status.code`` non-zero, e.g. "No
+    tunnel" for an offline device, or "Invalid url" for a path the device
+    does not serve) and the device's own API (``response.status`` "error").
+    The device's HTTP status rides beside either and is kept: a 404 (no
+    such endpoint on this FortiOS) and a 500 (feature not configured, as
+    ``router/bgp/neighbors`` answers on a device without BGP, measured on
+    FortiOS 7.4 through FMG 8.0.2) call for different next steps. The
+    message is the device's text, so it goes through ``safe_device_message``.
+    """
     entry = raw[0] if isinstance(raw, list) and raw else raw
-    if isinstance(entry, dict):
-        status = entry.get("status")
-        if isinstance(status, dict) and status.get("code") not in (0, None):
-            return str(status.get("message") or "device proxy error")
-    return None
+    if not isinstance(entry, dict):
+        return None
+    status = entry.get("status")
+    response = entry.get("response")
+    http_status = response.get("http_status") if isinstance(response, dict) else None
+    message: str | None = None
+    if isinstance(status, dict) and status.get("code") not in (0, None):
+        message = safe_device_message(status.get("message"))
+    elif isinstance(response, dict) and response.get("status") == "error":
+        message = "device API error"
+    if message is None:
+        return None
+    return f"{message} (HTTP {http_status})" if http_status is not None else message
 
 
 async def _live_get(client: Any, adom: str, device: str, resource: str) -> tuple[Any, str | None]:
@@ -869,9 +878,12 @@ async def _live_get(client: Any, adom: str, device: str, resource: str) -> tuple
     except Exception as e:
         msg, _ = client_safe_error(e)
         return None, msg
+    error = _proxy_error(raw)
+    if error:
+        return None, error
     results = _proxy_results(raw)
     if results is None:
-        return None, _proxy_error(raw) or "no data returned"
+        return None, "no data returned"
     return results, None
 
 
@@ -1005,7 +1017,6 @@ async def _hub_side(
 def _verdict(
     tunnel: str,
     underlay: str | None,
-    remote_gw: Any,
     ev: dict[str, Any],
 ) -> tuple[str, str, list[str]]:
     """Turn the gathered evidence into (verdict, explanation, next steps)."""
@@ -1046,9 +1057,12 @@ def _verdict(
             [f"Restore {hub.get('underlay')} on {hub.get('device')}."],
         )
     if t.get("up") is False:
+        # The peer address stays out of the prose: free text is not masked,
+        # so an address written into it would pass FMG_MASKING in clear. It
+        # is in evidence.gateway.remote_gw, where masking reaches it.
         steps = [
             f"From the device: execute ping-options source <{underlay} IP>; "
-            f"execute ping {remote_gw}",
+            "execute ping <evidence.gateway.remote_gw>",
             f"diagnose vpn ike gateway list name {tunnel}",
             "diagnose debug application ike -1; diagnose debug enable (PSK, proposal, "
             "peer ID or network-id mismatch shows here)",
@@ -1057,8 +1071,9 @@ def _verdict(
             steps.insert(0, f"The hub has no {hub['tunnel']} instance from this spoke yet.")
         return (
             "tunnel_down",
-            f"{underlay} is up but {tunnel} is not established: the peer at {remote_gw} "
-            "is unreachable over this underlay or IKE negotiation fails.",
+            f"{underlay} is up but {tunnel} is not established: the remote gateway "
+            "(evidence.gateway.remote_gw) is unreachable over this underlay or IKE "
+            "negotiation fails.",
             steps,
         )
     down_hcs = [h["health_check"] for h in hcs if h.get("status") == "down"]
@@ -1218,7 +1233,7 @@ async def diagnose_ipsec_tunnel(
             client, adom, hub_device, vdom, network_id, underlay_ev.get("ip"), unverified
         )
 
-    verdict, explanation, next_steps = _verdict(tunnel, underlay, remote_gw, evidence)
+    verdict, explanation, next_steps = _verdict(tunnel, underlay, evidence)
     return {
         "adom": adom,
         "device": device,
