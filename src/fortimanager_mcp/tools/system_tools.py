@@ -4,6 +4,7 @@ Based on FNDN FortiManager 7.6.5 SYS, DVMDB, and TASK API specifications.
 """
 
 import logging
+import time
 from typing import Any
 
 from fortimanager_mcp.api.client import FortiManagerClient
@@ -19,6 +20,7 @@ from fortimanager_mcp.utils.install_gate import (
     recorded_revision,
     task_state,
 )
+from fortimanager_mcp.utils.install_preview import PreviewFailed, run_install_preview
 from fortimanager_mcp.utils.responses import error_response, strip_device_credentials
 from fortimanager_mcp.utils.task_guard import (
     MAX_TASK_POLL_FAILURES,
@@ -329,8 +331,11 @@ async def list_device_groups(
 @mcp.tool()
 async def list_tasks(
     filter_state: str | None = None,
+    limit: int = 100,
+    since_hours: float | None = None,
+    include_lines: bool = False,
 ) -> dict[str, Any]:
-    """List all tasks in FortiManager.
+    """List FortiManager tasks, newest first.
 
     Tasks represent background operations like policy installation,
     device provisioning, and other long-running processes.
@@ -343,11 +348,17 @@ async def list_tasks(
             - "error": Failed
             - "cancelling": Being cancelled
             - "cancelled": Cancelled
+        limit: Maximum number of tasks to return (default: 100)
+        since_hours: Only tasks started in the last N hours (optional)
+        include_lines: Include each task's per-device lines and history
+            (default: False, they can reach hundreds of KB; get_task reads
+            them for one task)
 
     Returns:
         dict: Task list with keys:
             - status: "success" or "error"
-            - count: Number of tasks
+            - count: Number of tasks returned
+            - total: Number of tasks matching before ``limit``
             - tasks: List of task objects with id, state, progress, etc.
             - message: Error message if failed
 
@@ -367,10 +378,18 @@ async def list_tasks(
             filter_list = [["state", "==", filter_state]]
 
         tasks = await client.list_tasks(filter=filter_list)
+        if since_hours is not None:
+            cutoff = time.time() - since_hours * 3600
+            tasks = [t for t in tasks if (t.get("start_tm") or 0) >= cutoff]
+        tasks = sorted(tasks, key=lambda t: t.get("id") or 0, reverse=True)
+        selected = tasks[: max(limit, 0)]
+        if not include_lines:
+            selected = [{k: v for k, v in t.items() if k != "line"} for t in selected]
         return {
             "status": "success",
-            "count": len(tasks),
-            "tasks": tasks,
+            "count": len(selected),
+            "total": len(tasks),
+            "tasks": selected,
         }
     except Exception as e:
         logger.error(f"Failed to list tasks: {e}")
@@ -500,19 +519,37 @@ async def wait_for_task(
             state = task.get("state", "").lower() if isinstance(task.get("state"), str) else ""
 
             # Handle numeric state values
+            # Every /task/task state (8.0 task syntax). States missing from
+            # the old map (6-10) decoded as "unknown" and were never terminal,
+            # so a task ending in "warning" -- e.g. an install with nothing to
+            # push, verified live -- was polled until the timeout.
             if isinstance(task.get("state"), int):
-                state_map = {0: "pending", 1: "running", 4: "done", 5: "error", 3: "cancelled"}
+                state_map = {
+                    0: "pending",
+                    1: "running",
+                    2: "cancelling",
+                    3: "cancelled",
+                    4: "done",
+                    5: "error",
+                    6: "aborting",
+                    7: "aborted",
+                    8: "warning",
+                    9: "to_continue",
+                    10: "unknown",
+                }
                 state = state_map.get(task["state"], "unknown")
 
             # Check if completed
-            if state in ("done", "error", "cancelled"):
+            if state in ("done", "warning", "error", "cancelled", "aborted"):
                 # Terminal state observed: release this task's spawn slot (a
                 # no-op for tasks not spawned through this server).
                 mark_task_done(task_id)
                 return {
-                    "status": "success" if state == "done" else "error",
+                    # A warning task finished; its lines say what was skipped.
+                    "status": "success" if state in ("done", "warning") else "error",
                     "task": task,
                     "completed": True,
+                    "task_state": state,
                     "message": f"Task completed with state: {state}",
                 }
 
@@ -692,7 +729,8 @@ async def install_package(
         adom: ADOM name
         package: Policy package name
         devices: Target devices [{"name": "FGT1", "vdom": "root"}, ...]
-        preview: If True, only preview changes without applying (default: False)
+        preview: If True, run a full install preview instead (same as
+            preview_install): nothing is installed (default: False)
 
     Returns:
         dict: Installation result with keys:
@@ -748,7 +786,32 @@ async def install_package(
                     )
                 gate_warning = f"Installing without a verified preview: {gate_problem}"
 
-        flags = ["preview"] if preview else ["none"]
+        if preview:
+            # A bare flags=["preview"] install stages the package and leaves
+            # the devices held by an install-wizard session that nothing
+            # releases, so later installs queue behind it. Run the complete
+            # preview instead (stage, render, cancel) -- the same one
+            # preview_install runs.
+            try:
+                previewed = await run_install_preview(client, adom, package, devices)
+            except PreviewFailed as e:
+                return error_response(
+                    error="preview_failed",
+                    message=e,
+                    operation="install_package",
+                    adom=adom,
+                    package=package,
+                    step=e.step,
+                    task_id=e.task_id,
+                    task_lines=e.lines,
+                )
+            return {
+                "status": "success",
+                "task_id": previewed["preview_task_id"],
+                "preview": True,
+                "devices": previewed.get("devices", previewed.get("raw")),
+                "message": "Installation preview finished; nothing was installed",
+            }
 
         result = await spawn_guarded(
             "install_package",
@@ -756,21 +819,20 @@ async def install_package(
                 adom=adom,
                 pkg=package,
                 scope=devices,
-                flags=flags,
+                flags=["none"],
             ),
         )
 
-        if not preview:
-            # The preview that authorized this install is spent: the next
-            # install needs a fresh one (the package may change in between).
-            consume_preview(adom, package, devices)
+        # The preview that authorized this install is spent: the next
+        # install needs a fresh one (the package may change in between).
+        consume_preview(adom, package, devices)
 
         task_id = result.get("task")
         response = {
             "status": "success",
             "task_id": task_id,
             "preview": preview,
-            "message": f"Installation {'preview ' if preview else ''}started, task ID: {task_id}",
+            "message": f"Installation started, task ID: {task_id}",
         }
         if gate_warning:
             response["warning"] = gate_warning
@@ -789,10 +851,33 @@ async def install_package(
         return {"status": "error", "message": msg, "error_code": code}
 
 
+# FMG stores dev_rev_comments in a 127-byte field.
+_REV_COMMENT_MAX_BYTES = 127
+
+
+def _validate_rev_comment(comment: str) -> str:
+    """Return a trimmed revision comment, or raise ValueError."""
+    if not isinstance(comment, str):
+        raise ValueError("dev_rev_comments must be a string")
+    comment = comment.strip()
+    if not comment:
+        raise ValueError("dev_rev_comments cannot be empty")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in comment):
+        raise ValueError("dev_rev_comments cannot contain control characters or newlines")
+    size = len(comment.encode("utf-8"))
+    if size > _REV_COMMENT_MAX_BYTES:
+        raise ValueError(
+            f"dev_rev_comments is {size} bytes; FortiManager accepts at most "
+            f"{_REV_COMMENT_MAX_BYTES}"
+        )
+    return comment
+
+
 @mcp.tool()
 async def install_device_settings(
     adom: str,
     devices: list[dict[str, str]],
+    dev_rev_comments: str | None = None,
 ) -> dict[str, Any]:
     """Install device settings only (without policy package).
 
@@ -802,6 +887,8 @@ async def install_device_settings(
     Args:
         adom: ADOM name
         devices: Target devices [{"name": "FGT1", "vdom": "root"}, ...]
+        dev_rev_comments: Optional comment for the device revision the
+            install creates (shown in Revision History, max 127 bytes)
 
     Returns:
         dict: Installation result with keys:
@@ -811,6 +898,7 @@ async def install_device_settings(
     """
     try:
         adom = validate_adom(adom)
+        comment = _validate_rev_comment(dev_rev_comments) if dev_rev_comments is not None else None
         client = _get_client()
 
         result = await spawn_guarded(
@@ -818,6 +906,7 @@ async def install_device_settings(
             lambda: client.install_device(
                 adom=adom,
                 scope=devices,
+                dev_rev_comments=comment,
             ),
         )
 

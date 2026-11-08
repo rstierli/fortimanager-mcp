@@ -284,8 +284,42 @@ async def get_device_revision(device: str, revision: int = -1) -> dict[str, Any]
         return {"status": "error", "message": msg, "error_code": code}
 
 
+def _config_lines(content: str) -> list[str]:
+    """Config text as comparable lines, without what only the export changes.
+
+    The revision checkout and the current export differ in blank lines and
+    in the ``#`` header (the platform name changes case), which buried the
+    real changes in a diff of thousands of lines.
+    """
+    stripped = (line.rstrip() for line in content.splitlines())
+    return [f"{line}\n" for line in stripped if line and not line.startswith("#")]
+
+
+def _select_sections(lines: list[str], sections: list[str]) -> tuple[list[str], list[str]]:
+    """Keep the ``config <section>`` blocks named, at any depth, and list the absent ones."""
+    wanted = {section.strip().removeprefix("config ").strip() for section in sections}
+    selected: list[str] = []
+    found: set[str] = set()
+    depth = 0
+    for line in lines:
+        text = line.strip()
+        if depth:
+            selected.append(line)
+            if text.startswith("config "):
+                depth += 1
+            elif text == "end":
+                depth -= 1
+        elif text.startswith("config ") and text.removeprefix("config ") in wanted:
+            found.add(text.removeprefix("config "))
+            selected.append(line)
+            depth = 1
+    return selected, sorted(wanted - found)
+
+
 @mcp.tool()
-async def diff_device_revision(device: str, revision: int) -> dict[str, Any]:
+async def diff_device_revision(
+    device: str, revision: int, sections: list[str] | None = None
+) -> dict[str, Any]:
     """Diff a past device DB revision against the CURRENT device DB.
 
     FortiManager has no native diff endpoint for device DB revisions (unlike
@@ -302,9 +336,15 @@ async def diff_device_revision(device: str, revision: int) -> dict[str, Any]:
         device: Managed device name
         revision: Revision number to compare against current (see
             list_device_revisions)
+        sections: Only compare these ``config`` blocks, e.g.
+            ["router bgp", "system interface"]. A full diff can reach hundreds
+            of KB, because a revision also lists default objects the current
+            export omits.
 
     Returns:
-        dict: status, device, revision, changed (bool), diff (unified diff
+        dict: status, device, revision, changed (bool), sections_missing (the
+        requested sections found on neither side, with ``sections``), diff
+        (unified diff
         text, empty string if unchanged; both sides are redacted of known
         secret-bearing directives before diffing -- see
         redact_config_text_secrets -- so a line whose only change is its
@@ -332,21 +372,31 @@ async def diff_device_revision(device: str, revision: int) -> dict[str, Any]:
         # was added/removed/reordered).
         past_content = redact_config_text_secrets(past_content)
         current_content = redact_config_text_secrets(current_content)
+        past_lines = _config_lines(past_content)
+        current_lines = _config_lines(current_content)
+        missing: list[str] = []
+        if sections:
+            past_lines, past_missing = _select_sections(past_lines, sections)
+            current_lines, current_missing = _select_sections(current_lines, sections)
+            missing = sorted(set(past_missing) & set(current_missing))
         diff_lines = list(
             difflib.unified_diff(
-                past_content.splitlines(keepends=True),
-                current_content.splitlines(keepends=True),
+                past_lines,
+                current_lines,
                 fromfile=f"revision {revision}",
                 tofile="current",
             )
         )
-        return {
+        result: dict[str, Any] = {
             "status": "success",
             "device": device,
             "revision": revision,
             "changed": bool(diff_lines),
             "diff": "".join(diff_lines),
         }
+        if sections:
+            result["sections_missing"] = missing
+        return result
     except Exception as e:
         logger.error(f"Failed to diff device {device} revision {revision} against current: {e}")
         msg, code = client_safe_error(e)

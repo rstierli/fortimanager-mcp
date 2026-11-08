@@ -146,6 +146,7 @@ tests/.env.test
 .claude/
 CLAUDE.md
 SKILL.md
+!src/fortimanager_mcp/skills/*/SKILL.md
 docs/agents/
 .cursor/
 .aider*

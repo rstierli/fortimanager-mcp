@@ -141,7 +141,18 @@ def task_state(task: dict[str, Any]) -> str:
     if isinstance(state, str):
         return state.lower()
     if isinstance(state, int):
-        state_map = {0: "pending", 1: "running", 4: "done", 5: "error", 3: "cancelled"}
+        state_map = {
+            0: "pending",
+            1: "running",
+            2: "cancelling",
+            3: "cancelled",
+            4: "done",
+            5: "error",
+            6: "aborting",
+            7: "aborted",
+            8: "warning",
+            9: "to_continue",
+        }
         return state_map.get(state, "unknown")
     return "unknown"
 

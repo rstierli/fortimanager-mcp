@@ -43,6 +43,17 @@ def _client(**methods: Any) -> MagicMock:
     return client
 
 
+def _preview_flow() -> dict[str, Any]:
+    """Client methods for a preview that stages as task 3 and renders as task 9."""
+    return {
+        "install_package": {"return_value": {"task": 3}},
+        "install_preview": {"return_value": {"task": 9}},
+        "get_task": {"return_value": {"state": 4}},
+        "get_preview_result": {"return_value": {"message": "[]"}},
+        "cancel_install": {"return_value": {}},
+    }
+
+
 async def _install(client: MagicMock, preview: bool = False) -> dict[str, Any]:
     with patch.object(system_tools, "get_fmg_client", return_value=client):
         return await system_tools.install_package(
@@ -130,9 +141,13 @@ class TestPreviewBeforeInstallGate:
     @pytest.mark.asyncio
     async def test_preview_flag_bypasses_gate(self) -> None:
         """install_package(preview=True) is itself a dry run — no gate."""
-        client = _client(install_package={"return_value": {"task": 3}})
+        client = _client(**_preview_flow())
         result = await _install(client, preview=True)
         assert result["status"] == "success"
+        assert result["preview"] is True
+        # Only ever staged with the preview flag, and the stage is released.
+        assert client.install_package.await_args.kwargs["flags"] == ["preview"]
+        client.cancel_install.assert_awaited_once_with("root", preview_taskid=3)
 
     @pytest.mark.asyncio
     async def test_warn_mode_installs_with_warning(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -155,7 +170,7 @@ class TestPreviewBeforeInstallGate:
 
     @pytest.mark.asyncio
     async def test_preview_install_records_for_gate(self) -> None:
-        client = _client(install_preview={"return_value": {"task": 9}})
+        client = _client(**_preview_flow())
         with patch.object(policy_tools, "get_fmg_client", return_value=client):
             result = await policy_tools.preview_install(
                 adom="root", package="default", devices=DEVICES
@@ -392,7 +407,7 @@ class TestPreviewRevisionGate:
     @pytest.mark.asyncio
     async def test_preview_install_records_revision(self) -> None:
         client = _client(
-            install_preview={"return_value": {"task": 9}},
+            **_preview_flow(),
             get_package={"return_value": {"name": "default", "obj ver": 5}},
         )
         with patch.object(policy_tools, "get_fmg_client", return_value=client):

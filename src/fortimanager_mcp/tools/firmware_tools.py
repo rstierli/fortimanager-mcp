@@ -488,3 +488,291 @@ async def get_firmware_upgrade_report(
         logger.error(f"Failed to get firmware upgrade report for {device}: {e}")
         msg, code = client_safe_error(e)
         return {"status": "error", "message": msg, "error_code": code}
+
+
+# =============================================================================
+# Firmware Templates
+# =============================================================================
+#
+# A firmware template enforces a firmware version per platform on the devices
+# or groups it is assigned to (FNDN 8.0 "Firmware Template Objects Reference",
+# fwmprof). Enum values below come from that reference; the shapes were
+# checked live on FMG 8.0.2 against templates made in the GUI.
+
+_IMAGE_SOURCES = {0: "fmg", 1: "fds"}
+_SCHEDULE_TYPES = {0: "none", 1: "daily", 4: "weekly", 5: "once", 10: "onboard"}
+_PRODUCTS = {1: "fgt", 2: "fap", 3: "fsw", 4: "fex", 5: "fem"}
+_UPGRADE_PATHS = {0: "skip", 1: "auto", 2: "specify"}
+_WEEKDAYS = ("sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday")
+_TIME_PATTERN = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+#: ``flags`` on an enforced-version entry, as the GUI writes it: 104 on
+#: FortiGate entries, 0 on FortiAP/FortiSwitch ones (read from GUI-made
+#: templates on 8.0.2). The reference documents the field only as uint32.
+_GUI_VERSION_FLAGS = {"fgt": 104}
+
+
+def _enum(value: Any, names: dict[int, str]) -> Any:
+    return names.get(value, value) if isinstance(value, int) else value
+
+
+def _template_summary(row: dict[str, Any]) -> dict[str, Any]:
+    """A firmware template with its enums decoded."""
+    setting = row.get("fwmprof setting") or {}
+    days = setting.get("schedule-day")
+    return {
+        "name": row.get("name"),
+        "description": setting.get("description"),
+        "image_source": _enum(setting.get("image-source"), _IMAGE_SOURCES),
+        "schedule": {
+            "type": _enum(setting.get("schedule-type"), _SCHEDULE_TYPES),
+            "start_time": setting.get("schedule-start-time"),
+            "end_time": setting.get("schedule-end-time"),
+            "days": (
+                [d for i, d in enumerate(_WEEKDAYS) if days & (1 << i)]
+                if isinstance(days, int)
+                else days
+            ),
+        },
+        "versions": [
+            {
+                "platform": v.get("platform"),
+                "product": _enum(v.get("product"), _PRODUCTS),
+                "version": v.get("version"),
+                "upgrade_path": _enum(v.get("upgrade-path"), _UPGRADE_PATHS),
+            }
+            for v in setting.get("enforced version") or []
+            if isinstance(v, dict)
+        ],
+        "assigned_to": [
+            m.get("name") if "vdom" not in m else f"{m.get('name')}[{m.get('vdom')}]"
+            for m in row.get("scope member") or []
+            if isinstance(m, dict)
+        ],
+    }
+
+
+async def _resolve_template_version(
+    client: FortiManagerClient, platform: str, version: str
+) -> tuple[str, str]:
+    """Return (product, catalog version string) for a platform's firmware.
+
+    ``version`` may be "7.4.9" or the catalog form "7.4.9-b2829"; either way
+    it must exist in the platform's firmware catalog, so a template never
+    enforces an image FortiManager cannot get.
+    """
+    data = await client.list_available_firmware(platform=platform)
+    entries = [
+        e
+        for e in (data.get("version_list", []) if isinstance(data, dict) else [])
+        if isinstance(e, dict) and e.get("platform") == platform
+    ]
+    if not entries:
+        raise ValidationError(f"No firmware catalog for platform '{platform}'")
+    product = str(entries[0].get("product", "")).lower()
+    if product not in _PRODUCTS.values():
+        raise ValidationError(f"Platform '{platform}' is a {product or 'unknown'} product")
+    catalog = [
+        str(v.get("version"))
+        for e in entries
+        for v in e.get("versions") or []
+        if isinstance(v, dict) and v.get("version")
+    ]
+    matches = [c for c in catalog if c == version or c.split("-")[0] == version]
+    if not matches:
+        prefix = ".".join(version.split("-")[0].split(".")[:2])
+        nearby = sorted(
+            (c for c in catalog if c.startswith(prefix + ".")),
+            key=lambda c: [int(p) for p in re.findall(r"\d+", c)],
+        )
+        raise ValidationError(
+            f"Version '{version}' is not in the {platform} catalog"
+            + (f"; available {prefix}.x: {nearby}" if nearby else "")
+        )
+    return product, matches[0]
+
+
+@mcp.tool()
+async def list_firmware_templates(adom: str | None = None) -> dict[str, Any]:
+    """List firmware templates: enforced versions, schedule and assignment.
+
+    Args:
+        adom: ADOM name (default: from DEFAULT_ADOM env var, or "root")
+
+    Returns:
+        dict: status, count, templates: [{name, description, image_source,
+        schedule {type, start_time, end_time, days}, versions [{platform,
+        product, version, upgrade_path}], assigned_to [device or group names]}]
+    """
+    adom = adom or get_default_adom()
+    try:
+        adom = validate_adom(adom)
+        client = _get_client()
+        templates = [_template_summary(t) for t in await client.list_firmware_templates(adom)]
+        return {"status": "success", "count": len(templates), "templates": templates}
+    except Exception as e:
+        logger.error(f"Failed to list firmware templates: {e}")
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
+
+
+@mcp.tool()
+async def create_firmware_template(
+    name: str,
+    versions: list[dict[str, str]],
+    adom: str | None = None,
+    description: str | None = None,
+    image_source: str = "fds",
+    schedule_type: str = "daily",
+    schedule_start_time: str = "00:00",
+    schedule_end_time: str = "23:59",
+    schedule_days: list[str] | None = None,
+) -> dict[str, Any]:
+    """Create a firmware template (not assigned to any device).
+
+    Each version is checked against the platform's firmware catalog, so the
+    template can only enforce an image FortiManager can actually get.
+    Assigning the template is a separate step, done in the GUI: once
+    assigned, FortiManager upgrades (or downgrades) the devices to the
+    enforced version in the schedule window.
+
+    Args:
+        name: Template name
+        versions: Enforced versions, one per platform:
+            [{"platform": "FortiGate-VM64-KVM", "version": "7.4.9"}].
+            The version may include the build ("7.4.9-b2829")
+        adom: ADOM name (default: from DEFAULT_ADOM env var, or "root")
+        description: Optional description
+        image_source: "fds" (FortiGuard, default) or "fmg" (images on
+            FortiManager)
+        schedule_type: "daily" (default) or "weekly"
+        schedule_start_time: Window start, "HH:MM" (default "00:00")
+        schedule_end_time: Window end, "HH:MM" (default "23:59")
+        schedule_days: Days for a weekly schedule, e.g. ["saturday", "sunday"]
+
+    Returns:
+        dict: status, template (as list_firmware_templates shows it), message
+    """
+    adom = adom or get_default_adom()
+    try:
+        adom = validate_adom(adom)
+        name = validate_object_name(name, "firmware template")
+        if image_source not in ("fds", "fmg"):
+            raise ValidationError("image_source must be 'fds' or 'fmg'")
+        if schedule_type not in ("daily", "weekly"):
+            raise ValidationError("schedule_type must be 'daily' or 'weekly'")
+        for label, value in (("start", schedule_start_time), ("end", schedule_end_time)):
+            if not _TIME_PATTERN.match(value):
+                raise ValidationError(f"schedule_{label}_time must be HH:MM, got {value!r}")
+        days = [d.lower() for d in schedule_days or []]
+        if schedule_type == "weekly":
+            if not days or any(d not in _WEEKDAYS for d in days):
+                raise ValidationError(f"A weekly schedule needs schedule_days from {_WEEKDAYS}")
+        elif days:
+            raise ValidationError("schedule_days only applies to a weekly schedule")
+        if not isinstance(versions, list) or not versions:
+            raise ValidationError("versions must list at least one {platform, version}")
+        for index, entry in enumerate(versions):
+            if not isinstance(entry, dict) or set(entry) != {"platform", "version"}:
+                raise ValidationError(f"versions[{index}] must be {{'platform', 'version'}}")
+            validate_object_name(entry["platform"], "platform")
+            _validate_firmware_version(entry["version"])
+        platforms = [v["platform"] for v in versions]
+        if len(set(platforms)) != len(platforms):
+            raise ValidationError("Each platform can appear only once in versions")
+
+        client = _get_client()
+        existing = {t.get("name") for t in await client.list_firmware_templates(adom)}
+        if name in existing:
+            raise ValidationError(f"Firmware template '{name}' already exists in ADOM '{adom}'")
+
+        enforced = []
+        for entry in versions:
+            product, version = await _resolve_template_version(
+                client, entry["platform"], entry["version"].strip()
+            )
+            enforced.append(
+                {
+                    "platform": entry["platform"],
+                    "product": product,
+                    "upgrade-path": "auto",
+                    "version": version,
+                    "flags": _GUI_VERSION_FLAGS.get(product, 0),
+                }
+            )
+        setting: dict[str, Any] = {
+            "image-source": image_source,
+            "schedule-type": schedule_type,
+            "schedule-start-time": schedule_start_time,
+            "schedule-end-time": schedule_end_time,
+            "enforced version": enforced,
+        }
+        if days:
+            setting["schedule-day"] = days
+        if description:
+            setting["description"] = description
+
+        await client.create_firmware_template(
+            adom, {"name": name, "type": "fwmprof", "fwmprof setting": setting}
+        )
+        created = next(
+            (t for t in await client.list_firmware_templates(adom) if t.get("name") == name),
+            None,
+        )
+        return {
+            "status": "success",
+            "template": _template_summary(created) if created else {"name": name},
+            "message": f"Firmware template '{name}' created; it is not assigned to any device",
+        }
+    except Exception as e:
+        logger.error(f"Failed to create firmware template {name}: {e}")
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
+
+
+@mcp.tool()
+async def delete_firmware_template(name: str, adom: str | None = None) -> dict[str, Any]:
+    """Delete a firmware template that is not assigned to any device or group.
+
+    An assigned template is refused, with the assignment listed: unassign it
+    in the GUI first, so a delete can never change what firmware a device
+    is held to without that being a deliberate step.
+
+    Args:
+        name: Template name
+        adom: ADOM name (default: from DEFAULT_ADOM env var, or "root")
+
+    Returns:
+        dict: status, message (and assigned_to when refused)
+    """
+    adom = adom or get_default_adom()
+    try:
+        adom = validate_adom(adom)
+        name = validate_object_name(name, "firmware template")
+        client = _get_client()
+        template = next(
+            (t for t in await client.list_firmware_templates(adom) if t.get("name") == name),
+            None,
+        )
+        if template is None:
+            return error_response(
+                error="not_found",
+                message=f"Firmware template '{name}' does not exist in ADOM '{adom}'",
+                operation="delete_firmware_template",
+                adom=adom,
+            )
+        assigned = _template_summary(template)["assigned_to"]
+        if assigned:
+            return error_response(
+                error="template_assigned",
+                message=f"Firmware template '{name}' is assigned; unassign it first",
+                operation="delete_firmware_template",
+                adom=adom,
+                assigned_to=assigned,
+            )
+        await client.delete_firmware_template(adom, name)
+        return {"status": "success", "message": f"Firmware template '{name}' deleted"}
+    except Exception as e:
+        logger.error(f"Failed to delete firmware template {name}: {e}")
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}

@@ -14,7 +14,16 @@ from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_settings
 from fortimanager_mcp.utils.errors import ResourceNotFoundError, client_safe_error
-from fortimanager_mcp.utils.install_gate import package_revision, record_preview
+from fortimanager_mcp.utils.install_gate import package_revision, record_preview, task_state
+from fortimanager_mcp.utils.install_preview import (
+    DEFAULT_PREVIEW_TIMEOUT,
+    PreviewFailed,
+    parse_preview_message,
+    run_install_preview,
+    summarize_task_lines,
+    wait_task_terminal,
+)
+from fortimanager_mcp.utils.install_preview import redact_preview as _redact_preview
 from fortimanager_mcp.utils.responses import error_response
 from fortimanager_mcp.utils.task_guard import TaskSlotsExhausted, spawn_guarded
 from fortimanager_mcp.utils.validation import (
@@ -22,14 +31,16 @@ from fortimanager_mcp.utils.validation import (
     and_filters,
     check_policy_safety,
     collect_scope_values,
-    redact_config_text_secrets,
     resolve_negate_for_safety_check,
     substring_filter,
     validate_adom,
+    validate_install_on,
+    validate_install_scope,
     validate_move_position,
     validate_package_name,
     validate_policy_name,
     validate_security_profiles,
+    validate_task_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -208,20 +219,36 @@ async def clone_package(
     adom: str,
     package: str,
     new_name: str,
+    copy_installation_targets: bool = False,
+    timeout: int = 120,
 ) -> dict[str, Any]:
     """Clone a policy package.
 
-    Creates a copy of an existing package with all its policies.
+    Creates a copy of an existing package with all its policies and waits
+    for FortiManager's clone task to finish.
+
+    By default the clone is NOT assigned to any device, so it can be edited
+    and reviewed without touching the devices that run the source package.
+    Each policy keeps its own "install on" targets (FMG clears them on an
+    unassigned clone; they are copied back from the source).
 
     Args:
         adom: ADOM name
         package: Source package name
         new_name: Name for the cloned package
+        copy_installation_targets: Also copy the source package's device and
+            group assignment (default: False)
+        timeout: Seconds to wait for the clone task (default 120)
 
     Returns:
         dict: Clone result with keys:
             - status: "success" or "error"
             - package: New package name
+            - task_id: FMG clone task
+            - installation_targets_copied: Whether the assignment was copied
+            - policy_targets_restored: IDs of policies whose install-on
+              targets were copied back from the source
+            - warnings: Policies whose targets could not be restored
             - message: Status or error message
 
     Example:
@@ -236,13 +263,65 @@ async def clone_package(
         package = validate_package_name(package)
         new_name = validate_package_name(new_name)
         client = _get_client()
-        await client.clone_package(adom, package, new_name)
 
-        return {
+        targets: dict[int, list[dict[str, Any]]] = {}
+        if not copy_installation_targets:
+            source = await client.get(
+                f"/pm/config/adom/{adom}/pkg/{package}/firewall/policy",
+                fields=["policyid"],
+                option=["scope member"],
+            )
+            for policy in source if isinstance(source, list) else []:
+                if isinstance(policy, dict) and policy.get("scope member"):
+                    targets[int(policy["policyid"])] = policy["scope member"]
+
+        deadline = asyncio.get_event_loop().time() + max(10, min(int(timeout), 600))
+        result = await spawn_guarded(
+            "clone_package",
+            lambda: client.clone_package(
+                adom, package, new_name, scope=None if copy_installation_targets else []
+            ),
+        )
+        task_id = result.get("task") if isinstance(result, dict) else None
+        if task_id is not None:
+            task = await wait_task_terminal(client, int(task_id), deadline)
+            if task_state(task) != "done":
+                lines = summarize_task_lines(await client.get_task_line(int(task_id)))
+                return error_response(
+                    error="clone_failed",
+                    message=f"Clone task {task_id} ended in state '{task_state(task)}'",
+                    operation="clone_package",
+                    adom=adom,
+                    package=package,
+                    task_id=int(task_id),
+                    task_lines=lines,
+                )
+
+        restored: list[int] = []
+        warnings: list[str] = []
+        for policyid, scope in targets.items():
+            try:
+                await client.update(
+                    f"/pm/config/adom/{adom}/pkg/{new_name}/firewall/policy/{policyid}",
+                    data={"scope member": scope},
+                )
+                restored.append(policyid)
+            except Exception as e:
+                msg, _ = client_safe_error(e)
+                warnings.append(f"policy {policyid}: install-on targets not restored ({msg})")
+
+        response: dict[str, Any] = {
             "status": "success",
             "package": new_name,
-            "message": f"Package {package} cloned to {new_name}",
+            "task_id": task_id,
+            "installation_targets_copied": copy_installation_targets,
+            "policy_targets_restored": restored,
+            "message": f"Package {package} cloned to {new_name}"
+            + ("" if copy_installation_targets else " (not assigned to any device)"),
         }
+        if warnings:
+            response["warnings"] = warnings
+        return response
     except Exception as e:
         logger.error(f"Failed to clone package {package}: {e}")
         msg, code = client_safe_error(e)
@@ -356,6 +435,7 @@ async def list_firewall_policies(
             pkg=package,
             fields=fields,
             range=range_param,
+            scope_member=True,
         )
 
         return {
@@ -366,6 +446,66 @@ async def list_firewall_policies(
         }
     except Exception as e:
         logger.error(f"Failed to list policies in {package}: {e}")
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
+
+
+@mcp.tool()
+async def list_policy_blocks(adom: str) -> dict[str, Any]:
+    """List the policy blocks of an ADOM.
+
+    A policy block is a reusable set of policies. A package shows it as a
+    single entry with ``_policy_block`` and empty fields; read its policies
+    with ``list_policy_block_policies``.
+
+    Args:
+        adom: ADOM name
+
+    Returns:
+        dict: status, count, blocks, or message on failure
+    """
+    try:
+        adom = validate_adom(adom)
+        client = _get_client()
+        blocks = await client.list_policy_blocks(adom)
+        return {"status": "success", "count": len(blocks), "blocks": blocks}
+    except Exception as e:
+        logger.error(f"Failed to list policy blocks in {adom}: {e}")
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
+
+
+@mcp.tool()
+async def list_policy_block_policies(
+    adom: str,
+    block: str,
+    fields: list[str] | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List the firewall policies held in a policy block.
+
+    Args:
+        adom: ADOM name
+        block: Policy block name (see list_policy_blocks, or the
+            ``_policy_block`` field of a package entry)
+        fields: Specific fields to return (optional)
+        limit: Maximum number of policies to return (optional)
+        offset: Starting position for pagination (default: 0)
+
+    Returns:
+        dict: status, count, policies, or message on failure
+    """
+    try:
+        adom = validate_adom(adom)
+        block = validate_package_name(block)
+        client = _get_client()
+        policies = await client.list_policy_block_policies(
+            adom, block, fields=fields, range=[offset, limit] if limit else None
+        )
+        return {"status": "success", "count": len(policies), "policies": policies}
+    except Exception as e:
+        logger.error(f"Failed to read policy block {block} in {adom}: {e}")
         msg, code = client_safe_error(e)
         return {"status": "error", "message": msg, "error_code": code}
 
@@ -397,7 +537,7 @@ async def get_firewall_policy(
         adom = validate_adom(adom)
         package = validate_package_name(package)
         client = _get_client()
-        policy = await client.get_firewall_policy(adom, package, policyid)
+        policy = await client.get_firewall_policy(adom, package, policyid, scope_member=True)
 
         return {
             "status": "success",
@@ -567,6 +707,7 @@ async def create_firewall_policy(
     ssl_ssh_profile: str | None = None,
     profile_protocol_options: str | None = None,
     profile_group: str | None = None,
+    install_on: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Create a new firewall policy.
 
@@ -613,6 +754,10 @@ async def create_firewall_policy(
             dnsfilter_profile, application_list, file_filter_profile,
             ssl_ssh_profile, and profile_protocol_options -- FortiOS rejects
             setting both
+        install_on: Install the policy only on these targets (optional; by
+            default it installs on every device the package goes to). Each
+            entry is a device {"name": "branch1", "vdom": "root"} or a device
+            group {"name": "emea_spokes"}
 
     Returns:
         dict: Create result with keys:
@@ -673,6 +818,7 @@ async def create_firewall_policy(
             ssl_ssh_profile=ssl_ssh_profile,
             profile_protocol_options=profile_protocol_options,
         )
+        targets = validate_install_on(install_on) if install_on is not None else None
         client = _get_client()
 
         policy: dict[str, Any] = {
@@ -699,6 +845,8 @@ async def create_firewall_policy(
             policy["dstaddr-negate"] = "enable" if dstaddr_negate else "disable"
         if service_negate is not None:
             policy["service-negate"] = "enable" if service_negate else "disable"
+        if targets:
+            policy["scope member"] = targets
         policy.update(
             _build_security_profile_fields(
                 utm_status=utm_status,
@@ -762,6 +910,7 @@ async def update_firewall_policy(
     ssl_ssh_profile: str | None = None,
     profile_protocol_options: str | None = None,
     profile_group: str | None = None,
+    install_on: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Update an existing firewall policy.
 
@@ -804,6 +953,10 @@ async def update_firewall_policy(
             exclusive with av_profile, ips_sensor, webfilter_profile,
             dnsfilter_profile, application_list, file_filter_profile,
             ssl_ssh_profile, and profile_protocol_options in the same call
+        install_on: Replace the policy's install-on targets (optional):
+            devices {"name": "branch1", "vdom": "root"} and/or device groups
+            {"name": "emea_spokes"}. An empty list clears them, so the policy
+            installs on every device the package goes to
 
     Note:
         Sending any individual security-profile field (av_profile,
@@ -908,6 +1061,9 @@ async def update_firewall_policy(
             data["dstaddr-negate"] = "enable" if dstaddr_negate else "disable"
         if service_negate is not None:
             data["service-negate"] = "enable" if service_negate else "disable"
+        if install_on is not None:
+            # FMG replaces the list on update; [] clears it (verified live, 8.0.2).
+            data["scope member"] = validate_install_on(install_on)
         data.update(
             _build_security_profile_fields(
                 utm_status=utm_status,
@@ -1387,42 +1543,51 @@ async def get_policy_services(
 @mcp.tool()
 async def preview_install(
     adom: str,
-    package: str,
+    package: str | None,
     devices: list[dict[str, str]],
+    timeout: int = DEFAULT_PREVIEW_TIMEOUT,
 ) -> dict[str, Any]:
-    """Preview installation changes before applying.
+    """Preview what installing a policy package (or device settings) would push.
 
-    Shows what configuration changes would be made to devices
-    without actually installing the package. Use this to verify
-    changes before deployment.
+    Runs FortiManager's full Install Preview and returns the result in one
+    call: stages the install (nothing reaches the device), renders the CLI
+    it would push, then discards the staged copy. Staging is also where an
+    uninstallable package fails -- e.g. a normalized interface with no
+    mapping for a device -- so a failed preview returns the FMG task lines
+    explaining why.
+
+    A successful package preview also authorizes one install_package of the
+    same ADOM/package/devices (FMG_INSTALL_SAFETY gate).
 
     Args:
         adom: ADOM name
-        package: Policy package name (optional, preview device settings if None)
+        package: Policy package name, or None to preview pending device
+            settings (what install_device_settings would push)
         devices: Target devices [{"name": "FGT1", "vdom": "root"}, ...]
+        timeout: Wall-clock budget in seconds for the whole preview
+            (default 300, max 900)
 
     Returns:
-        dict: Preview result with keys:
-            - status: "success" or "error"
-            - task_id: Task ID for retrieving preview results
-            - message: Status or error message
+        dict: status, task_id (the render task), staging_task_id, and
+        devices: [{"name", "has_changes", "preview"}] where preview is the
+        FortiOS CLI the install would send (credentials redacted). On a
+        failed step: status "error", error "preview_failed", step, and
+        task_lines with FortiManager's reason.
 
     Example:
-        >>> # Start preview
         >>> result = await preview_install(
         ...     adom="root",
         ...     package="default",
-        ...     devices=[{"name": "FGT-HQ", "vdom": "root"}]
+        ...     devices=[{"name": "FGT-HQ", "vdom": "root"}],
         ... )
-        >>> # Wait for preview to complete, then get results
-        >>> if result["status"] == "success":
-        ...     from fortimanager_mcp.tools.system_tools import wait_for_task
-        ...     await wait_for_task(result["task_id"])
-        ...     preview = await get_preview_result(...)
+        >>> for dev in result["devices"]:
+        ...     print(dev["name"], dev["preview"])
     """
     try:
         adom = validate_adom(adom)
-        package = validate_package_name(package)
+        if package is not None:
+            package = validate_package_name(package)
+        devices = validate_install_scope(devices)
         client = _get_client()
 
         # Capture the package revision BEFORE submitting the preview (#25):
@@ -1430,28 +1595,44 @@ async def preview_install(
         # read, the recorded revision is older and the install gate fails
         # safe (forces a re-preview) instead of passing a stale one. None
         # (fetch failed / field absent) degrades the gate to TTL + single-use.
-        revision = await package_revision(client, adom, package)
+        revision = await package_revision(client, adom, package) if package else None
 
-        result = await spawn_guarded(
-            "preview_install",
-            lambda: client.install_preview(
-                adom=adom,
-                scope=devices,
-                flags=["json"],
-            ),
-        )
+        result = await run_install_preview(client, adom, package, devices, timeout)
 
-        task_id = result.get("task")
-        if task_id is not None:
+        if package is not None:
             # Record for the preview-before-install gate: install_package
             # verifies this task finished — and the package is unchanged —
             # before installing the same target.
-            record_preview(adom, package, devices, task_id, revision=revision)
-        return {
+            record_preview(adom, package, devices, result["preview_task_id"], revision=revision)
+        response: dict[str, Any] = {
             "status": "success",
-            "task_id": task_id,
-            "message": f"Preview started, task ID: {task_id}",
+            "task_id": result["preview_task_id"],
+            "staging_task_id": result["staging_task_id"],
+            "package": package,
         }
+        if "devices" in result:
+            response["devices"] = result["devices"]
+            changed = [d["name"] for d in result["devices"] if d["has_changes"]]
+            response["message"] = (
+                f"Install would change {', '.join(map(str, changed))}"
+                if changed
+                else "Install would push no changes"
+            )
+        else:
+            response["preview"] = result["raw"]
+            response["message"] = "Preview finished (unrecognized result envelope, returned raw)"
+        return response
+    except PreviewFailed as e:
+        return error_response(
+            error="preview_failed",
+            message=e,
+            operation="preview_install",
+            adom=adom,
+            package=package,
+            step=e.step,
+            task_id=e.task_id,
+            task_lines=e.lines,
+        )
     except TaskSlotsExhausted as e:
         return error_response(
             error="task_slots_exhausted",
@@ -1461,92 +1642,28 @@ async def preview_install(
             package=package,
         )
     except Exception as e:
-        logger.error(f"Failed to start preview: {e}")
+        logger.error(f"Failed to preview install: {e}")
         msg, code = client_safe_error(e)
         return {"status": "error", "message": msg, "error_code": code}
-
-
-def _redact_preview(value: Any) -> Any:
-    """Run the CLI-text redactor over every string in a preview result.
-
-    An install preview is the pending device config rendered as FortiOS CLI,
-    so it carries "set psksecret ...", "set password ..." and the rest in
-    clear, exactly like the revision content get_device_revision already
-    redacts. This tool returned it raw (upstream #71).
-
-    Walks the structure instead of reaching for a known key: the endpoint's
-    envelope is not pinned anywhere in this repo, and redacting only the key
-    we happen to expect would leak the moment FortiManager nests it
-    differently. redact_config_text_secrets only rewrites lines that match
-    "set <secret-directive>", so running it over an unrelated string is a
-    no-op rather than damage.
-
-    Not measured against a preview that actually contains a credential --
-    that needs a pending change carrying one, which is why the finding was
-    filed unmeasured. The redactor itself is pinned by its own tests.
-    """
-    if isinstance(value, str):
-        return redact_config_text_secrets(value)
-    if isinstance(value, dict):
-        return {k: _redact_preview(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return _redact_preview_list(value)
-    return value
-
-
-def _redact_preview_list(value: list[Any]) -> list[Any]:
-    """Redact a list, treating each run of strings as one block of CLI.
-
-    redact_config_text_secrets handles a quoted value spanning several
-    lines by consuming continuation lines until the quote closes. That
-    tracking lives inside one string, so redacting each element on its own
-    matched only the line carrying the directive and let every later line
-    of the same secret through verbatim (upstream #85).
-
-    Joining a run and redacting it as one text gives those lines the same
-    treatment they get when the preview arrives as a single string. The
-    result is SHORTER than the input when a secret spanned elements,
-    because the redactor drops the continuation lines rather than keeping
-    them partially: that is the same fail-closed trade the single-string
-    path already makes, and the lines it drops carry only secret content.
-
-    Only CONTIGUOUS runs are joined. A non-string element belongs to a
-    different part of the envelope, so an unterminated quote must not
-    reach across it and eat the far side.
-    """
-    out: list[Any] = []
-    run: list[str] = []
-
-    def flush() -> None:
-        if not run:
-            return
-        redacted = redact_config_text_secrets("\n".join(run))
-        out.extend(redacted.split("\n") if redacted else [])
-        run.clear()
-
-    for item in value:
-        if isinstance(item, str):
-            run.append(item)
-            continue
-        flush()
-        out.append(_redact_preview(item))
-    flush()
-    return out
 
 
 @mcp.tool()
 async def get_preview_result(
     adom: str,
     devices: list[dict[str, str]],
+    preview_taskid: int | None = None,
 ) -> dict[str, Any]:
-    """Get the result of an installation preview.
+    """Re-fetch the result of an installation preview.
 
-    Call this after preview_install() task completes to see
-    the detailed configuration changes.
+    preview_install already returns its result; this is for reading a
+    preview staged elsewhere (e.g. the GUI install wizard).
 
     Args:
         adom: ADOM name
         devices: Target devices [{"name": "FGT1", "vdom": "root"}, ...]
+        preview_taskid: Staging task id of the preview (staging_task_id from
+            preview_install). Omitted, FortiManager uses its last install
+            task, which may not be the preview you mean.
 
     Returns:
         dict: Preview results with keys:
@@ -1556,10 +1673,15 @@ async def get_preview_result(
     """
     try:
         adom = validate_adom(adom)
+        if preview_taskid is not None:
+            preview_taskid = validate_task_id(preview_taskid)
         client = _get_client()
 
-        result = await client.get_preview_result(adom, devices)
+        result = await client.get_preview_result(adom, devices, preview_taskid=preview_taskid)
 
+        decoded = parse_preview_message(result)
+        if decoded is not None:
+            result = {**result, "message": decoded}
         return {
             "status": "success",
             "preview": _redact_preview(result),

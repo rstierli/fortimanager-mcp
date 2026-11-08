@@ -153,6 +153,48 @@ class TestDiffDeviceRevision:
         assert "+    set hostname new" in result["diff"]
 
     @pytest.mark.asyncio
+    async def test_export_noise_is_not_a_change(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        def mock_execute(url: str, **kwargs):
+            if url == "/deployment/checkout/revision":
+                return (0, {"content": "#platform=FortiGate-VM64\nconfig a\n\nend\n\n"})
+            return (0, {"content": "#platform=FORTIGATE-VM64\nconfig a\nend\n"})
+
+        mock_fmg_instance.execute.side_effect = mock_execute
+        with patch.object(revision_tools, "get_fmg_client", return_value=mock_client):
+            result = await revision_tools.diff_device_revision("hub2", revision=7)
+
+        assert result["changed"] is False
+
+    @pytest.mark.asyncio
+    async def test_sections_limit_the_diff(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        def config(asn: str, hostname: str) -> str:
+            return (
+                f"config system global\nset hostname {hostname}\nend\n"
+                f"config router bgp\nset as {asn}\nconfig neighbor\nedit a\nnext\nend\n"
+                f"set router-id {asn}\nend\n"
+            )
+
+        def mock_execute(url: str, **kwargs):
+            if url == "/deployment/checkout/revision":
+                return (0, {"content": config("1", "old")})
+            return (0, {"content": config("2", "new")})
+
+        mock_fmg_instance.execute.side_effect = mock_execute
+        with patch.object(revision_tools, "get_fmg_client", return_value=mock_client):
+            result = await revision_tools.diff_device_revision(
+                "hub2", revision=7, sections=["config router bgp", "router static"]
+            )
+
+        assert "+set as 2" in result["diff"]
+        assert "hostname" not in result["diff"]
+        assert "+set router-id 2" in result["diff"]
+        assert result["sections_missing"] == ["router static"]
+
+    @pytest.mark.asyncio
     async def test_reports_unchanged_when_identical(
         self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
     ) -> None:

@@ -118,6 +118,41 @@ class TestGetDeviceInterfaceConfig:
         ]
 
     @pytest.mark.asyncio
+    async def test_credential_fields_are_stripped(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        enc = ["ENC", "opaque"]
+        stored = [
+            {
+                "name": "port2",
+                "eap-password": enc,
+                "pptp-password": enc,
+                "password": enc,
+                "wifi-key": enc,
+                "wifi-passphrase": enc,
+                "l2tp-client-settings": {"user": "u", "password": enc},
+                "wifi-networks": [
+                    {"wifi-ssid": "s", "wifi-key": enc, "wifi-private-key-password": enc}
+                ],
+                "status": 1,
+            }
+        ]
+        mock_fmg_instance.get.side_effect = lambda url, **kw: (0, stored)
+
+        with patch.object(dvm_tools, "get_fmg_client", return_value=mock_client):
+            result = await dvm_tools.get_device_interface_config(device="FGT-01", name="port2")
+
+        assert result["interfaces"] == [
+            {
+                "name": "port2",
+                "l2tp-client-settings": {"user": "u"},
+                "wifi-networks": [{"wifi-ssid": "s"}],
+                "status": 1,
+            }
+        ]
+        assert "ENC" not in repr(result)
+
+    @pytest.mark.asyncio
     async def test_not_connected(self) -> None:
         with patch.object(dvm_tools, "get_fmg_client", return_value=None):
             result = await dvm_tools.get_device_interface_config(device="FGT-01")
@@ -274,6 +309,7 @@ MOCK_DETECTED = [
                     "fortiap_ssid": "kids-wifi",
                     "fortiap_name": "ap-livingroom",
                     "fortiswitch_id": "sw-example",
+                    "fortiswitch_serial": "S108EXAMPLE00001",
                     "fortiswitch_port_name": "port22",
                     "fortiswitch_vlan_id": 15,
                     "dhcp_lease_status": "leased",
@@ -320,6 +356,7 @@ class TestGetDeviceClientLocation:
         assert loc["fortiap_id"] == "FP-EXAMPLE-001"
         assert loc["fortiap_ssid"] == "kids-wifi"
         assert loc["fortiswitch_port"] == "port22"
+        assert loc["fortiswitch_serial"] == "S108EXAMPLE00001"
         assert loc["vlan_id"] == 15
         assert loc["is_online"] is True
         # hits the detected-device monitor endpoint

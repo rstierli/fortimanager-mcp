@@ -840,6 +840,32 @@ class FortiManagerClient:
 
         return await self._execute_resilient(_factory)
 
+    async def get_verbose(self, url: str, **kwargs: Any) -> Any:
+        """GET with ``"verbose": 1``: enum fields come back as their CLI names.
+
+        Without it FortiManager returns enums as integers (``action: 1``);
+        with it, ``action: "accept"`` -- the same spelling FortiOS uses in
+        the device's own configuration, which is what makes a field-by-field
+        comparison against device config text possible. pyfmg only exposes
+        the flag as instance state, so it is set and cleared inside the
+        worker call; ``_run_fmg_call`` serializes calls on the shared session,
+        so no other request can observe it set.
+        """
+
+        def _verbose_get(fmg: FortiManager) -> Any:
+            fmg.verbose = True
+            try:
+                return fmg.get(url, **kwargs)
+            finally:
+                fmg.verbose = False
+
+        async def _factory() -> Any:
+            fmg = self._ensure_connected()
+            code, response = await self._run_fmg_call(_verbose_get, fmg)
+            return self._handle_response(code, response, f"GET {url}")
+
+        return await self._execute_resilient(_factory)
+
     async def clone(self, url: str, **kwargs: Any) -> Any:
         """Execute CLONE request with bounded reconnect + transient-retry resilience."""
         return await self._generic_request("clone", url, **kwargs)
@@ -1073,6 +1099,7 @@ class FortiManagerClient:
         adom: str,
         device: dict[str, Any],
         flags: list[str] | None = None,
+        groups: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         """Add a device to FortiManager.
 
@@ -1088,10 +1115,14 @@ class FortiManagerClient:
                 - sn: Serial number
                 - mgmt_mode: Management mode (fmg, faz, fmgfaz)
                 - device action: "add_model" for offline provisioning
+            groups: Device groups to join on add, as ``[{"name", "vdom"}]``
+                (``data.groups`` in the 8.0 dvmcmd schema)
         """
         data: dict[str, Any] = {"adom": adom, "device": device}
         if flags:
             data["flags"] = flags
+        if groups:
+            data["groups"] = groups
 
         return await self.execute("/dvm/cmd/add/device", **data)
 
@@ -1340,10 +1371,14 @@ class FortiManagerClient:
         adom: str,
         scope: list[dict[str, str]],
         flags: list[str] | None = None,
+        dev_rev_comments: str | None = None,
     ) -> dict[str, Any]:
         """Install device settings only (without policy package).
 
         FNDN: EXEC /securityconsole/install/device
+
+        Args:
+            dev_rev_comments: Comment for the device revision the install creates
         """
         data: dict[str, Any] = {
             "adom": adom,
@@ -1351,6 +1386,8 @@ class FortiManagerClient:
         }
         if flags:
             data["flags"] = flags
+        if dev_rev_comments:
+            data["dev_rev_comments"] = dev_rev_comments
 
         return await self.execute("/securityconsole/install/device", **data)
 
@@ -1359,13 +1396,23 @@ class FortiManagerClient:
         adom: str,
         scope: list[dict[str, str]],
         flags: list[str] | None = None,
+        preview_taskid: int | None = None,
     ) -> dict[str, Any]:
-        """Preview installation before applying.
+        """Render the install preview for a staged install task.
 
         FNDN: EXEC /securityconsole/install/preview
 
+        Only meaningful after an install/package or install/device call made
+        with ``flags=["preview"]``: that call stages the change ("generate
+        preview cache only"), and this one renders it. ``preview_taskid``
+        names the staging task; when omitted, FortiManager falls back to the
+        last install task, which is how an un-staged call ends up previewing
+        whatever happened to run last instead of the package asked about.
+
         Args:
             flags: Preview flags (e.g., ["json"] for JSON output)
+            preview_taskid: Task id of the staging install/package or
+                install/device call
         """
         data: dict[str, Any] = {
             "adom": adom,
@@ -1373,6 +1420,8 @@ class FortiManagerClient:
         }
         if flags:
             data["flags"] = flags
+        if preview_taskid is not None:
+            data["preview_taskid"] = preview_taskid
 
         return await self.execute("/securityconsole/install/preview", **data)
 
@@ -1380,16 +1429,52 @@ class FortiManagerClient:
         self,
         adom: str,
         scope: list[dict[str, str]],
+        preview_taskid: int | None = None,
     ) -> dict[str, Any]:
         """Get preview result after install/preview completes.
 
         FNDN: EXEC /securityconsole/preview/result
+
+        Returns:
+            {"message": <str>} -- on FMG 8.0 the message is itself a JSON
+            list of {"name", "oid", "result"} per device, ``result`` holding
+            the CLI that would be installed.
         """
-        return await self.execute(
-            "/securityconsole/preview/result",
-            adom=adom,
-            scope=scope,
-        )
+        data: dict[str, Any] = {"adom": adom, "scope": scope}
+        if preview_taskid is not None:
+            data["preview_taskid"] = preview_taskid
+        return await self.execute("/securityconsole/preview/result", **data)
+
+    async def cancel_install(
+        self,
+        adom: str,
+        preview_taskid: int | None = None,
+    ) -> dict[str, Any]:
+        """Discard a staged (preview) install and release its wizard session.
+
+        FNDN: EXEC /securityconsole/package/cancel/install
+
+        A ``flags=["preview"]`` install holds the target devices in an
+        install-wizard session until it is installed or cancelled; while it
+        is held, other installs and previews of those devices queue behind it
+        ("Blocked by preview/install wizard"). Live-verified on FMG 8.0.2.
+        """
+        data: dict[str, Any] = {"adom": adom}
+        if preview_taskid is not None:
+            data["preview_taskid"] = preview_taskid
+        return await self.execute("/securityconsole/package/cancel/install", **data)
+
+    async def get_package_status(self, adom: str) -> list[dict[str, Any]]:
+        """Per-device install status of every assigned policy package in an ADOM.
+
+        FNDN: GET /pm/config/adom/{adom}/_package/status
+
+        Returns:
+            [{"dev": <str>, "vdom": <str>, "pkg": <str>,
+              "status": "installed" | "modified" | "out of sync" | ...}, ...]
+        """
+        result = await self.get(f"/pm/config/adom/{adom}/_package/status")
+        return result if isinstance(result, list) else [result] if result else []
 
     # =========================================================================
     # Cache Diff -- ADOM/package revision comparison (issue: revision-tools)
@@ -1550,17 +1635,20 @@ class FortiManagerClient:
         adom: str,
         pkg: str,
         new_name: str,
+        scope: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
-        """Clone a policy package.
+        """Clone a policy package. Returns ``{"task": id}``.
 
-        FNDN: EXEC /securityconsole/package/clone
+        FNDN: EXEC /securityconsole/package/clone (8.0 ``securityconsole.json``):
+        the new name goes in ``dst_name``. ``scope=None`` copies the source's
+        installation targets, package-level and per-policy; ``scope=[]``
+        leaves the clone unassigned, and FMG then also clears every per-policy
+        install-on target (verified live on 8.0.2).
         """
-        return await self.execute(
-            "/securityconsole/package/clone",
-            adom=adom,
-            pkg=pkg,
-            new_name=new_name,
-        )
+        params: dict[str, Any] = {"adom": adom, "pkg": pkg, "dst_name": new_name}
+        if scope is not None:
+            params["scope"] = scope
+        return await self.execute("/securityconsole/package/clone", **params)
 
     async def assign_package(
         self,
@@ -1586,12 +1674,17 @@ class FortiManagerClient:
         filter: list | None = None,
         loadsub: int = 0,
         range: list[int] | None = None,
+        scope_member: bool = False,
     ) -> list[dict[str, Any]]:
         """List firewall policies in a package.
+
+        ``scope_member`` adds each policy's install-on targets.
 
         FNDN: GET /pm/config/adom/{adom}/pkg/{pkg}/firewall/policy
         """
         params: dict[str, Any] = {"loadsub": loadsub}
+        if scope_member:
+            params["option"] = ["scope member"]
         if fields:
             params["fields"] = fields
         if filter:
@@ -1608,15 +1701,48 @@ class FortiManagerClient:
         pkg: str,
         policyid: int,
         loadsub: int = 0,
+        scope_member: bool = False,
     ) -> dict[str, Any]:
         """Get a specific firewall policy.
 
+        ``scope_member`` adds the policy's install-on targets.
+
         FNDN: GET /pm/config/adom/{adom}/pkg/{pkg}/firewall/policy/{policyid}
         """
+        params: dict[str, Any] = {"loadsub": loadsub}
+        if scope_member:
+            params["option"] = ["scope member"]
         return await self.get(
             f"/pm/config/adom/{adom}/pkg/{pkg}/firewall/policy/{policyid}",
-            loadsub=loadsub,
+            **params,
         )
+
+    async def list_policy_blocks(self, adom: str) -> list[dict[str, Any]]:
+        """List the policy blocks of an ADOM.
+
+        FNDN: GET /pm/pblock/adom/{adom}
+        """
+        result = await self.get(f"/pm/pblock/adom/{adom}")
+        return result if isinstance(result, list) else [result] if result else []
+
+    async def list_policy_block_policies(
+        self,
+        adom: str,
+        block: str,
+        fields: list[str] | None = None,
+        range: list[int] | None = None,
+    ) -> list[dict[str, Any]]:
+        """List the firewall policies held in a policy block.
+
+        FNDN: GET /pm/config/adom/{adom}/pblock/{block}/firewall/policy
+        """
+        params: dict[str, Any] = {}
+        if fields:
+            params["fields"] = fields
+        if range:
+            params["range"] = range
+        result = await self.get(f"/pm/config/adom/{adom}/pblock/{block}/firewall/policy", **params)
+        return result if isinstance(result, list) else [result] if result else []
 
     async def get_firewall_policy_count(
         self,
@@ -2201,6 +2327,13 @@ class FortiManagerClient:
         result = await self.get(f"/pm/config/adom/{adom}/obj/firewall/ssl-ssh-profile", **params)
         return result if isinstance(result, list) else [result] if result else []
 
+    async def get_profile_group(self, adom: str, name: str) -> dict[str, Any]:
+        """Get a firewall security profile group.
+
+        FNDN: GET /pm/config/adom/{adom}/obj/firewall/profile-group/{name}
+        """
+        return await self.get(f"/pm/config/adom/{adom}/obj/firewall/profile-group/{name}")
+
     async def get_ssl_ssh_profile(self, adom: str, name: str) -> dict[str, Any]:
         """Get a specific SSL/SSH inspection profile.
 
@@ -2692,6 +2825,24 @@ class FortiManagerClient:
         result = await self.get(f"/pm/config/adom/{adom}/obj/cli/template-group", **params)
         return result if isinstance(result, list) else [result] if result else []
 
+    async def list_cli_templates(self, adom: str) -> list[dict[str, Any]]:
+        """List CLI templates without their scripts.
+
+        FNDN: GET /pm/config/adom/{adom}/obj/cli/template
+        """
+        result = await self.get(
+            f"/pm/config/adom/{adom}/obj/cli/template",
+            fields=["name", "type", "description", "variables"],
+        )
+        return result if isinstance(result, list) else [result] if result else []
+
+    async def get_cli_template(self, adom: str, name: str) -> dict[str, Any]:
+        """Get a CLI template with its script.
+
+        FNDN: GET /pm/config/adom/{adom}/obj/cli/template/{name}
+        """
+        return await self.get(f"/pm/config/adom/{adom}/obj/cli/template/{name}")
+
     async def get_cli_template_group(
         self,
         adom: str,
@@ -2853,6 +3004,141 @@ class FortiManagerClient:
         FNDN: GET /pm/config/device/{device}/vdom/{vdom}/system/sdwan
         """
         return await self.get(f"/pm/config/device/{device}/vdom/{vdom}/system/sdwan")
+
+    async def get_sdwan_template_config(
+        self,
+        adom: str,
+        name: str,
+    ) -> dict[str, Any]:
+        """Get the SD-WAN configuration held inside a wanprof template.
+
+        ``get_sdwan_template`` reads ``/pm/wanprof/adom/{adom}/{name}``, which
+        is the template's package metadata (name, scope, type) and carries no
+        members, health-checks or rules. The configuration itself lives under
+        the template's own cdb subtree.
+
+        FNDN: GET /pm/config/adom/{adom}/wanprof/{wanprof}/system/sdwan
+        """
+        return await self.get(f"/pm/config/adom/{adom}/wanprof/{name}/system/sdwan")
+
+    async def get_bgp_template_config(
+        self,
+        adom: str,
+        name: str,
+    ) -> dict[str, Any]:
+        """Get the ``router bgp`` configuration held inside a BGP template.
+
+        As with SD-WAN templates, ``get_template`` returns only the template
+        metadata (``/pm/template/adom/{adom}/{name}``); the BGP body is in the
+        template's cdb subtree.
+
+        The path includes the template's stype: without it FortiManager answers
+        -11 "No permission for the resource", even for a super user.
+
+        A full read leaves ``route-reflector-client`` out of the neighbor
+        groups and only a read naming the field returns it (measured on FMG
+        8.0.2), so that second read is merged in. A missing value must not
+        cost the rest of the template.
+
+        FNDN: GET /pm/config/adom/{adom}/template/router_bgp/{template}/router/bgp
+        """
+        url = f"/pm/config/adom/{adom}/template/router_bgp/{name}/router/bgp"
+        bgp = await self.get(url)
+        groups = bgp.get("neighbor-group") if isinstance(bgp, dict) else None
+        if not groups:
+            return bgp
+        try:
+            flags = await self.get(
+                f"{url}/neighbor-group", fields=["name", "route-reflector-client"]
+            )
+        except Exception as e:
+            logger.warning(f"Could not read route-reflector-client of template {name}: {e}")
+            return bgp
+        by_name = {g.get("name"): g for g in flags if isinstance(g, dict)}
+        for group in groups:
+            flag = by_name.get(group.get("name"), {}).get("route-reflector-client")
+            if flag is not None:
+                group["route-reflector-client"] = flag
+        return bgp
+
+    async def get_bgp_template_neighbor_group(
+        self, adom: str, name: str, group: str, fields: list[str]
+    ) -> dict[str, Any]:
+        """Read named fields of a neighbor group inside a BGP template.
+
+        FNDN: GET /pm/config/adom/{adom}/template/router_bgp/{template}/router/bgp/neighbor-group/{group}
+        """
+        url = f"/pm/config/adom/{adom}/template/router_bgp/{name}/router/bgp/neighbor-group/{group}"
+        return await self.get(url, fields=fields)
+
+    async def update_bgp_template_neighbor_group(
+        self, adom: str, name: str, group: str, data: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Update fields of a neighbor group inside a BGP template.
+
+        FNDN: UPDATE /pm/config/adom/{adom}/template/router_bgp/{template}/router/bgp/neighbor-group/{group}
+        """
+        url = f"/pm/config/adom/{adom}/template/router_bgp/{name}/router/bgp/neighbor-group/{group}"
+        return await self.update(url, **data)
+
+    async def update_metadata_mapping(
+        self, adom: str, name: str, device: str, vdom: str, value: str
+    ) -> Any:
+        """Change one per-device value of a metadata variable.
+
+        A mapping is addressed by ``{device}/{vdom}``, not by its oid.
+
+        FNDN: UPDATE /pm/config/adom/{adom}/obj/fmg/variable/{name}/dynamic_mapping/{device}/{vdom}
+        """
+        return await self.update(
+            f"/pm/config/adom/{adom}/obj/fmg/variable/{name}/dynamic_mapping/{device}/{vdom}",
+            value=value,
+        )
+
+    async def add_metadata_mapping(
+        self, adom: str, name: str, device: str, vdom: str, value: str
+    ) -> Any:
+        """Add a per-device value to a metadata variable.
+
+        FNDN: ADD /pm/config/adom/{adom}/obj/fmg/variable/{name}/dynamic_mapping
+        """
+        return await self.add(
+            f"/pm/config/adom/{adom}/obj/fmg/variable/{name}/dynamic_mapping",
+            **{"_scope": [{"name": device, "vdom": vdom}], "value": value},
+        )
+
+    async def get_metadata_variables(self, adom: str) -> Any:
+        """Get the ADOM's metadata variables with their per-device values.
+
+        Each variable carries its default ``value`` and a ``dynamic_mapping``
+        table of ``{"_scope": [{"name": dev, "vdom": ...}], "value": ...}``
+        entries -- the per-device values a blueprint import sets.
+
+        FNDN: GET /pm/config/adom/{adom}/obj/fmg/variable
+        """
+        return await self.get(f"/pm/config/adom/{adom}/obj/fmg/variable")
+
+    async def get_device_bgp(
+        self,
+        device: str,
+        vdom: str = "root",
+    ) -> dict[str, Any]:
+        """Get the device-DB ``router bgp`` config for a managed device.
+
+        FNDN: GET /pm/config/device/{device}/vdom/{vdom}/router/bgp
+        """
+        return await self.get(f"/pm/config/device/{device}/vdom/{vdom}/router/bgp")
+
+    async def get_device_static_routes(
+        self,
+        device: str,
+        vdom: str = "root",
+    ) -> Any:
+        """Get the device-DB ``router static`` table for a managed device.
+
+        FNDN: GET /pm/config/device/{device}/vdom/{vdom}/router/static
+        """
+        return await self.get(f"/pm/config/device/{device}/vdom/{vdom}/router/static")
 
     async def get_device_interface_config(
         self,
@@ -3607,3 +3893,30 @@ class FortiManagerClient:
                 "name": profile_name,
             },
         )
+
+    # Firmware templates (FNDN 8.0 "Firmware Template", fwmprof). The template
+    # itself lives at /pm/fwmprof/adom/{adom}; its settings, including the
+    # enforced version per platform, are the "fwmprof setting" sub-object.
+
+    async def list_firmware_templates(self, adom: str) -> list[dict[str, Any]]:
+        """List firmware templates with their settings and assignment.
+
+        FNDN: GET /pm/fwmprof/adom/{adom}
+        """
+        result = await self.get(f"/pm/fwmprof/adom/{adom}")
+        rows = result if isinstance(result, list) else [result] if result else []
+        return [r for r in rows if isinstance(r, dict)]
+
+    async def create_firmware_template(self, adom: str, template: dict[str, Any]) -> Any:
+        """Create a firmware template.
+
+        FNDN: ADD /pm/fwmprof/adom/{adom}
+        """
+        return await self.add(f"/pm/fwmprof/adom/{adom}", data=template)
+
+    async def delete_firmware_template(self, adom: str, name: str) -> Any:
+        """Delete a firmware template.
+
+        FNDN: DELETE /pm/fwmprof/adom/{adom}/{name}
+        """
+        return await self.delete(f"/pm/fwmprof/adom/{adom}/{name}")

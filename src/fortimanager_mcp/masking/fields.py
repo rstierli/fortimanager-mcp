@@ -121,6 +121,7 @@ FIELD_TYPES: dict[str, str] = {
     # certificates it placeholders rather than leaks. Fails in the safe
     # direction, but it is a real cost, not a free entry.
     "serial": SERIAL,  # live: 7.4.12 FortiGate monitor envelope
+    "fortiswitch_serial": SERIAL,  # live: 7.4.12 user/device/query
     "hostname": HOSTNAME,  # live: 7.6.7 get_system_status "Hostname"
     # Address objects.
     "start_ip": IP,  # live: 8.0.0 list_addresses "start-ip"

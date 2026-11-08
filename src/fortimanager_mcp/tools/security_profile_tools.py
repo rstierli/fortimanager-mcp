@@ -81,6 +81,32 @@ async def _list_objects(
 
 
 @mcp.tool()
+async def get_profile_group(adom: str, name: str) -> dict[str, Any]:
+    """Get a firewall security profile group.
+
+    Shows which profiles a policy using ``profile-group`` really applies:
+    antivirus, IPS, application control, web filter, SSL inspection and so on.
+
+    Args:
+        adom: ADOM name
+        name: Profile group name
+
+    Returns:
+        dict: status, profile_group, or message on failure
+    """
+    try:
+        adom = validate_adom(adom)
+        name = validate_object_name(name, "profile group")
+        client = _get_client()
+        group = await client.get_profile_group(adom, name)
+        return {"status": "success", "profile_group": group}
+    except Exception as e:
+        logger.error(f"Failed to get profile group {name}: {e}")
+        msg, code = client_safe_error(e)
+        return {"status": "error", "message": msg, "error_code": code}
+
+
+@mcp.tool()
 async def list_antivirus_profiles(
     adom: str | None = None,
     name_filter: str | None = None,

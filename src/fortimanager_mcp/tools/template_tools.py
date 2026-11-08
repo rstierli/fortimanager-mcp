@@ -15,12 +15,16 @@ from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_default_adom
 from fortimanager_mcp.utils.errors import client_safe_error
 from fortimanager_mcp.utils.validation import (
+    redact_config_text_secrets,
     validate_adom,
     validate_device_name,
     validate_object_name,
 )
 
 logger = logging.getLogger(__name__)
+
+#: ``type`` of a CLI template (``obj/cli/template``).
+_CLI_TEMPLATE_TYPES: dict[Any, str] = {0: "cli", 1: "jinja"}
 
 # =============================================================================
 # Provisioning Templates (General)
@@ -294,6 +298,86 @@ async def unassign_system_template(
 # =============================================================================
 # CLI Template Groups
 # =============================================================================
+
+
+@mcp.tool()
+async def list_cli_templates(
+    adom: str | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    """List CLI templates in an ADOM, without their scripts.
+
+    Args:
+        adom: ADOM name (default: from DEFAULT_ADOM env var, or "root")
+        limit: Maximum number to return
+
+    Returns:
+        dict: adom, count, cli_templates (name, type, description, variables)
+    """
+    adom = adom or get_default_adom()
+    client = get_fmg_client()
+    if not client:
+        return {"error": "FortiManager client not connected"}
+
+    try:
+        adom = validate_adom(adom)
+        templates = await client.list_cli_templates(adom=adom)
+        templates = [
+            {
+                "name": t.get("name"),
+                "type": _CLI_TEMPLATE_TYPES.get(t.get("type"), t.get("type")),
+                "description": t.get("description"),
+                "variables": t.get("variables"),
+            }
+            for t in templates[:limit]
+        ]
+        return {"adom": adom, "count": len(templates), "cli_templates": templates}
+    except Exception as e:
+        logger.error(f"Template tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
+
+
+@mcp.tool()
+async def get_cli_template(
+    adom: str,
+    name: str,
+) -> dict[str, Any]:
+    """Read a CLI template, with its script.
+
+    ``get_cli_template_group`` lists a group's members only; this returns what
+    a member pushes. Secret directives in the script are redacted, so the
+    result shows that a template sets a password, not the value.
+
+    Args:
+        adom: ADOM name
+        name: CLI template name (see list_cli_templates)
+
+    Returns:
+        dict: cli_template with name, type, description, variables, script
+    """
+    client = get_fmg_client()
+    if not client:
+        return {"error": "FortiManager client not connected"}
+
+    try:
+        adom = validate_adom(adom)
+        name = validate_object_name(name, "CLI template")
+        template = await client.get_cli_template(adom=adom, name=name)
+        script = template.get("script")
+        return {
+            "cli_template": {
+                "name": template.get("name"),
+                "type": _CLI_TEMPLATE_TYPES.get(template.get("type"), template.get("type")),
+                "description": template.get("description"),
+                "variables": template.get("variables"),
+                "script": redact_config_text_secrets(script) if isinstance(script, str) else script,
+            }
+        }
+    except Exception as e:
+        logger.error(f"Template tool operation failed: {e}")
+        msg, code = client_safe_error(e)
+        return {"error": msg, "error_code": code}
 
 
 @mcp.tool()
