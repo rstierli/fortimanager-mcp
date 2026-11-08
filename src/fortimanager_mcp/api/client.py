@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any
 
 from pyFMG.fortimgr import FortiManager
+from requests.exceptions import ConnectTimeout as RequestsConnectTimeout
+from urllib3.exceptions import ConnectTimeoutError, MaxRetryError
 
 from fortimanager_mcp.utils.config import Settings
 from fortimanager_mcp.utils.errors import (
@@ -95,6 +97,15 @@ class FortiManagerClient:
     # is really permission/stale-session -- retrying it without a reconnect
     # just replays the failure; it is handled by the reconnect path above.)
     _TRANSIENT_ERROR_CODES = frozenset({-1})
+    # Verbs a replay cannot turn into a second change: get reads, set/update
+    # write the same values again, and delete removes what is already gone
+    # (a replay after a delete that did land can at worst fail, e.g. -3
+    # "Object does not exist", for an object that is in fact gone -- never a
+    # second deletion). exec/add/clone/move are
+    # not on the list: an install, a script run, a create or a reorder that
+    # reached FortiManager would run twice, so they are retried only when
+    # the request provably never left this client (_never_sent).
+    _REPLAY_SAFE_VERBS = frozenset({"get", "set", "update", "delete"})
     # Bounded transient retry: at most this many retries with exponential backoff.
     _TRANSIENT_RETRIES = 2
     _TRANSIENT_BACKOFF_BASE = 0.5  # seconds; doubled each retry
@@ -407,7 +418,7 @@ class FortiManagerClient:
             # Unreachable (failed on-demand connect, or a transient error from
             # a dropped session): raise rather than send the real request to a
             # guessed endpoint and wait out the same timeout a second time.
-            if isinstance(e, ConnectionError) or self._is_transient_error(e):
+            if isinstance(e, ConnectionError) or self._is_transient_error(e, verb="get"):
                 raise
             # Do NOT cache the fallback: it says nothing about the version.
             # The next call probes again.
@@ -653,17 +664,50 @@ class FortiManagerClient:
                 self._failed_connects += 1
                 raise
 
-    def _is_transient_error(self, exc: Exception) -> bool:
+    def _is_transient_error(self, exc: Exception, *, verb: str, read_only: bool = False) -> bool:
         """Classify whether an error is worth a bounded transient retry.
 
-        Network errors and ``-1`` internal error are transient. Validation,
-        permission, not-found, ADOM-locked, and authentication errors are NOT
-        retried — stale-session ``-11`` is owned by :meth:`_is_session_error`
-        (reconnect path), where a retry without a fresh login would be useless.
+        For a replay-safe ``verb`` (``_REPLAY_SAFE_VERBS``) or a ``read_only``
+        exec, network errors and ``-1`` internal error are transient. For
+        every other verb only an error from before the request was sent is:
+        a dropped connection or a ``-1`` may come after FortiManager already
+        acted on it. Validation, permission, not-found, ADOM-locked, and
+        authentication errors are NOT retried — stale-session ``-11`` is owned
+        by :meth:`_is_session_error` (reconnect path), where a retry without a
+        fresh login would be useless.
         """
+        if not read_only and verb not in self._REPLAY_SAFE_VERBS:
+            return self._never_sent(exc)
         if isinstance(exc, OSError):
             return True
         return getattr(exc, "code", None) in self._TRANSIENT_ERROR_CODES
+
+    @staticmethod
+    def _never_sent(exc: BaseException) -> bool:
+        """Whether ``exc`` proves the request never reached FortiManager.
+
+        pyfmg re-raises every requests ``ConnectionError`` as
+        ``FMGConnectionError`` inside its handler, so the original survives
+        only on the ``__context__`` chain. Only a failed TCP connect is proof:
+        requests' ``ConnectTimeout``, or urllib3's ``ConnectTimeoutError`` (its
+        subclass ``NewConnectionError`` covers a refused connect and a failed
+        name lookup), carried as ``MaxRetryError.reason``. A reset or
+        ``RemoteDisconnected`` on a kept-alive socket can come after the body
+        went out, and a bare ``OSError`` says nothing either way.
+        """
+        seen: set[int] = set()
+        pending: list[BaseException | None] = [exc]
+        while pending:
+            current = pending.pop()
+            if current is None or id(current) in seen:
+                continue
+            seen.add(id(current))
+            if isinstance(current, (RequestsConnectTimeout, ConnectTimeoutError)):
+                return True
+            if isinstance(current, MaxRetryError):
+                pending.append(current.reason)
+            pending.extend((current.__cause__, current.__context__))
+        return False
 
     def _is_session_error(self, exc: Exception) -> bool:
         """Classify whether an error means the server session is gone.
@@ -694,6 +738,8 @@ class FortiManagerClient:
         self,
         factory: Callable[[], Awaitable[Any]],
         *,
+        verb: str,
+        read_only: bool = False,
         sleep: Callable[[float], Awaitable[None]] | None = None,
     ) -> Any:
         """Run an async request factory with reconnect-once + transient retry.
@@ -706,9 +752,11 @@ class FortiManagerClient:
         and a retry — this revives a session the appliance dropped while the
         local client still believed it was connected. Transient FMG/network
         errors are then retried up to ``_TRANSIENT_RETRIES`` with exponential
-        backoff. Validation, not-found, permission, ADOM-locked, and not-
-        connected errors (when never connected) are surfaced immediately so
-        callers can handle them.
+        backoff -- for a ``verb`` outside ``_REPLAY_SAFE_VERBS`` (and not
+        ``read_only``) only when the request never left the client, see
+        :meth:`_is_transient_error`. Validation, not-found, permission,
+        ADOM-locked, and not-connected errors (when never connected) are
+        surfaced immediately so callers can handle them.
 
         The number of transient retries actually performed is annotated on the
         finally-raised exception as ``retries_attempted`` (best-effort) so the
@@ -737,7 +785,9 @@ class FortiManagerClient:
                     logger.warning("FortiManager session invalid; reconnecting once and retrying")
                     await self._force_reconnect()
                     continue
-                if retries_left <= 0 or not self._is_transient_error(exc):
+                if retries_left <= 0 or not self._is_transient_error(
+                    exc, verb=verb, read_only=read_only
+                ):
                     # Best-effort annotation for the response envelope. Paths
                     # that bypass this raise (force-reconnect failure, etc.)
                     # carry no attribute and read back as 0 via getattr.
@@ -749,12 +799,15 @@ class FortiManagerClient:
                 logger.warning(f"Transient FortiManager error; retrying in {delay:.1f}s: {exc}")
                 await sleeper(delay)
 
-    async def _generic_request(self, verb: str, url: str, **kwargs: Any) -> Any:
+    async def _generic_request(
+        self, verb: str, url: str, *, read_only: bool = False, **kwargs: Any
+    ) -> Any:
         """Run a standard pyfmg verb with bounded reconnect + transient-retry resilience.
 
         The factory closes over the verb/url/kwargs and re-executes them on
         each retry attempt, so a reconnect picks up a fresh pyfmg handle from
-        ``_ensure_connected()`` rather than reusing a stale one.
+        ``_ensure_connected()`` rather than reusing a stale one. ``read_only``
+        marks an exec that changes nothing (see :meth:`execute_read`).
         """
 
         async def _factory() -> Any:
@@ -763,7 +816,7 @@ class FortiManagerClient:
             code, response = await self._run_fmg_call(method, url, **kwargs)
             return self._handle_response(code, response, f"{verb.upper()} {url}")
 
-        return await self._execute_resilient(_factory)
+        return await self._execute_resilient(_factory, verb=verb, read_only=read_only)
 
     async def _force_reconnect(self) -> None:
         """Drop stale connection state and reconnect (re-login), serialized.
@@ -822,8 +875,22 @@ class FortiManagerClient:
         return await self._generic_request("delete", url, **kwargs)
 
     async def execute(self, url: str, **kwargs: Any) -> Any:
-        """Execute EXEC request with bounded reconnect + transient-retry resilience."""
+        """Execute EXEC request with bounded reconnect + transient-retry resilience.
+
+        An exec may install, run a script or start a job, so it is retried
+        only when the request never left the client; use :meth:`execute_read`
+        for an exec that only reads.
+        """
         return await self._generic_request("execute", url, **kwargs)
+
+    async def execute_read(self, url: str, **kwargs: Any) -> Any:
+        """Execute an EXEC that only reads, with the full transient retry of :meth:`get`.
+
+        For exec endpoints that return data and change nothing (a preview
+        result, a revision listing, a proxied FortiGate GET), where replaying
+        the request after a dropped connection or a ``-1`` is harmless.
+        """
+        return await self._generic_request("execute", url, read_only=True, **kwargs)
 
     async def move(self, url: str, option: str, target: str) -> Any:
         """Execute MOVE request with bounded reconnect + transient-retry resilience.
@@ -842,7 +909,7 @@ class FortiManagerClient:
             )
             return self._handle_response(code, response, f"MOVE {url}")
 
-        return await self._execute_resilient(_factory)
+        return await self._execute_resilient(_factory, verb="move")
 
     async def get_verbose(self, url: str, **kwargs: Any) -> Any:
         """GET with ``"verbose": 1``: enum fields come back as their CLI names.
@@ -868,13 +935,15 @@ class FortiManagerClient:
             code, response = await self._run_fmg_call(_verbose_get, fmg)
             return self._handle_response(code, response, f"GET {url}")
 
-        return await self._execute_resilient(_factory)
+        return await self._execute_resilient(_factory, verb="get")
 
     async def clone(self, url: str, **kwargs: Any) -> Any:
         """Execute CLONE request with bounded reconnect + transient-retry resilience."""
         return await self._generic_request("clone", url, **kwargs)
 
-    async def _flat_request(self, verb: str, url: str, payload: dict[str, Any]) -> Any:
+    async def _flat_request(
+        self, verb: str, url: str, payload: dict[str, Any], *, read_only: bool = False
+    ) -> Any:
         """Run `verb` with `payload` merged at the params top level, not under 'data'.
 
         pyfmg's ``common_datagram_params`` only flat-merges kwargs for the
@@ -885,7 +954,8 @@ class FortiManagerClient:
         (``token`` on a ``/cache/diff/*`` exec call, ``revision note`` on a
         firewall-policy revert) lands where the guide's own examples put it,
         instead of nested one level too deep where FortiManager would not find
-        it.
+        it. ``read_only`` marks an exec that changes nothing (see
+        :meth:`execute_read`).
         """
 
         async def _factory() -> Any:
@@ -894,7 +964,7 @@ class FortiManagerClient:
             code, response = await self._run_fmg_call(method, url, payload)
             return self._handle_response(code, response, f"{verb.upper()} {url}")
 
-        return await self._execute_resilient(_factory)
+        return await self._execute_resilient(_factory, verb=verb, read_only=read_only)
 
     # =========================================================================
     # System Status (from sys.json)
@@ -1295,7 +1365,7 @@ class FortiManagerClient:
         Returns:
             {"base_ver": <int>, "revinfo": [{"revision": <int>, ...}, ...]}
         """
-        return await self.execute("/deployment/get/device/revision", device=device)
+        return await self.execute_read("/deployment/get/device/revision", device=device)
 
     async def get_device_revision_content(self, device: str, revision: int) -> dict[str, Any]:
         """Check out one device DB revision's stored configuration text.
@@ -1310,7 +1380,9 @@ class FortiManagerClient:
         Returns:
             {"content": <str>, "revision": <int>}
         """
-        return await self.execute("/deployment/checkout/revision", device=device, revision=revision)
+        return await self.execute_read(
+            "/deployment/checkout/revision", device=device, revision=revision
+        )
 
     async def get_device_current_config(self, device: str) -> dict[str, Any]:
         """Export the device's CURRENT device DB configuration (not a past revision).
@@ -1321,7 +1393,7 @@ class FortiManagerClient:
         Returns:
             {"content": <str>}
         """
-        return await self.execute("/deployment/export/config", device=device)
+        return await self.execute_read("/deployment/export/config", device=device)
 
     async def revert_device_revision(self, device: str, revision: int) -> dict[str, Any]:
         """Revert a device's device DB to a past revision.
@@ -1447,7 +1519,7 @@ class FortiManagerClient:
         data: dict[str, Any] = {"adom": adom, "scope": scope}
         if preview_taskid is not None:
             data["preview_taskid"] = preview_taskid
-        return await self.execute("/securityconsole/preview/result", **data)
+        return await self.execute_read("/securityconsole/preview/result", **data)
 
     async def cancel_install(
         self,
@@ -1524,7 +1596,7 @@ class FortiManagerClient:
         url = "/cache/diff/get/summary"
         if pkg:
             url = f"{url}/pkg/{pkg}"
-        return await self._flat_request("execute", url, {"token": token})
+        return await self._flat_request("execute", url, {"token": token}, read_only=True)
 
     async def cache_diff_end(self, token: str) -> dict[str, Any]:
         """Close a diff job and free its server-side cache entry.
@@ -1558,7 +1630,7 @@ class FortiManagerClient:
         FortiManagerClient._flat_request.
         """
         return await self._flat_request(
-            "execute", "/cache/search/where/used/get/summary", {"token": token}
+            "execute", "/cache/search/where/used/get/summary", {"token": token}, read_only=True
         )
 
     async def where_used_get_detail(self, token: str) -> dict[str, Any]:
@@ -1569,7 +1641,7 @@ class FortiManagerClient:
         FortiManagerClient._flat_request.
         """
         return await self._flat_request(
-            "execute", "/cache/search/where/used/get/detail", {"token": token}
+            "execute", "/cache/search/where/used/get/detail", {"token": token}, read_only=True
         )
 
     # =========================================================================
@@ -2547,6 +2619,10 @@ class FortiManagerClient:
         if data:
             params["data"] = data
 
+        # A proxied GET only reads; a post/put/delete reaches the FortiGate
+        # and must not be replayed after the request may have landed.
+        if action.lower() == "get":
+            return await self.execute_read("/sys/proxy/json", **params)
         return await self.execute("/sys/proxy/json", **params)
 
     # =========================================================================
@@ -3877,7 +3953,7 @@ class FortiManagerClient:
             data["platform"] = platform
         if product:
             data["product"] = product
-        return await self.execute("/um/image/version/list", **data)
+        return await self.execute_read("/um/image/version/list", **data)
 
     async def list_firmware_images(
         self,
@@ -3893,7 +3969,7 @@ class FortiManagerClient:
         data: dict[str, Any] = {}
         if system:
             data["system"] = system
-        return await self.execute("/um/image/list", **data)
+        return await self.execute_read("/um/image/list", **data)
 
     async def get_firmware_upgrade_report(
         self,
