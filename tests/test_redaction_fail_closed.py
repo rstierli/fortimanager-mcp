@@ -273,9 +273,12 @@ PATHOLOGICAL = {
 
 @pytest.mark.parametrize("fn,payload", PATHOLOGICAL.values(), ids=PATHOLOGICAL)
 def test_one_megabyte_redacts_quickly(fn: Any, payload: Any) -> None:
+    # Guards against the super-linear cases that took up to a minute, not a
+    # benchmark: under coverage on a shared CI runner the slowest of these
+    # took 3-4.5 s (under 1.5 s locally without coverage).
     start = time.perf_counter()
     fn(payload)
-    assert time.perf_counter() - start < 3.0
+    assert time.perf_counter() - start < 15.0
 
 
 class TestReaudit3:
