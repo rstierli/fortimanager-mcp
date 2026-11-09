@@ -1960,3 +1960,82 @@ class TestPolicyBlockValidation:
 
         assert result["status"] == "success", result
         assert client.list_policy_block_policies.await_args.args[1] == "Shared Rules v2"
+
+
+#: Every tool that puts a caller-supplied policy id into a request URL, with
+#: the extra arguments it needs to get as far as the appliance.
+_POLICY_ID_TOOLS: list[tuple[str, dict[str, Any]]] = [
+    ("get_firewall_policy", {}),
+    ("update_firewall_policy", {"name": "renamed"}),
+    ("delete_firewall_policy", {}),
+    ("move_firewall_policy", {"target_policyid": 5}),
+    ("get_policy_services", {"resolve": False}),
+    ("get_local_in_policy", {}),
+    ("update_local_in_policy", {"status": "disable"}),
+    ("delete_local_in_policy", {}),
+    ("get_local_in_policy6", {}),
+    ("update_local_in_policy6", {"status": "disable"}),
+    ("delete_local_in_policy6", {}),
+]
+
+
+class TestPolicyIdValidation:
+    """A policy id is validated before it is put into a request URL.
+
+    The ``int`` annotation is enforced by the route a call arrives on, not
+    by the tool: called as a function, a string or a bool used to reach
+    ``.../policy/{policyid}`` exactly as given.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _appliance_succeeds(self, mock_fmg_instance: MagicMock) -> None:
+        """Every verb succeeds, so only the guard can produce an error."""
+        for verb in ("get", "update", "delete", "move"):
+            getattr(mock_fmg_instance, verb).return_value = (0, {})
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("tool", "extra"), _POLICY_ID_TOOLS)
+    @pytest.mark.parametrize("bad", ["7", True, 1.5, -1])
+    async def test_a_bad_policy_id_is_refused(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        tool: str,
+        extra: dict[str, Any],
+        bad: Any,
+    ) -> None:
+        with patch.object(policy_tools, "get_fmg_client", return_value=mock_client):
+            result = await getattr(policy_tools, tool)("root", "default", bad, **extra)
+
+        assert result["status"] == "error", result
+        assert result.get("error_code") == "validation_error"
+        assert mock_fmg_instance.method_calls == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad", ["5", True, 1.5, -1])
+    async def test_move_refuses_a_bad_target_policy_id(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock, bad: Any
+    ) -> None:
+        with patch.object(policy_tools, "get_fmg_client", return_value=mock_client):
+            result = await policy_tools.move_firewall_policy("root", "default", 7, bad)
+
+        assert result["status"] == "error", result
+        assert result.get("error_code") == "validation_error"
+        assert mock_fmg_instance.method_calls == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("tool", "extra"), _POLICY_ID_TOOLS)
+    async def test_a_valid_policy_id_still_reaches_the_appliance(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        tool: str,
+        extra: dict[str, Any],
+    ) -> None:
+        """The other direction, so the guard cannot become a blanket refuser."""
+        with patch.object(policy_tools, "get_fmg_client", return_value=mock_client):
+            result = await getattr(policy_tools, tool)("root", "default", 7, **extra)
+
+        assert result["status"] == "success", result
+        (request,) = mock_fmg_instance.method_calls
+        assert request.args[0].endswith("/7")
