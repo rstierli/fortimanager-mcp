@@ -1411,11 +1411,13 @@ def run_http() -> None:
                 await self.app(scope, receive, send)
                 return
 
-            # Check Authorization header
+            # Check Authorization header. Compare raw bytes: the caller picks
+            # the header, so it need not be UTF-8, and compare_digest raises
+            # on non-ASCII str. Decoding first turns a wrong token into a 500.
             headers = dict(scope.get("headers", []))
-            auth_header = headers.get(b"authorization", b"").decode()
+            auth_header = headers.get(b"authorization", b"")
 
-            if not hmac.compare_digest(auth_header, f"Bearer {token}"):
+            if not hmac.compare_digest(auth_header, f"Bearer {token}".encode()):
                 response = JSONResponse(
                     {"error": "Unauthorized", "detail": "Invalid or missing Bearer token"},
                     status_code=401,
