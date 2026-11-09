@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from mcp.server.mcpserver import MCPServer
@@ -88,6 +89,101 @@ class TestOutboundMasking:
         through = payload(await masked_server.call_tool("outer", {}))
 
         assert through["nested"]["ip"] == direct["ip"]
+
+
+class TestDynamicDispatch:
+    """A tool reached through ``execute_fortimanager_tool`` is masked the way
+    a direct call masks it, although the boundary is the dispatcher's."""
+
+    SRC = "198.51.100.40"
+    PEER = "192.0.2.252"
+    MAC = "00:00:5e:00:53:01"
+    ARGS = {"path": "/api/v2/monitor/firewall/session", "device": "branch1", "adom": "demo"}
+
+    @pytest.fixture()
+    def dispatching_server(
+        self, masked_server: MCPServer, monkeypatch: pytest.MonkeyPatch
+    ) -> MCPServer:
+        """The discovery tools and ``query_device_api`` on one masked server.
+
+        With masking on, a tool module's own name is the wrapped function,
+        and that name is what the dispatcher resolves and calls.
+        """
+        from fortimanager_mcp import server
+        from fortimanager_mcp.tools import device_proxy_tools
+
+        client = AsyncMock()
+        client.proxy_call = AsyncMock(
+            return_value=[
+                {
+                    "response": {
+                        "http_status": 200,
+                        "results": {
+                            "details": [{"saddr": self.SRC, "srcmac": self.MAC, "dport": 443}],
+                            self.PEER: {"state": "established"},
+                        },
+                    },
+                    "status": {"code": 0, "message": "OK"},
+                }
+            ]
+        )
+        monkeypatch.setattr(device_proxy_tools, "get_fmg_client", lambda: client)
+        monkeypatch.setattr(
+            device_proxy_tools,
+            "query_device_api",
+            masked_server.tool()(device_proxy_tools.query_device_api),
+        )
+        server.register_dynamic_tools(masked_server)
+        return masked_server
+
+    @pytest.mark.asyncio
+    async def test_a_passthrough_tool_keeps_its_value_shape_masking(
+        self, dispatching_server: MCPServer, engine: FPEEngine
+    ) -> None:
+        """FortiOS keys no table names came back in clear: the result was
+        masked under the dispatcher's name, which is not a passthrough tool."""
+        direct = payload(await dispatching_server.call_tool("query_device_api", self.ARGS))
+        dispatched: Any = await dispatching_server.call_tool(
+            "execute_fortimanager_tool",
+            {"tool_name": "query_device_api", "parameters": self.ARGS},
+        )
+        envelope = dispatched.structured_content
+
+        for value in (self.SRC, self.MAC, self.PEER):
+            assert value not in json.dumps(envelope)
+        assert envelope["result"] == direct
+        session = envelope["result"]["results"]["details"][0]
+        assert engine.unmask_ip_token(session["saddr"]) == self.SRC
+        assert session["dport"] == 443
+
+    @pytest.mark.asyncio
+    async def test_a_named_key_tool_is_not_masked_by_shape(
+        self, dispatching_server: MCPServer, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Value-shape masking stays scoped to the passthrough tools."""
+        from fortimanager_mcp.tools import policy_tools
+
+        block = {"name": "shared-rules", "saddr": self.SRC, "ip": self.PEER}
+
+        class _Client:
+            async def list_policy_blocks(self, adom: str) -> list[dict[str, Any]]:
+                return [dict(block)]
+
+        monkeypatch.setattr(policy_tools, "get_fmg_client", lambda: _Client())
+        monkeypatch.setattr(
+            policy_tools,
+            "list_policy_blocks",
+            dispatching_server.tool()(policy_tools.list_policy_blocks),
+        )
+
+        dispatched: Any = await dispatching_server.call_tool(
+            "execute_fortimanager_tool",
+            {"tool_name": "list_policy_blocks", "parameters": {"adom": "demo"}},
+        )
+
+        masked = dispatched.structured_content["result"]["blocks"][0]
+        assert masked["saddr"] == self.SRC
+        assert masked["ip"] != self.PEER
 
 
 class TestInboundGuard:
