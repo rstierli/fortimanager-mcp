@@ -1454,9 +1454,11 @@ async def check_device_variables(
     """Check a device's metadata variable values against what was imported.
 
     Use after ``add_model_device`` to confirm every ``meta_variables`` entry
-    landed as a per-device mapping. A variable is reported as:
-      - match: the device has its own mapping with the expected value
-      - mismatch: the device mapping holds another value
+    landed as a per-device mapping. A device can hold one mapping per scope
+    ("global" and a VDOM such as "root"). A variable is reported as:
+      - match: every mapping the device has holds the expected value
+      - mismatch: a device mapping holds another value; one entry per
+        differing scope, named in ``vdom``
       - not_mapped: no device mapping, so templates get the ADOM default
       - undefined: no such variable exists in the ADOM
 
@@ -1467,8 +1469,8 @@ async def check_device_variables(
             {"branch_id": "1", "hostname": "branch1"}
 
     Returns:
-        dict: status, ok (all match), match / mismatch / not_mapped /
-        undefined lists
+        dict: status, ok (all match), match / mismatch[{name, expected,
+        actual, vdom}] / not_mapped / undefined lists
     """
     try:
         adom = validate_adom(adom)
@@ -1476,6 +1478,9 @@ async def check_device_variables(
         wanted = _validate_meta_variables(expected)
         variables = await _load_metadata_variables(adom)
         values = _device_variable_values(variables, device)
+        # A device can hold one mapping per scope (see set_metadata_variable),
+        # so the first one alone does not show that the value landed.
+        own = {v["name"]: [m for m in v["mappings"] if m["device"] == device] for v in variables}
 
         match: list[str] = []
         mismatch: list[dict[str, Any]] = []
@@ -1486,12 +1491,16 @@ async def check_device_variables(
                 undefined.append(name)
                 continue
             got = values[name]
+            differing = [m for m in own[name] if m["value"] != want]
             if got["source"] != "device":
                 not_mapped.append({"name": name, "expected": want, "default": got["value"]})
-            elif got["value"] == want:
+            elif not differing:
                 match.append(name)
             else:
-                mismatch.append({"name": name, "expected": want, "actual": got["value"]})
+                mismatch.extend(
+                    {"name": name, "expected": want, "actual": m["value"], "vdom": m["vdom"]}
+                    for m in differing
+                )
 
         return {
             "status": "success",
