@@ -19,6 +19,7 @@ from fortimanager_mcp.utils.config import Settings
 from fortimanager_mcp.utils.errors import (
     AuthenticationError,
     ConnectionError,
+    FortiManagerMCPError,
     ResourceNotFoundError,
     parse_fmg_error,
 )
@@ -163,6 +164,10 @@ class FortiManagerClient:
         # never connected (a direct API call should still raise "Not connected",
         # unless connect_on_demand makes the first connect before it).
         self._ever_connected = False
+        # Set when a request fails to reach FortiManager, cleared by the next
+        # request it answers. _connected stays True through an outage (only a
+        # session error or disconnect() clears it), so /health reads this.
+        self._unreachable = False
         # Set by prepare_shutdown(): every request from then on is one
         # attempt, on what is left of the shutdown budget until this time.
         self._shutdown_deadline: float | None = None
@@ -308,6 +313,7 @@ class FortiManagerClient:
 
             self._connected = True
             self._ever_connected = True
+            self._unreachable = False
             logger.info("Successfully connected to FortiManager")
 
         except AuthenticationError:
@@ -382,6 +388,14 @@ class FortiManagerClient:
     def is_connected(self) -> bool:
         """Check if client is connected."""
         return self._connected and self._fmg is not None
+
+    @property
+    def is_reachable(self) -> bool:
+        """Connected, and the last request reached FortiManager.
+
+        Passive: an idle client notices an outage on its next request.
+        """
+        return self.is_connected and not self._unreachable
 
     @property
     def fmg_version(self) -> tuple[int, int, int] | None:
@@ -683,6 +697,22 @@ class FortiManagerClient:
         return getattr(exc, "code", None) in self._TRANSIENT_ERROR_CODES
 
     @staticmethod
+    def _is_unreachable_error(exc: Exception) -> bool:
+        """Whether ``exc`` means the request did not reach FortiManager."""
+        # pyfmg's verbs wrap a read timeout in a plain FMGBaseException raised
+        # inside the except block, so the timeout survives only as __context__.
+        return isinstance(exc, OSError) or isinstance(exc.__context__, OSError)
+
+    def _note_reachability(self, exc: Exception) -> None:
+        """Update ``is_reachable`` from a failed request."""
+        if self._is_unreachable_error(exc):
+            self._unreachable = True
+        elif isinstance(exc, FortiManagerMCPError) and not isinstance(exc, ConnectionError):
+            # FortiManager answered with an error code. A ConnectionError is the
+            # local "Not connected", which says nothing either way.
+            self._unreachable = False
+
+    @staticmethod
     def _never_sent(exc: BaseException) -> bool:
         """Whether ``exc`` proves the request never reached FortiManager.
 
@@ -778,8 +808,9 @@ class FortiManagerClient:
         attempt = 0
         while True:
             try:
-                return await factory()
+                result = await factory()
             except Exception as exc:
+                self._note_reachability(exc)
                 if reconnect_left > 0 and self._is_session_error(exc):
                     reconnect_left -= 1
                     logger.warning("FortiManager session invalid; reconnecting once and retrying")
@@ -798,6 +829,9 @@ class FortiManagerClient:
                 attempt += 1
                 logger.warning(f"Transient FortiManager error; retrying in {delay:.1f}s: {exc}")
                 await sleeper(delay)
+            else:
+                self._unreachable = False
+                return result
 
     async def _generic_request(
         self, verb: str, url: str, *, read_only: bool = False, **kwargs: Any
