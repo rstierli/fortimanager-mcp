@@ -21,6 +21,7 @@ from fortimanager_mcp import __version__
 from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.utils.adom_locks import release_held_locks
 from fortimanager_mcp.utils.config import get_settings
+from fortimanager_mcp.utils.errors import client_safe_error
 
 # Get settings
 settings = get_settings()
@@ -1046,11 +1047,20 @@ def register_dynamic_tools(mcp_server: MCPServer) -> None:
             params = parameters or {}
             validated = func_metadata(tool_func, structured_output=False).validate_arguments(params)
             result = await tool_func(**{**params, **validated})
-            return {"success": True, "result": result}
+            # A tool reports its own failure as a result, under an "error"
+            # key or status "error": the call ran, it did not succeed.
+            failed = isinstance(result, dict) and (
+                "error" in result or result.get("status") == "error"
+            )
+            return {"success": not failed, "result": result}
 
         except Exception as e:
+            # Scrubbed like the tools scrub their own: an API error names
+            # the endpoint it failed on.
+            msg, code = client_safe_error(e)
             return {
-                "error": str(e),
+                "error": msg,
+                "error_code": code,
                 "tool": tool_name,
             }
 

@@ -219,3 +219,59 @@ class TestArgumentValidation:
         )
 
         assert seen == reached
+
+
+class TestEnvelope:
+    """``success`` says whether the dispatched tool succeeded, and a raised
+    error is scrubbed the way the tools scrub their own."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("module_name", "tool_name", "parameters"),
+        [
+            # reports failure as {"status": "error", ...}
+            ("system_tools", "list_adoms", {}),
+            # reports failure as {"error": ...}
+            ("device_proxy_tools", "query_device_api", {"path": "/api/v2/monitor/router/ipv4"}),
+        ],
+    )
+    async def test_an_inner_error_is_not_a_success(
+        self,
+        dynamic_tools: dict[str, Any],
+        monkeypatch: pytest.MonkeyPatch,
+        module_name: str,
+        tool_name: str,
+        parameters: dict[str, Any],
+    ) -> None:
+        import importlib
+
+        module = importlib.import_module(f"fortimanager_mcp.tools.{module_name}")
+        monkeypatch.setattr(module, "get_fmg_client", lambda: None)
+
+        result = await dynamic_tools["execute_fortimanager_tool"](tool_name, parameters)
+
+        inner = result["result"]
+        assert "error" in inner or inner["status"] == "error"
+        assert result["success"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_raised_api_error_loses_its_endpoint(
+        self, dynamic_tools: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The tools catch their own API errors, so this stands in for one
+        that does not: the dispatcher is then the last handler."""
+        from fortimanager_mcp.tools import policy_tools
+        from fortimanager_mcp.utils.errors import parse_fmg_error
+
+        async def list_policy_blocks(adom: str = "root") -> dict[str, Any]:
+            raise parse_fmg_error(-3, "Object does not exist", f"/pm/pblock/adom/{adom}")
+
+        monkeypatch.setattr(policy_tools, "list_policy_blocks", list_policy_blocks)
+
+        result = await dynamic_tools["execute_fortimanager_tool"](
+            "list_policy_blocks", {"adom": "demo"}
+        )
+
+        assert result["error"] == "Object does not exist"
+        assert result["error_code"] == "not_found"
+        assert result["tool"] == "list_policy_blocks"
