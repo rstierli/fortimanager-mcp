@@ -14,6 +14,7 @@ import logging
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.utilities.func_metadata import func_metadata
 from mcp.server.transport_security import TransportSecuritySettings
 
 from fortimanager_mcp import __version__
@@ -1036,9 +1037,15 @@ def register_dynamic_tools(mcp_server: MCPServer) -> None:
                     "hint": "Use find_fortimanager_tool() to discover available tools",
                 }
 
-            # Execute the tool
+            # Execute the tool. The arguments are validated and coerced the
+            # way a direct MCP call validates them (Tool.run), or a "false"
+            # string opens a confirm gate and a string is iterated as a list
+            # of ids. A failed validation raises into the handler below. The
+            # raw mapping stays underneath so an unknown name is still
+            # refused by the function signature: the SDK model would drop it.
             params = parameters or {}
-            result = await tool_func(**params)
+            validated = func_metadata(tool_func, structured_output=False).validate_arguments(params)
+            result = await tool_func(**{**params, **validated})
             return {"success": True, "result": result}
 
         except Exception as e:

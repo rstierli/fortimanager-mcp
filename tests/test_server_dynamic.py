@@ -130,3 +130,92 @@ class TestPortedToolsDispatch:
             "get_package_install_status",
             "check_device_policy_sync",
         }
+
+
+class TestArgumentValidation:
+    """The dispatcher validates and coerces ``parameters`` the way a direct
+    MCP call does, so a badly typed value never reaches a tool body."""
+
+    @pytest.mark.asyncio
+    async def test_a_false_string_does_not_open_a_confirm_gate(
+        self, dynamic_tools: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A non-empty string is truthy: ``"false"`` used to pass
+        ``if not confirm`` and start the restore."""
+        from fortimanager_mcp.tools import fmg_ops_tools
+
+        sent: list[str] = []
+
+        class _Client:
+            async def execute(self, url: str, data: Any = None) -> dict[str, Any]:
+                sent.append(url)
+                return {}
+
+        monkeypatch.setattr(fmg_ops_tools, "get_fmg_client", lambda: _Client())
+
+        result = await dynamic_tools["execute_fortimanager_tool"](
+            "trigger_fmg_restore",
+            {
+                "service": "sftp",
+                "server": "backup.example.com",
+                "filename": "fmg.dat",
+                "confirm": "false",
+            },
+        )
+
+        assert sent == []
+        assert result["result"]["error_code"] == "confirmation_required"
+
+    @pytest.mark.asyncio
+    async def test_a_string_is_not_iterated_as_a_list_of_ids(
+        self, dynamic_tools: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``policyids="12"`` used to delete policies "1" and "2"."""
+        from fortimanager_mcp.tools import policy_tools
+
+        deleted: list[Any] = []
+
+        class _Client:
+            async def delete_firewall_policy(self, adom: str, package: str, policyid: Any) -> None:
+                deleted.append(policyid)
+
+        monkeypatch.setattr(policy_tools, "get_fmg_client", lambda: _Client())
+
+        result = await dynamic_tools["execute_fortimanager_tool"](
+            "delete_firewall_policies_bulk",
+            {"adom": "demo", "package": "default", "policyids": "12"},
+        )
+
+        assert deleted == []
+        assert "policyids" in result["error"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("policyid", "reached"), [("12", [12]), ("12a", [])])
+    async def test_a_string_id_is_coerced_or_refused(
+        self,
+        dynamic_tools: dict[str, Any],
+        monkeypatch: pytest.MonkeyPatch,
+        policyid: str,
+        reached: list[int],
+    ) -> None:
+        """The id is formatted into the API URL: a numeric string arrives
+        as an int, anything else never reaches the client."""
+        from fortimanager_mcp.tools import policy_tools
+
+        seen: list[Any] = []
+
+        class _Client:
+            async def get_firewall_policy(
+                self, adom: str, package: str, policyid: Any, scope_member: bool = False
+            ) -> dict[str, Any]:
+                seen.append(policyid)
+                return {"policyid": policyid}
+
+        monkeypatch.setattr(policy_tools, "get_fmg_client", lambda: _Client())
+
+        await dynamic_tools["execute_fortimanager_tool"](
+            "get_firewall_policy",
+            {"adom": "demo", "package": "default", "policyid": policyid},
+        )
+
+        assert seen == reached
