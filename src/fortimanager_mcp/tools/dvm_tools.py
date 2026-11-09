@@ -1388,8 +1388,10 @@ async def set_metadata_variable(
 
     Returns:
         dict: status, variable, device, changes[{vdom, old, new}] (password
-        variables redacted), or message on failure
+        variables redacted), or message on failure. A failure after some
+        scopes were written also carries changes, for those scopes only
     """
+    changes: list[dict[str, Any]] = []
     try:
         adom = validate_adom(adom)
         device = validate_device_name(device)
@@ -1418,7 +1420,6 @@ async def set_metadata_variable(
             and isinstance(scope.get("vdom"), str)
         }
         scopes = [vdom] if vdom else sorted(current) or ["global"]
-        changes = []
         for scope in scopes:
             if scope in current:
                 await client.update_metadata_mapping(adom, name, device, scope, text)
@@ -1442,7 +1443,17 @@ async def set_metadata_variable(
     except Exception as e:
         logger.error(f"Failed to set metadata variable {name} for {device}: {e}")
         msg, code = client_safe_error(e)
-        return {"status": "error", "message": msg, "error_code": code}
+        error: dict[str, Any] = {"status": "error", "message": msg, "error_code": code}
+        if changes:
+            # Scopes written before the failing one stay written; without
+            # them the caller would take the variable for untouched.
+            done = ", ".join(c["vdom"] for c in changes)
+            error["changes"] = changes
+            error["message"] = (
+                f"{msg.rstrip('.')}. The value was already saved before this failure, "
+                f"so the scopes of the device can now differ, in: {done}"
+            )
+        return error
 
 
 @mcp.tool()
