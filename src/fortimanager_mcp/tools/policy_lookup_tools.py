@@ -22,6 +22,8 @@ from urllib.parse import urlencode
 
 from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.server import get_fmg_client, mcp
+from fortimanager_mcp.utils.device_proxy import proxy_error as _proxy_error
+from fortimanager_mcp.utils.device_proxy import proxy_results as _proxy_results
 from fortimanager_mcp.utils.errors import client_safe_error
 from fortimanager_mcp.utils.validation import (
     ValidationError,
@@ -67,21 +69,6 @@ def _get_client() -> FortiManagerClient:
     if not client:
         raise RuntimeError("FortiManager client not initialized")
     return client
-
-
-def _proxy_results(raw: Any) -> Any:
-    """Extract the FortiGate payload from a FMG proxy-response envelope.
-
-    ``proxy_call`` returns ``[{"response": {"results": <data>, ...}, ...}]``.
-    Returns the inner ``results``, or ``None`` if the envelope is off-shape.
-    """
-    if isinstance(raw, list) and raw:
-        raw = raw[0]
-    if isinstance(raw, dict):
-        response = raw.get("response")
-        if isinstance(response, dict):
-            return response.get("results")
-    return None
 
 
 def _validate_port(port: int | None, label: str) -> int | None:
@@ -228,6 +215,11 @@ async def policy_lookup(
             resource=resource,
             target=[f"/adom/{adom}/device/{device}"],
         )
+        # The JSON-RPC call succeeds for a device that did not answer, and
+        # a lookup that never ran is not "no matching policy".
+        error = _proxy_error(raw)
+        if error:
+            return {"status": "error", "message": error, "error_code": "device_proxy_error"}
         results = _proxy_results(raw)
         matched = results.get("success") if isinstance(results, dict) else None
 

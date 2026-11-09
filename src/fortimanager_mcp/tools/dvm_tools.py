@@ -13,6 +13,8 @@ from typing import Any
 from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_default_adom, get_default_device, get_settings
+from fortimanager_mcp.utils.device_proxy import proxy_error as _proxy_error
+from fortimanager_mcp.utils.device_proxy import proxy_results as _proxy_results
 from fortimanager_mcp.utils.errors import ResourceNotFoundError, client_safe_error
 from fortimanager_mcp.utils.install_gate import task_state
 from fortimanager_mcp.utils.redaction import safe_device_message, strip_secret_fields
@@ -1867,6 +1869,11 @@ async def get_device_realtime_status(
             target=[f"/adom/{adom}/device/{device}"],
         )
 
+        # The JSON-RPC call succeeds for a device that did not answer.
+        error = _proxy_error(result)
+        if error:
+            return {"status": "error", "message": error, "error_code": "device_proxy_error"}
+
         return {
             "status": "success",
             "data": result,
@@ -1914,6 +1921,11 @@ async def get_device_interfaces(
             resource="/api/v2/monitor/system/interface?include_vlan=true",
             target=[f"/adom/{adom}/device/{device}"],
         )
+
+        # The JSON-RPC call succeeds for a device that did not answer.
+        error = _proxy_error(result)
+        if error:
+            return {"status": "error", "message": error, "error_code": "device_proxy_error"}
 
         return {
             "status": "success",
@@ -2056,21 +2068,6 @@ async def get_device_interface_config(
         return {"error": msg, "error_code": code}
 
 
-def _proxy_results(raw: Any) -> Any:
-    """Extract the FortiGate payload from a FMG proxy-response envelope.
-
-    ``proxy_call`` returns ``[{"response": {"results": <data>, ...}, ...}]``.
-    Returns the inner ``results``, or ``None`` if the envelope is off-shape.
-    """
-    if isinstance(raw, list) and raw:
-        raw = raw[0]
-    if isinstance(raw, dict):
-        response = raw.get("response")
-        if isinstance(response, dict):
-            return response.get("results")
-    return None
-
-
 def _summarize_detected_client(rec: dict[str, Any]) -> dict[str, Any]:
     """Condense a detected-device record to the 'where is it connected' fields."""
     return {
@@ -2164,6 +2161,11 @@ async def get_device_client_location(
             resource="/api/v2/monitor/user/device/query",
             target=[f"/adom/{adom}/device/{device}"],
         )
+        # The JSON-RPC call succeeds for a device that did not answer, and
+        # an inventory that was never read is not "no such client".
+        error = _proxy_error(raw)
+        if error:
+            return {"error": error, "error_code": "device_proxy_error"}
         results = _proxy_results(raw)
         records = [r for r in results if isinstance(r, dict)] if isinstance(results, list) else []
 

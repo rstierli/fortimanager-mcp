@@ -190,6 +190,29 @@ MOCK_DATASRC = {
     ]
 }
 
+# What /sys/proxy/json answers for a device FortiManager cannot reach: a
+# per-target status and no "response". The JSON-RPC call itself succeeds.
+MOCK_UNREACHABLE = [
+    {
+        "status": {"code": -1, "message": "branch1(228) error: No tunnel 80."},
+        "target": "/adom/root/device/branch1",
+    }
+]
+
+# The proxy reached the device and the device's own API answered an error.
+MOCK_DEVICE_API_ERROR = [
+    {
+        "response": {"http_status": 500, "status": "error"},
+        "status": {"code": 0, "message": "OK"},
+        "target": "branch1",
+    }
+]
+
+_PROXY_FAILURES = [
+    pytest.param(MOCK_UNREACHABLE, "branch1(228) error: No tunnel 80.", id="no-response"),
+    pytest.param(MOCK_DEVICE_API_ERROR, "device API error (HTTP 500)", id="response-status-error"),
+]
+
 
 def _monitor_client() -> AsyncMock:
     """An async client whose proxy_call returns the canned monitor envelopes."""
@@ -266,6 +289,42 @@ class TestGetDeviceSdwanMonitor:
                 adom="root", device="bad name; drop"
             )
         assert "error" in result
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("envelope", "message"), _PROXY_FAILURES)
+    async def test_device_failure_is_an_error(self, envelope: list[dict], message: str) -> None:
+        """upstream #127: FortiManager answers the JSON-RPC call for a device
+        that did not, so nothing raises. That is not "no members"."""
+        client = AsyncMock()
+        client.proxy_call = AsyncMock(return_value=envelope)
+        with patch.object(sdwan_tools, "get_fmg_client", return_value=client):
+            result = await sdwan_tools.get_device_sdwan_monitor(adom="root", device="branch1")
+
+        assert result == {"error": message, "error_code": "device_proxy_error"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("failing", "label"),
+        [("members", "SD-WAN members"), ("health-check", "SD-WAN health checks")],
+    )
+    async def test_one_failed_read_is_an_error(self, failing: str, label: str) -> None:
+        """The read that worked does not make the other one's silence an answer,
+        and the error says which read it was."""
+
+        def proxy(action: str, resource: str, target: list) -> list:
+            if failing in resource:
+                return MOCK_DEVICE_API_ERROR
+            return MOCK_SDWAN_MEMBERS if "members" in resource else MOCK_SDWAN_HEALTH
+
+        client = AsyncMock()
+        client.proxy_call = AsyncMock(side_effect=proxy)
+        with patch.object(sdwan_tools, "get_fmg_client", return_value=client):
+            result = await sdwan_tools.get_device_sdwan_monitor(adom="root", device="FGT-HQ")
+
+        assert result == {
+            "error": f"{label}: device API error (HTTP 500)",
+            "error_code": "device_proxy_error",
+        }
 
 
 MOCK_BGP_NEIGHBORS = [

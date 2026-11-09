@@ -428,6 +428,80 @@ class TestClientLocationHelpers:
         assert dvm_tools._proxy_results([]) is None
 
 
+# --- a device that did not answer through the proxy (upstream #127) ----------
+
+# What /sys/proxy/json answers for a device FortiManager cannot reach: a
+# per-target status and no "response". The JSON-RPC call itself succeeds.
+MOCK_UNREACHABLE = [
+    {
+        "status": {"code": -1, "message": "branch1(228) error: No tunnel 80."},
+        "target": "/adom/root/device/branch1",
+    }
+]
+
+# The proxy reached the device and the device's own API answered an error.
+MOCK_DEVICE_API_ERROR = [
+    {
+        "response": {"http_status": 500, "status": "error"},
+        "status": {"code": 0, "message": "OK"},
+        "target": "branch1",
+    }
+]
+
+_PROXY_FAILURES = [
+    pytest.param(MOCK_UNREACHABLE, "branch1(228) error: No tunnel 80.", id="no-response"),
+    pytest.param(MOCK_DEVICE_API_ERROR, "device API error (HTTP 500)", id="response-status-error"),
+]
+
+
+def _proxy_client(envelope: list[dict]) -> AsyncMock:
+    client = AsyncMock()
+    client.proxy_call = AsyncMock(return_value=envelope)
+    return client
+
+
+class TestProxyReadDeviceFailure:
+    """A device that did not answer is an error, not a successful empty read.
+
+    FortiManager answers the JSON-RPC call either way, so nothing raises.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("envelope", "message"), _PROXY_FAILURES)
+    async def test_realtime_status_is_an_error(self, envelope: list[dict], message: str) -> None:
+        with patch.object(dvm_tools, "_get_client", return_value=_proxy_client(envelope)):
+            result = await dvm_tools.get_device_realtime_status("root", "branch1")
+
+        assert result == {
+            "status": "error",
+            "message": message,
+            "error_code": "device_proxy_error",
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("envelope", "message"), _PROXY_FAILURES)
+    async def test_interfaces_is_an_error(self, envelope: list[dict], message: str) -> None:
+        with patch.object(dvm_tools, "_get_client", return_value=_proxy_client(envelope)):
+            result = await dvm_tools.get_device_interfaces("root", "branch1")
+
+        assert result == {
+            "status": "error",
+            "message": message,
+            "error_code": "device_proxy_error",
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("envelope", "message"), _PROXY_FAILURES)
+    async def test_client_location_is_an_error(self, envelope: list[dict], message: str) -> None:
+        with patch.object(dvm_tools, "get_fmg_client", return_value=_proxy_client(envelope)):
+            result = await dvm_tools.get_device_client_location(
+                adom="root", device="branch1", ip="198.51.100.32"
+            )
+
+        # Not "match_count 0": an unread inventory says nothing about the client.
+        assert result == {"error": message, "error_code": "device_proxy_error"}
+
+
 # --- DEFAULT_DEVICE fallback -------------------------------------------------
 
 

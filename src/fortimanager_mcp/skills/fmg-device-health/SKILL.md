@@ -10,7 +10,7 @@ Separate three questions: does FortiManager reach the device, is the device heal
 ## 1. Connection
 `list_devices` with `fields` such as `name`, `ip`, `conn_status`, `conf_status`, `db_status`, `os_ver`, `mr`, `patch`, then `get_device` for one device. `conn_status` 1 means connected. `get_device_status` gives the same view decoded: it reads FortiManager's database and never contacts the device.
 
-Confirm with a live read: `get_device_realtime_status`. Its top-level `status` can say `success` even when the device did not answer, so check the entry inside `data`: `status.code` 0 with a `response` means the device answered, whatever an older status says. A non-zero code (for example "No tunnel") means the problem is between FortiManager and the device: check the path used by FGFM (TCP/541), which on an overlay can depend on a VIP on the hub. Run the same read on a sibling device: if all fail, suspect FortiManager or the hub.
+Confirm with a live read: `get_device_realtime_status`. A `success` means the device answered, whatever an older status says. `error_code` `device_proxy_error` means it did not, and `error` carries FortiManager's reason (for example "No tunnel"). Then the problem is between FortiManager and the device: check the path used by FGFM (TCP/541), which on an overlay can depend on a VIP on the hub. Run the same read on a sibling device: if all fail, suspect FortiManager or the hub.
 
 ## 2. Device state
 - Interfaces: `get_device_interfaces`, which includes VLANs.
