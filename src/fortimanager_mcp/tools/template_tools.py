@@ -22,6 +22,7 @@ from fortimanager_mcp.utils.validation import (
     is_snmp_community_block,
     validate_adom,
     validate_device_name,
+    validate_limit,
     validate_object_name,
 )
 
@@ -771,10 +772,12 @@ async def list_templates(
 
     Args:
         adom: ADOM name (default: from DEFAULT_ADOM env var, or "root")
-        limit: Maximum number of templates to return
+        limit: Maximum number of templates to return (default: 100, minimum: 1)
 
     Returns:
-        List of templates with name, type, and settings
+        List of templates with name, type, and settings. ``count`` is the
+        number returned and ``total`` the number before ``limit``: if
+        ``total`` is larger the list was cut, raise ``limit`` for the rest.
     """
     adom = adom or get_default_adom()
     client = get_fmg_client()
@@ -783,12 +786,15 @@ async def list_templates(
 
     try:
         adom = validate_adom(adom)
+        limit = validate_limit(limit)
         templates = await client.list_templates(adom=adom)
+        total = len(templates) if templates else 0
         templates = templates[:limit] if templates else []
 
         return {
             "adom": adom,
             "count": len(templates),
+            "total": total,
             "templates": templates,
         }
     except Exception as e:
@@ -842,10 +848,13 @@ async def list_system_templates(
 
     Args:
         adom: ADOM name (default: from DEFAULT_ADOM env var, or "root")
-        limit: Maximum number to return
+        limit: Maximum number to return (default: 100, minimum: 1)
 
     Returns:
-        List of system templates with name, type, and assigned devices
+        List of system templates with name, type, and assigned devices.
+        ``count`` is the number returned and ``total`` the number before
+        ``limit``: if ``total`` is larger the list was cut, raise ``limit``
+        for the rest.
     """
     adom = adom or get_default_adom()
     client = get_fmg_client()
@@ -854,12 +863,15 @@ async def list_system_templates(
 
     try:
         adom = validate_adom(adom)
+        limit = validate_limit(limit)
         templates = await client.list_system_templates(adom=adom)
+        total = len(templates) if templates else 0
         templates = templates[:limit] if templates else []
 
         return {
             "adom": adom,
             "count": len(templates),
+            "total": total,
             "templates": templates,
         }
     except Exception as e:
@@ -1038,10 +1050,13 @@ async def list_cli_templates(
 
     Args:
         adom: ADOM name (default: from DEFAULT_ADOM env var, or "root")
-        limit: Maximum number to return
+        limit: Maximum number to return (default: 100, minimum: 1)
 
     Returns:
-        dict: adom, count, cli_templates (name, type, description, variables)
+        dict: adom, count, total, cli_templates (name, type, description,
+        variables). ``count`` is the number returned and ``total`` the
+        number before ``limit``: if ``total`` is larger the list was cut,
+        raise ``limit`` for the rest.
     """
     adom = adom or get_default_adom()
     client = get_fmg_client()
@@ -1050,7 +1065,9 @@ async def list_cli_templates(
 
     try:
         adom = validate_adom(adom)
+        limit = validate_limit(limit)
         templates = await client.list_cli_templates(adom=adom)
+        total = len(templates)
         templates = [
             {
                 "name": t.get("name"),
@@ -1060,7 +1077,7 @@ async def list_cli_templates(
             }
             for t in templates[:limit]
         ]
-        return {"adom": adom, "count": len(templates), "cli_templates": templates}
+        return {"adom": adom, "count": len(templates), "total": total, "cli_templates": templates}
     except Exception as e:
         logger.error(f"Template tool operation failed: {e}")
         msg, code = client_safe_error(e)
@@ -1131,10 +1148,12 @@ async def list_cli_template_groups(
 
     Args:
         adom: ADOM name (default: from DEFAULT_ADOM env var, or "root")
-        limit: Maximum number to return
+        limit: Maximum number to return (default: 100, minimum: 1)
 
     Returns:
-        List of CLI template groups
+        List of CLI template groups. ``count`` is the number returned and
+        ``total`` the number before ``limit``: if ``total`` is larger the
+        list was cut, raise ``limit`` for the rest.
     """
     adom = adom or get_default_adom()
     client = get_fmg_client()
@@ -1143,12 +1162,15 @@ async def list_cli_template_groups(
 
     try:
         adom = validate_adom(adom)
+        limit = validate_limit(limit)
         groups = await client.list_cli_template_groups(adom=adom)
+        total = len(groups) if groups else 0
         groups = groups[:limit] if groups else []
 
         return {
             "adom": adom,
             "count": len(groups),
+            "total": total,
             "cli_template_groups": groups,
         }
     except Exception as e:
@@ -1275,10 +1297,12 @@ async def list_template_groups(
 
     Args:
         adom: ADOM name (default: from DEFAULT_ADOM env var, or "root")
-        limit: Maximum number to return
+        limit: Maximum number to return (default: 100, minimum: 1)
 
     Returns:
-        List of template groups
+        List of template groups. ``count`` is the number returned and
+        ``total`` the number before ``limit``: if ``total`` is larger the
+        list was cut, raise ``limit`` for the rest.
     """
     adom = adom or get_default_adom()
     client = get_fmg_client()
@@ -1287,12 +1311,15 @@ async def list_template_groups(
 
     try:
         adom = validate_adom(adom)
+        limit = validate_limit(limit)
         groups = await client.list_template_groups(adom=adom)
+        total = len(groups) if groups else 0
         groups = groups[:limit] if groups else []
 
         return {
             "adom": adom,
             "count": len(groups),
+            "total": total,
             "template_groups": groups,
         }
     except Exception as e:

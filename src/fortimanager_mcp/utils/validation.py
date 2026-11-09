@@ -1296,6 +1296,20 @@ def validate_task_id(task_id: int) -> int:
     return task_id
 
 
+def validate_limit(limit: int) -> int:
+    """Validate the ``limit`` of a list tool that cuts its result itself.
+
+    Those tools slice with ``[:limit]``, which does not fail below 1: 0
+    answers an empty list that reads as "nothing there", and -1 drops the
+    last item. Anything but an integer is refused too, for a caller that
+    does not type-check the argument first (see validate_task_id).
+    """
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise ValidationError("limit must be an integer of at least 1")
+
+    return limit
+
+
 # =============================================================================
 # Security Profile Validation
 # =============================================================================

@@ -24,6 +24,7 @@ from fortimanager_mcp.utils.validation import (
     ValidationError,
     validate_adom,
     validate_device_name,
+    validate_limit,
     validate_object_name,
 )
 
@@ -46,10 +47,13 @@ async def list_sdwan_templates(
 
     Args:
         adom: ADOM name (default: from DEFAULT_ADOM env var, or "root")
-        limit: Maximum number of templates to return
+        limit: Maximum number of templates to return (default: 100, minimum: 1)
 
     Returns:
-        List of SD-WAN templates with name, type, and assigned devices
+        List of SD-WAN templates with name, type, and assigned devices.
+        ``count`` is the number returned and ``total`` the number before
+        ``limit``: if ``total`` is larger the list was cut, raise ``limit``
+        for the rest.
     """
     adom = adom or get_default_adom()
     client = get_fmg_client()
@@ -58,12 +62,15 @@ async def list_sdwan_templates(
 
     try:
         adom = validate_adom(adom)
+        limit = validate_limit(limit)
         templates = await client.list_sdwan_templates(adom=adom)
+        total = len(templates) if templates else 0
         templates = templates[:limit] if templates else []
 
         return {
             "adom": adom,
             "count": len(templates),
+            "total": total,
             "sdwan_templates": templates,
         }
     except Exception as e:

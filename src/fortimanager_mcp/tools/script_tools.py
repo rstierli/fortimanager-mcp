@@ -19,6 +19,7 @@ from fortimanager_mcp.utils.validation import (
     coerce_device_name_list,
     validate_adom,
     validate_device_name,
+    validate_limit,
     validate_object_name,
     validate_package_name,
     validate_script_content,
@@ -176,10 +177,12 @@ async def list_scripts(
         adom: ADOM name (default: from DEFAULT_ADOM env var, or "root")
         script_type: Filter by type (cli, tcl, cligrp, tclgrp, jinja)
         target: Filter by target (device_database, remote_device, adom_database)
-        limit: Maximum number of scripts to return
+        limit: Maximum number of scripts to return (default: 100, minimum: 1)
 
     Returns:
-        List of scripts with name, type, target, and description
+        List of scripts with name, type, target, and description. ``count``
+        is the number returned and ``total`` the number before ``limit``: if
+        ``total`` is larger the list was cut, raise ``limit`` for the rest.
     """
     adom = adom or get_default_adom()
     client = get_fmg_client()
@@ -188,6 +191,7 @@ async def list_scripts(
 
     try:
         adom = validate_adom(adom)
+        limit = validate_limit(limit)
         # Build filter if type or target specified
         filter_conditions = []
         if script_type:
@@ -202,11 +206,13 @@ async def list_scripts(
         )
 
         # Limit results
+        total = len(scripts) if scripts else 0
         scripts = scripts[:limit] if scripts else []
 
         return {
             "adom": adom,
             "count": len(scripts),
+            "total": total,
             "scripts": scripts,
         }
     except Exception as e:
