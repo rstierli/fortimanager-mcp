@@ -1558,3 +1558,148 @@ class TestInstallOn:
     def test_bad_targets_are_refused(self, bad):
         with pytest.raises(ValidationError):
             validate_install_on(bad)
+
+
+class TestDeviceNameVdomSuffix:
+    """``name[vdom]`` is one shape, checked whole (security audit M1, L10).
+
+    The old check split on the first ``[`` and looked only at the part
+    after it, so a second bracket smuggled a path past it.
+    """
+
+    @pytest.mark.parametrize(
+        "device",
+        [
+            "dev[root[/../../group/All_FortiGate",
+            "dev[root]/../../group/All_FortiGate",
+            "dev[root]]",
+            "dev[root",
+            "dev[]",
+            "[root]",
+            "dev[root]x",
+            "dev[ro.ot]",
+            "dev[root\n]",
+            "dev\n[root]",
+            "dev/x[root]",
+        ],
+    )
+    def test_a_malformed_suffix_is_refused(self, device):
+        with pytest.raises(ValidationError):
+            validate_device_name(device)
+
+    @pytest.mark.parametrize(
+        "device",
+        ["FGT-01[root]", "fw.01[vd_1]", "site.a-fw_2[VDOM-2]", "a" * 64 + "[" + "b" * 64 + "]"],
+    )
+    def test_a_well_formed_suffix_passes(self, device):
+        assert validate_device_name(device) == device
+
+
+class TestPatternsAreAnchoredAtTheEnd:
+    """``$`` matches before a trailing newline; the patterns must not (L10).
+
+    The constants are imported by other modules and used with ``.match``,
+    so the anchor has to hold for ``.match`` too, not only for fullmatch.
+    """
+
+    @pytest.mark.parametrize(
+        ("pattern", "value"),
+        [
+            ("ADOM_PATTERN", "root"),
+            ("DEVICE_NAME_PATTERN", "FGT-01"),
+            ("DEVICE_SERIAL_PATTERN", "FGT60F0000000001"),
+            ("OBJECT_NAME_PATTERN", "srv-web"),
+            ("PACKAGE_NAME_PATTERN", "default"),
+            ("POLICY_NAME_PATTERN", "allow-web"),
+            ("INTERFACE_NAME_PATTERN", "port1"),
+            ("FQDN_PATTERN", "example.com"),
+            ("IPV4_PATTERN", "192.0.2.1"),
+            ("IPV4_CIDR_PATTERN", "192.0.2.0/24"),
+            ("PORT_RANGE_PATTERN", "80-443"),
+        ],
+    )
+    def test_a_trailing_newline_does_not_match(self, pattern, value):
+        from fortimanager_mcp.utils import validation
+
+        compiled = getattr(validation, pattern)
+        assert compiled.match(value)
+        assert compiled.match(value + "\n") is None
+
+    def test_a_port_range_takes_ascii_digits_only(self):
+        """``\\d`` is Unicode-aware: Arabic-Indic digits passed, and int() read them."""
+        with pytest.raises(ValidationError):
+            validate_port_range("٨٠")
+
+    def test_install_scope_refuses_a_newline_inside_a_vdom_suffix(self):
+        with pytest.raises(ValidationError):
+            validate_install_scope([{"name": "branch1[root\n]"}])
+
+    def test_install_scope_never_sends_a_trailing_newline(self):
+        """The vdom is stripped and stored back, so the newline never leaves."""
+        scope = validate_install_scope([{"name": "branch1", "vdom": "root\n"}])
+        assert scope == [{"name": "branch1", "vdom": "root"}]
+
+    def test_install_on_refuses_a_trailing_newline_in_a_vdom(self):
+        with pytest.raises(ValidationError):
+            validate_install_on([{"name": "branch1", "vdom": "root\n"}])
+
+
+class TestInstallScopeShape:
+    """Only name and vdom reach FortiManager, and they reach it stripped (M5)."""
+
+    @pytest.mark.parametrize("extra", ["oid", "flags", "NAME"])
+    def test_an_unknown_key_is_refused(self, extra):
+        with pytest.raises(ValidationError, match="unknown keys"):
+            validate_install_scope([{"name": "branch1", "vdom": "root", extra: "x"}])
+
+    def test_values_are_returned_stripped(self):
+        assert validate_install_scope([{"name": " branch1 ", "vdom": " root "}]) == [
+            {"name": "branch1", "vdom": "root"}
+        ]
+
+    def test_the_caller_list_is_not_mutated(self):
+        scope = [{"name": " branch1 "}]
+        assert validate_install_scope(scope) == [{"name": "branch1"}]
+        assert scope == [{"name": " branch1 "}]
+
+
+class TestSnmpCommunityNames:
+    """An SNMP community's name is its community string."""
+
+    def test_community_name_is_masked(self) -> None:
+        text = (
+            "config system snmp community\n"
+            "    edit 1\n"
+            '        set name "s3cr3tcomm"\n'
+            "        set status enable\n"
+            "    next\n"
+            "end\n"
+            "config system interface\n"
+            "    edit port1\n"
+            '        set name "keep-me"\n'
+            "    next\n"
+            "end"
+        )
+        out = redact_config_text_secrets(text)
+        assert "s3cr3tcomm" not in out
+        assert "keep-me" in out and "set status enable" in out
+
+    @pytest.mark.parametrize("block", ["config snmp-community", "config community"])
+    def test_controller_community_tables_are_masked(self, block: str) -> None:
+        text = f"{block}\n    edit 1\n        set name pubcomm\n    next\nend"
+        assert "pubcomm" not in redact_config_text_secrets(text)
+
+    def test_name_after_the_block_ends_is_kept(self) -> None:
+        text = (
+            "config system snmp community\n    edit 1\n        set name c1\n    next\nend\n"
+            "config firewall address\n    edit a\n        set name addr1\n    next\nend"
+        )
+        out = redact_config_text_secrets(text)
+        assert "c1" not in out.split("config firewall address")[0]
+        assert "set name addr1" in out
+
+
+@pytest.mark.parametrize("sep", ["\r", "\u2028"])
+def test_lone_cr_and_line_separator_end_a_config_line(sep: str) -> None:
+    text = sep.join(["config system admin", "edit a", "set password S3CR4", "next", "end"])
+    assert "S3CR4" not in redact_config_text_secrets(text)

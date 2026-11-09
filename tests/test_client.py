@@ -1,9 +1,19 @@
 """Tests for FortiManager API client."""
 
+from collections.abc import Awaitable, Callable
+from http.client import RemoteDisconnected
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+import requests
+from pyFMG.fortimgr import FMGConnectionError
+from urllib3.exceptions import (
+    ConnectTimeoutError,
+    MaxRetryError,
+    NewConnectionError,
+    ProtocolError,
+)
 
 from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.utils.errors import (
@@ -266,7 +276,7 @@ class TestEnsureConnectedReconnectOnce:
 
     def test_is_transient_error_oserror(self, mock_client: FortiManagerClient) -> None:
         """OSError (network problems) is transient."""
-        assert mock_client._is_transient_error(OSError("connection reset")) is True
+        assert mock_client._is_transient_error(OSError("connection reset"), verb="get") is True
 
     def test_is_transient_error_known_codes(self, mock_client: FortiManagerClient) -> None:
         """Only FMG code -1 (internal error) is transient."""
@@ -276,14 +286,14 @@ class TestEnsureConnectedReconnectOnce:
                 super().__init__("err")
                 self.code = code
 
-        assert mock_client._is_transient_error(_CodedExc(-1)) is True
+        assert mock_client._is_transient_error(_CodedExc(-1), verb="get") is True
         # -11 is permission/stale-session: owned by the reconnect path, not
         # transient retry (verified live against FMG 7.6.7).
-        assert mock_client._is_transient_error(_CodedExc(-11)) is False
+        assert mock_client._is_transient_error(_CodedExc(-11), verb="get") is False
         # -3 (not found), -4, -8 (invalid parameter) are NOT transient.
-        assert mock_client._is_transient_error(_CodedExc(-3)) is False
-        assert mock_client._is_transient_error(_CodedExc(-4)) is False
-        assert mock_client._is_transient_error(_CodedExc(-8)) is False
+        assert mock_client._is_transient_error(_CodedExc(-3), verb="get") is False
+        assert mock_client._is_transient_error(_CodedExc(-4), verb="get") is False
+        assert mock_client._is_transient_error(_CodedExc(-8), verb="get") is False
 
     def test_is_session_error_auth(self, mock_client: FortiManagerClient) -> None:
         """AuthenticationError always indicates a dropped session."""
@@ -383,7 +393,7 @@ class TestExecuteResilient:
             calls.append("call")
             return "ok"
 
-        result = await mock_client._execute_resilient(_factory)
+        result = await mock_client._execute_resilient(_factory, verb="get")
         assert result == "ok"
         assert calls == ["call"]
 
@@ -410,7 +420,7 @@ class TestExecuteResilient:
         async def _no_sleep(d: float) -> None:
             sleeps.append(d)
 
-        result = await mock_client._execute_resilient(_factory, sleep=_no_sleep)
+        result = await mock_client._execute_resilient(_factory, verb="get", sleep=_no_sleep)
         assert result == "ok"
         assert len(attempts) == 2
         # First retry uses _TRANSIENT_BACKOFF_BASE * 2^0 = 0.5
@@ -440,7 +450,7 @@ class TestExecuteResilient:
             sleeps.append(d)
 
         with pytest.raises(_CodedExc) as exc_info:
-            await mock_client._execute_resilient(_factory, sleep=_no_sleep)
+            await mock_client._execute_resilient(_factory, verb="get", sleep=_no_sleep)
 
         # 1 initial + _TRANSIENT_RETRIES = 1 + 2 = 3 attempts
         assert len(attempts) == 1 + mock_client._TRANSIENT_RETRIES
@@ -465,7 +475,7 @@ class TestExecuteResilient:
             raise _CodedExc(-5)
 
         with pytest.raises(_CodedExc):
-            await mock_client._execute_resilient(_factory)
+            await mock_client._execute_resilient(_factory, verb="get")
 
         assert attempts == ["call"]
 
@@ -495,7 +505,7 @@ class TestExecuteResilient:
                 raise AuthenticationError("session invalid")
             return "ok"
 
-        result = await mock_client._execute_resilient(_factory)
+        result = await mock_client._execute_resilient(_factory, verb="get")
         assert result == "ok"
         assert reconnects == ["reconnect"]
         assert len(attempts) == 2
@@ -525,7 +535,7 @@ class TestExecuteResilient:
             raise AuthenticationError("session invalid")
 
         with pytest.raises(AuthenticationError):
-            await mock_client._execute_resilient(_factory)
+            await mock_client._execute_resilient(_factory, verb="get")
 
         # Exactly ONE reconnect happened. Initial attempt + one retry after
         # the reconnect = 2 attempts. The second AuthenticationError is
@@ -551,7 +561,7 @@ class TestExecuteResilient:
 
         monkeypatch.setattr(FortiManagerClient, "connect", fake_connect)
         with pytest.raises(ConnectionError, match="Not connected"):
-            await mock_client_disconnected._execute_resilient(_factory)
+            await mock_client_disconnected._execute_resilient(_factory, verb="get")
         assert calls == []
 
     @pytest.mark.asyncio
@@ -576,7 +586,7 @@ class TestExecuteResilient:
             return "ok"
 
         monkeypatch.setattr(FortiManagerClient, "connect", fake_connect)
-        assert await mock_client_disconnected._execute_resilient(_factory) == "ok"
+        assert await mock_client_disconnected._execute_resilient(_factory, verb="get") == "ok"
         assert calls == ["connect", "call"]
 
     @pytest.mark.asyncio
@@ -599,7 +609,7 @@ class TestExecuteResilient:
 
         monkeypatch.setattr(FortiManagerClient, "connect", fake_connect)
         with pytest.raises(ConnectionError):
-            await mock_client_disconnected._execute_resilient(_factory)
+            await mock_client_disconnected._execute_resilient(_factory, verb="get")
         assert calls == ["connect"]
 
 
@@ -1944,3 +1954,222 @@ class TestPortedClientMethods:
         assert mock_fmg_instance.get.call_args.args[0] == (
             "/pm/config/adom/demo/obj/firewall/profile-group/g1"
         )
+
+
+# ---------------------------------------------------------------------------
+# Verb-aware retry (audit M3)
+# ---------------------------------------------------------------------------
+
+
+def _raise_chained(*excs: BaseException) -> BaseException:
+    """Raise each exception inside the handler of the one before and return the last.
+
+    Rebuilds the ``__context__``/``__cause__`` chain the real stack produces:
+    urllib3 raises ``MaxRetryError(...) from reason``, requests re-raises it
+    inside its handler as ``requests.ConnectionError``, and pyfmg re-raises
+    that inside its own handler as ``FMGConnectionError``.
+    """
+
+    def _raise_at(i: int, prev: BaseException | None) -> BaseException:
+        try:
+            if isinstance(excs[i], MaxRetryError):
+                raise excs[i] from prev
+            raise excs[i]
+        except BaseException as caught:  # noqa: BLE001 - test helper
+            if i + 1 == len(excs):
+                return caught
+            # Still inside this handler, so the next raise gets __context__.
+            return _raise_at(i + 1, caught)
+
+    return _raise_at(0, None)
+
+
+def _dropped_after_send() -> BaseException:
+    """The connection closed after the request body went out (RemoteDisconnected)."""
+    return _raise_chained(
+        RemoteDisconnected("Remote end closed connection without response"),
+        ProtocolError(
+            "Connection aborted.",
+            RemoteDisconnected("Remote end closed connection without response"),
+        ),
+        requests.exceptions.ConnectionError("('Connection aborted.', RemoteDisconnected(...))"),
+        FMGConnectionError("Connection error: RemoteDisconnected"),
+    )
+
+
+def _connection_refused() -> BaseException:
+    """The TCP connect was refused: nothing was sent."""
+    reason = NewConnectionError(None, "Failed to establish a new connection: [Errno 61] refused")  # type: ignore[arg-type]
+    return _raise_chained(
+        ConnectionRefusedError(61, "Connection refused"),
+        reason,
+        MaxRetryError(None, "/jsonrpc", reason),  # type: ignore[arg-type]
+        requests.exceptions.ConnectionError("Max retries exceeded (NewConnectionError)"),
+        FMGConnectionError("Connection error: NewConnectionError"),
+    )
+
+
+def _connect_timed_out() -> BaseException:
+    """The TCP connect timed out: nothing was sent."""
+    reason = ConnectTimeoutError(None, "Connection to fmg timed out. (connect timeout=30)")
+    return _raise_chained(
+        TimeoutError("timed out"),
+        reason,
+        MaxRetryError(None, "/jsonrpc", reason),  # type: ignore[arg-type]
+        requests.exceptions.ConnectTimeout("Max retries exceeded (ConnectTimeoutError)"),
+        FMGConnectionError("Connection error: ConnectTimeout"),
+    )
+
+
+class _Coded(Exception):
+    def __init__(self, code: int) -> None:
+        super().__init__(f"code {code}")
+        self.code = code
+
+
+class TestVerbAwareRetry:
+    """A verb that can change state twice is replayed only when the request
+    provably never reached FortiManager; get/set/update/delete keep the full
+    transient retry (audit M3)."""
+
+    @pytest.fixture(autouse=True)
+    def _no_backoff(self, mock_client: FortiManagerClient) -> None:
+        mock_client._TRANSIENT_BACKOFF_BASE = 0.0
+
+    @pytest.mark.parametrize("verb", ["execute", "add", "clone", "move"])
+    def test_post_send_drop_is_not_transient_for_state_changing_verbs(
+        self, mock_client: FortiManagerClient, verb: str
+    ) -> None:
+        assert mock_client._is_transient_error(_dropped_after_send(), verb=verb) is False
+
+    @pytest.mark.parametrize("verb", ["execute", "add", "clone", "move"])
+    def test_code_minus_one_is_not_transient_for_state_changing_verbs(
+        self, mock_client: FortiManagerClient, verb: str
+    ) -> None:
+        assert mock_client._is_transient_error(_Coded(-1), verb=verb) is False
+
+    @pytest.mark.parametrize("verb", ["execute", "add", "clone", "move"])
+    @pytest.mark.parametrize("make_exc", [_connection_refused, _connect_timed_out])
+    def test_never_sent_errors_stay_transient_for_state_changing_verbs(
+        self, mock_client: FortiManagerClient, verb: str, make_exc: Callable[[], BaseException]
+    ) -> None:
+        assert mock_client._is_transient_error(make_exc(), verb=verb) is True
+
+    @pytest.mark.parametrize("verb", ["get", "set", "update", "delete"])
+    def test_replay_safe_verbs_keep_full_retry(
+        self, mock_client: FortiManagerClient, verb: str
+    ) -> None:
+        assert mock_client._is_transient_error(_dropped_after_send(), verb=verb) is True
+        assert mock_client._is_transient_error(_Coded(-1), verb=verb) is True
+
+    def test_a_bare_oserror_is_not_proof_the_request_never_left(
+        self, mock_client: FortiManagerClient
+    ) -> None:
+        assert mock_client._is_transient_error(OSError("reset"), verb="execute") is False
+
+    @pytest.mark.asyncio
+    async def test_install_runs_once_when_connection_drops_after_send(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        mock_fmg_instance.execute.side_effect = _dropped_after_send()
+        with pytest.raises(FMGConnectionError) as exc_info:
+            await mock_client.install_package(
+                adom="root", pkg="default", scope=[{"name": "FGT-01", "vdom": "root"}]
+            )
+        assert mock_fmg_instance.execute.call_count == 1
+        assert exc_info.value.retries_attempted == 0
+
+    @pytest.mark.asyncio
+    async def test_script_execute_not_replayed_on_code_minus_one(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        mock_fmg_instance.execute.return_value = (-1, {"status": {"message": "internal"}})
+        with pytest.raises(FortiManagerMCPError):
+            await mock_client.execute("/dvmdb/adom/root/script/execute", script="s")
+        assert mock_fmg_instance.execute.call_count == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("verb", "call"),
+        [
+            ("add", lambda c: c.add("/pm/config/adom/root/obj/firewall/address", data={})),
+            ("clone", lambda c: c.clone("/dvmdb/adom/root/revision/1", data={})),
+            (
+                "move",
+                lambda c: c.move("/pm/config/adom/root/pkg/p/firewall/policy/1", "before", "2"),
+            ),
+            ("execute", lambda c: c.cache_diff_end("tok")),
+        ],
+    )
+    async def test_every_state_changing_path_reaches_the_classifier(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        verb: str,
+        call: Callable[[FortiManagerClient], Awaitable[Any]],
+    ) -> None:
+        getattr(mock_fmg_instance, verb).side_effect = _dropped_after_send()
+        with pytest.raises(FMGConnectionError):
+            await call(mock_client)
+        assert getattr(mock_fmg_instance, verb).call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_execute_retried_when_the_connect_was_refused(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        mock_fmg_instance.execute.side_effect = [_connection_refused(), (0, {"task": 7})]
+        result = await mock_client.execute("/securityconsole/install/package", adom="root")
+        assert result == {"task": 7}
+        assert mock_fmg_instance.execute.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_get_still_retried_after_a_post_send_drop(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        mock_fmg_instance.get.side_effect = [_dropped_after_send(), (0, {"ok": 1})]
+        assert await mock_client.get("/sys/status") == {"ok": 1}
+        assert mock_fmg_instance.get.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_stale_session_still_reconnects_once_for_execute(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """-11 is rejected before FMG acts, so the reconnect-once path stays."""
+        reconnects: list[str] = []
+
+        async def fake_force_reconnect(self_: FortiManagerClient) -> None:
+            reconnects.append("reconnect")
+
+        monkeypatch.setattr(FortiManagerClient, "_force_reconnect", fake_force_reconnect)
+        mock_fmg_instance.execute.side_effect = [
+            (-11, {"status": {"message": "No permission"}}),
+            (0, {"task": 9}),
+        ]
+        assert await mock_client.execute("/securityconsole/install/package") == {"task": 9}
+        assert reconnects == ["reconnect"]
+
+    @pytest.mark.asyncio
+    async def test_read_only_exec_keeps_full_retry(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        mock_fmg_instance.execute.side_effect = [_dropped_after_send(), (0, {"message": "[]"})]
+        assert await mock_client.get_preview_result("root", scope=[]) == {"message": "[]"}
+        assert mock_fmg_instance.execute.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_proxy_get_retried_but_proxy_write_is_not(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        target = ["/adom/root/device/FGT1"]
+        mock_fmg_instance.execute.side_effect = [(-1, {}), (0, [{"response": {}}])]
+        await mock_client.proxy_call("get", "/api/v2/monitor/system/status", target)
+        assert mock_fmg_instance.execute.call_count == 2
+
+        mock_fmg_instance.execute.reset_mock()
+        mock_fmg_instance.execute.side_effect = [(-1, {}), (0, [{"response": {}}])]
+        with pytest.raises(FortiManagerMCPError):
+            await mock_client.proxy_call("post", "/api/v2/monitor/system/os/reboot", target)
+        assert mock_fmg_instance.execute.call_count == 1

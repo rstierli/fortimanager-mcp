@@ -76,7 +76,7 @@ VALID_UPGRADE_FLAGS = {
 # How-To Guide's firmware section: "6.4.1", "6.4.1-1637", "7.2.9-b1688",
 # "7.6.4-b3596-GA". Digits/dots for the version, optional hyphenated
 # alphanumeric build/label suffixes.
-FIRMWARE_VERSION_PATTERN = re.compile(r"^\d+(?:\.\d+){1,3}(?:-[A-Za-z0-9]+)*$")
+FIRMWARE_VERSION_PATTERN = re.compile(r"^[0-9]+(?:\.[0-9]+){1,3}(?:-[A-Za-z0-9]+)*\Z")
 
 
 def _get_client() -> FortiManagerClient:
@@ -519,7 +519,7 @@ _SCHEDULE_TYPES = {0: "none", 1: "daily", 4: "weekly", 5: "once", 10: "onboard"}
 _PRODUCTS = {1: "fgt", 2: "fap", 3: "fsw", 4: "fex", 5: "fem"}
 _UPGRADE_PATHS = {0: "skip", 1: "auto", 2: "specify"}
 _WEEKDAYS = ("sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday")
-_TIME_PATTERN = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+_TIME_PATTERN = re.compile(r"^([01][0-9]|2[0-3]):[0-5][0-9]\Z")
 
 #: ``flags`` on an enforced-version entry, as the GUI writes it: 104 on
 #: FortiGate entries, 0 on FortiAP/FortiSwitch ones (read from GUI-made

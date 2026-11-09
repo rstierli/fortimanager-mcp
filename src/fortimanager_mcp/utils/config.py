@@ -235,9 +235,10 @@ class Settings(BaseSettings):
     # Firmware Upgrade Safety
     FMG_FIRMWARE_SAFETY: Literal["strict", "disabled"] = Field(
         default="strict",
-        description="Firmware-upgrade safety mode. 'strict' refuses upgrade_device_firmware "
-        "unless the caller also passes confirm=True (upgrading reboots the real managed "
-        "device). 'disabled' allows it unconditionally.",
+        description="Firmware-upgrade safety mode. 'strict' refuses upgrade_device_firmware, "
+        "and add_model_device with a blueprint that enforces a firmware version, unless "
+        "the caller also passes confirm=True (upgrading reboots the real managed device). "
+        "'disabled' allows it unconditionally.",
     )
 
     # Policy Safety
@@ -252,8 +253,9 @@ class Settings(BaseSettings):
     FMG_INSTALL_SAFETY: Literal["strict", "warn", "disabled"] = Field(
         default="strict",
         description="Preview-before-install gate. 'strict' refuses install_package without "
-        "a verified preview_install for the same ADOM/package/device set. 'warn' installs "
-        "but returns a warning. 'disabled' skips the gate.",
+        "a verified preview_install for the same ADOM/package/device set, and "
+        "install_device_settings without one run with package=None for the same "
+        "ADOM/device set. 'warn' installs but returns a warning. 'disabled' skips the gate.",
     )
 
     # Testing Configuration

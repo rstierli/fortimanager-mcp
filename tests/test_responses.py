@@ -6,6 +6,8 @@ adapted for FortiManager's field names (``task_id``, ``package``, ``device``
 instead of FAZ's ``tid``/``logtype``).
 """
 
+import pytest
+
 from fortimanager_mcp.utils.responses import (
     error_response,
     redact,
@@ -43,6 +45,40 @@ class TestRedact:
 
     def test_empty_string(self):
         assert redact("") == ""
+
+    def test_masks_every_cli_secret_directive_name(self):
+        """The key list covers CONFIG_TEXT_SECRET_DIRECTIVES, in both
+        spellings, so a FortiOS field name in an error is masked too."""
+        for key in (
+            "psksecret",
+            "psk",
+            "private-key",
+            "private_key",
+            "passphrase",
+            "secret",
+            "key-string",
+            "md5-key",
+            "auth-pwd",
+            "passwd",
+        ):
+            for sep in ("=", ": ", '": "'):
+                out = redact(f'object rejected: "{key}{sep}Hunter2x" invalid')
+                assert "Hunter2x" not in out, (key, sep, out)
+                assert MASK_VALUE in out
+
+    def test_quoted_value_with_spaces_is_masked_whole(self):
+        out = redact('error: password="two words" rejected')
+        assert "two" not in out and "words" not in out
+
+    def test_lists_agree(self):
+        from fortimanager_mcp.utils import responses
+        from fortimanager_mcp.utils.validation import CONFIG_TEXT_SECRET_DIRECTIVES
+
+        assert CONFIG_TEXT_SECRET_DIRECTIVES - {"key"} <= set(responses._REDACT_KEYS)
+
+    def test_similar_non_secret_names_are_untouched(self):
+        text = "password-expire: 30, keyword=abc, secretary=Bob"
+        assert redact(text) == text
 
 
 class TestErrorResponse:
@@ -216,3 +252,29 @@ class TestStripDeviceCredentials:
         out = strip_device_credentials(deep)
 
         assert "s3cret" not in repr(out)
+
+
+class TestCompoundKeysAndCredentials:
+    """Third re-audit: compound secret keys, HTTP auth schemes, URL userinfo."""
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "admin_password=S3CRi",
+            "AdminPassword: S3CRk",
+            "session_id=S3CRr",
+            "sessionid=S3CRs",
+            "sessionkey=S3CRC",
+            "Authorization: Bearer S3CRoooo",
+            "authorization=Basic S3CRpppp",
+            "connect to https://admin:S3CR3@fmg.example/jsonrpc failed",
+        ],
+    )
+    def test_value_is_masked(self, text: str) -> None:
+        assert "S3CR" not in redact(text)
+
+    @pytest.mark.parametrize(
+        "text", ["inside: 3 rules", "policy 12 deny", "https://fmg.example/jsonrpc"]
+    )
+    def test_ordinary_text_is_kept(self, text: str) -> None:
+        assert redact(text) == text

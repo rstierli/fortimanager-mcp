@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.13.1] - 2026-11-09
+
+Security release from an audit of everything added since 1.12.3. The audit found no critical or high issues; this release fixes all its medium and low findings. The install gate was also verified live on FortiManager 8.0.2: a preview with changes authorizes exactly one install, and editing an object the package uses makes the preview stale.
+
+**Upgrade notes:**
+- `install_device_settings` now needs a verified `preview_install(package=None)` for the same ADOM and devices, like `install_package`. Set `FMG_INSTALL_SAFETY=warn` or `disabled` to keep the old behaviour.
+- A preview authorizes only the exact device scope it covered: a scope entry without a `vdom` no longer matches a preview made for `root`. Install and preview scopes accept only `name` and `vdom` keys.
+- `add_model_device` has a `confirm` parameter. Under `FMG_FIRMWARE_SAFETY=strict` (the default), a blueprint that enforces a firmware version (a firmware template or `prefer-img-ver`), or a saved blueprint that cannot be read, needs `confirm=True`. A name or serial number already in use is refused with `device_exists`.
+- Meta-variable values containing `"`, `\`, `{{`, `{%`, `{#`, `$(`, C1 control characters or U+2028/U+2029 are refused.
+- `query_device_api` refuses `filter`, `key`, `pattern` and `sort` on SNMP community tables, on secret fields, and whenever output masking is on. Below `monitor/switch-controller/managed-switch` only `status` is allowed.
+- Install, script, add, clone and move requests are no longer retried after a dropped connection or a FortiManager internal error (-1).
+
+### Security
+- **Writes are no longer sent twice after a dropped connection.** Install, script run, add, clone and move requests are retried only when the connection could not be opened at all; a request that may have reached FortiManager is not replayed, so an install or script cannot run twice. Reads, set, update, delete and read-only exec calls keep the automatic retry; a stale session still reconnects once.
+- **`install_device_settings` is gated like `install_package`.** Device-settings previews are recorded under their own target, and package and device-settings previews never authorize each other.
+- **One preview authorizes exactly one install, also under parallel calls.** The preview record is taken before the first await, and installs to the same target run one at a time.
+- **The preview gate keys on the exact scope.** Only `name` and `vdom` (stripped) form the key, and a missing vdom no longer counts as `root`. Verified live: before this fix, a vdom-less install passed a `root` preview.
+- **A new preview cancels the previous one for the same target**, even if the new preview fails.
+- **A preview is kept when its install was never sent** (no free task slot), and in `warn` mode an install that goes out spends the preview it used.
+- **Device names with a VDOM suffix must be exactly `name[vdom]`.** Malformed bracket forms could pass the check and reach FortiManager URLs.
+- **Validation patterns anchor at the very end and take ASCII digits only**, so a trailing newline or non-ASCII digits no longer pass name, address, port, firmware-version or schedule-time checks.
+- **`query_device_api`:**
+  - SNMP community strings are redacted in every community table, including switch-controller and wireless-controller child tables and bare entry lists.
+  - Selector parameters can no longer be used to probe redacted or masked values, including through community child tables.
+  - Only ASCII API paths are accepted.
+  - The managed-switch monitor allowlist is narrowed to `status`.
+- **Output masking (`FMG_MASKING`):** entry names and response keys that are addresses are masked in `query_device_api` output; addresses followed by punctuation in free text are masked; `username`, `user` and `user_name` (as user names) and `srcname` (as host name) are masked.
+- **CLI template redaction (`get_cli_template`) fails closed.** Jinja templates are tokenized instead of matched per construct. A secret value that is not one quoted string or a lone `{{ var }}`/`$(var)` is masked through to the next CLI line, so Jinja whitespace control cannot carry it past the mask; tag-built directives and SNMP community names are covered; and when a template can build a secret from its own constants, all of its literal constants are masked. Plain CLI templates (type `cli`) are scanned as CLI and no longer parsed as Jinja.
+- **SNMP community strings are masked in CLI config text and templates** (`set name` under the community tables of system SNMP and the switch and wireless controllers).
+- **Error and device messages mask every FortiOS secret field name** (psksecret, private-key, passphrase and others) in CLI, key=value and JSON spellings, including compound keys (`admin_password`, `session_id`), the credential after `Bearer`/`Basic`, and passwords in URLs; the free-text and CLI secret lists now come from one source.
+- **Install preview and task output are redacted whatever envelope FortiManager returns**, including escaped, truncated or JSON-encoded text that does not parse, mixed-case directives and bare `ENC` blobs; deeply nested previews are masked instead of failing; and task-line details and history in install, preview, clone and `add_model_device` errors redact CLI-form secrets. `add_model_device` task details are also bounded in length and count.
+- **`add_model_device`:**
+  - It no longer suggests deleting a device that existed before the call. Partial creation is reported only when this call created the device.
+  - It asks for confirmation before applying a blueprint that enforces a firmware version.
+  - Password-type meta-variable values are masked in its result.
+- **Meta-variable values refuse characters that could change how a template reads them.**
+- **`clone_package` refuses an existing target name**, or a clone for which FortiManager returns no task, before writing anything.
+- **Playbook prompt arguments are placed in a marked, size-capped data block**, so a value cannot pass for playbook steps.
+- **The flow-trace HTML report template carries a Content-Security-Policy** that allows only its inline styles and no form or base URL, and a no-referrer policy.
+
+### Changed
+- Redaction of very large or pathological inputs (1 MB) takes under 2 s instead of up to a minute.
+- `SECURITY.md` names GitHub private vulnerability reporting, now enabled for the repository.
+- The preview freshness check goes through one fingerprint function. It still compares the package revision, which was verified live on 8.0.2 to move when an object the package references changes.
+- The install-status playbook says to use `find_object_usage` alone when output masking is on, since `query_device_api` then refuses `filter`.
+
 ## [1.13.0] - 2026-11-08
 
 Feature release built on Laurent Venet's `lvenet` branch: 21 new tools (232 to 253) for SD-WAN, BGP, policy sync, CLI templates, policy blocks, metadata variables, firmware templates and a read-only FortiOS diagnostic proxy; eight troubleshooting playbooks served as MCP prompts; and fixes to install preview, `clone_package`, `wait_for_task` and `get_bgp_template`. Laurent's work was based on 1.12.0 and was merged onto 1.12.3 after a review; the review's fixes are listed with the entries they change and under **Security**. Live-verified on FortiManager 8.0.2 with FortiOS 7.4 and 7.6 devices.

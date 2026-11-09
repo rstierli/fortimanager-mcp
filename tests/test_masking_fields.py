@@ -5,6 +5,8 @@ leaks a value with every test still green, and a routing key added by
 accident breaks every follow-up call that used the name.
 """
 
+import pytest
+
 from fortimanager_mcp.masking import fields
 
 
@@ -86,3 +88,38 @@ class TestSkipValues:
     def test_skip_values_are_lowercase_for_comparison(self) -> None:
         for value in fields.SKIP_VALUES:
             assert value == value.lower()
+
+
+class TestUsernames:
+    """Account and client names are identifiers and mask as such (security audit L14)."""
+
+    @pytest.mark.parametrize("key", ["username", "user_name", "user"])
+    def test_the_key_is_a_username_carrier(self, key: str) -> None:
+        assert fields.FIELD_TYPES[key] == fields.USERNAME
+
+    def test_srcname_is_a_host_name(self) -> None:
+        """FortiOS's srcname is the source device's name, not an account."""
+        assert fields.FIELD_TYPES["srcname"] == fields.HOSTNAME
+
+    @pytest.mark.parametrize("key", ["username", "user-name", "User Name", "user"])
+    def test_the_value_is_masked(self, key: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        from fortimanager_mcp.masking.fpe_engine import FPEEngine
+        from fortimanager_mcp.masking.wrapper import OutputMasker
+
+        secret = "2DE79D232DF5585D68CE47882AE256D6"
+        monkeypatch.setenv("FMG_MASKING_KEY", secret)
+        engine = FPEEngine(secret)
+        out = OutputMasker(engine).mask_result({"entries": [{key: "j.doe"}]})
+
+        masked = out["entries"][0][key]
+        assert masked != "j.doe"
+        assert engine.unmask_username(masked) == "j.doe"
+
+    def test_a_srcname_is_masked(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from fortimanager_mcp.masking.fpe_engine import FPEEngine
+        from fortimanager_mcp.masking.wrapper import OutputMasker
+
+        secret = "2DE79D232DF5585D68CE47882AE256D6"
+        monkeypatch.setenv("FMG_MASKING_KEY", secret)
+        out = OutputMasker(FPEEngine(secret)).mask_result({"srcname": "laptop-jdoe"})
+        assert "laptop-jdoe" not in str(out)

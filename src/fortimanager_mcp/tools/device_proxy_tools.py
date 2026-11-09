@@ -19,6 +19,12 @@ by field name, by value (``ENC`` blobs, PEM keys) and, for SNMP communities,
 by position: a community string is the ``name`` of its entry. The name match
 is deliberately wider than ``CONFIG_TEXT_SECRET_DIRECTIVES``: a field wrongly
 masked costs a value, a field wrongly kept leaks a secret.
+
+The query parameters that select rows (``filter``, ``key``/``pattern``,
+``sort``) are held to the same line, since a selector that matches on a
+redacted value answers yes or no about it, one query at a time. They are
+refused on community tables and on secret field names, and refused outright
+when output masking is on (see ``_validate_params``).
 """
 
 import logging
@@ -27,7 +33,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 from fortimanager_mcp.server import get_fmg_client, mcp
-from fortimanager_mcp.utils.config import get_default_adom, get_default_device
+from fortimanager_mcp.utils.config import get_default_adom, get_default_device, get_settings
 from fortimanager_mcp.utils.errors import client_safe_error
 from fortimanager_mcp.utils.redaction import safe_device_message
 from fortimanager_mcp.utils.validation import (
@@ -44,8 +50,13 @@ logger = logging.getLogger(__name__)
 
 #: A monitor or cmdb path. No query string, percent-encoding or traversal:
 #: parameters go through ``params`` so they meet _ALLOWED_PARAMS. A segment
-#: cannot start with a dot, so ``.`` and ``..`` never match.
-_API_PATH = re.compile(r"/api/v2/(?:monitor|cmdb)(?:/[A-Za-z0-9_][A-Za-z0-9_.-]*)+", re.I)
+#: cannot start with a dot, so ``.`` and ``..`` never match. ASCII, because
+#: ``re.I`` alone folds the Kelvin sign onto ``k`` (and the dotless i and
+#: long s onto ``i``/``s``), and ``str.lower`` then maps the Kelvin sign
+#: onto an allowlisted spelling the device never sees.
+_API_PATH = re.compile(
+    r"/api/v2/(?:monitor|cmdb)(?:/[A-Za-z0-9_][A-Za-z0-9_.-]*)+", re.I | re.ASCII
+)
 
 #: What the tool may read, relative to ``/api/v2/``. An entry admits the path
 #: itself and everything below it (``monitor/router`` admits
@@ -93,7 +104,10 @@ _ALLOWED_PREFIXES: tuple[str, ...] = (
     "monitor/vpn/ipsec",
     "monitor/vpn/ssl",
     "monitor/virtual-wan",
-    "monitor/switch-controller/managed-switch",
+    # Not the whole of managed-switch: some GETs below it act on the switch
+    # (cable-status runs a cable diagnostic on the port it names). Add its
+    # other read endpoints here one at a time, each checked first.
+    "monitor/switch-controller/managed-switch/status",
     "monitor/switch-controller/detected-device",
     "monitor/wifi/client",
     "monitor/wifi/managed_ap",
@@ -169,15 +183,44 @@ _ALLOWED_PARAMS = frozenset(
 
 _SECRET_KEY = re.compile(r"passw|passphrase|secret|psk|private[-_]?key|api[-_]?key|token", re.I)
 
-#: Tables whose entries are SNMP communities. The community string is the
-#: entry's ``name`` (``config system snmp community`` / ``edit 1`` /
-#: ``set name <community>``), so a field-name match cannot see it.
-_COMMUNITY_TABLES = ("cmdb/system.snmp/community", "cmdb/switch-controller/snmp-community")
+#: Path segments that name an SNMP community table. The community string
+#: is the entry's ``name`` (``config system snmp community`` / ``edit 1`` /
+#: ``set name <community>``), so a field-name match cannot see it. Matched
+#: as any segment rather than as fixed paths, because the same table also
+#: sits below other entries: ``switch-controller/managed-switch/<sw>/
+#: snmp-community`` and ``wireless-controller/snmp/community`` both
+#: returned community names in clear while only the top-level spellings
+#: were listed.
+_COMMUNITY_SEGMENTS = frozenset({"community", "snmp-community"})
+
+#: Everything under this is treated as a community table, whatever the
+#: child: the SNMP subtree is small, and an over-masked ``name`` there (an
+#: SNMPv3 user, say) costs less than a community found under a child the
+#: segment list does not know.
+_SNMP_TREE = "cmdb/system.snmp"
 
 #: The same tables met as a sub-table, e.g. ``snmp-community[]`` on a
 #: ``switch-controller managed-switch`` entry. ``community`` itself already
 #: matches CONFIG_TEXT_SECRET_DIRECTIVES and is masked whole.
 _COMMUNITY_KEYS = frozenset({"snmp-community"})
+
+#: The copies FortiOS makes of an entry's key. On a table keyed by name
+#: they carry the community too.
+_ENTRY_KEY_FIELDS = ("name", "q_origin_key", "mkey")
+
+#: Parameters that select or order rows by a field's value. Each is an
+#: oracle for a value the response hides: ``filter=name=@a`` on a community
+#: table answers whether the redacted name contains ``a``.
+_SELECTOR_PARAMS = frozenset({"filter", "key", "pattern", "sort"})
+
+#: One ``filter`` clause: a field name, then a FortiOS operator. Anything
+#: else is refused, since a field that cannot be read cannot be checked.
+_FILTER_CLAUSE = re.compile(r"\s*([A-Za-z0-9_.-]+)\s*(?:==|!=|=@|!@|<=|>=|<|>)", re.ASCII)
+
+#: One ``sort`` term: a field name with an optional direction around it.
+#: Fullmatched, as is the bare field name ``key`` takes.
+_SORT_TERM = re.compile(r"\s*[-+]?([A-Za-z0-9_.-]+)(?::(?:asc|desc))?\s*", re.ASCII | re.I)
+_KEY_FIELD = re.compile(r"\s*([A-Za-z0-9_.-]+)\s*", re.ASCII)
 
 _MAX_DEPTH = 32
 
@@ -190,12 +233,28 @@ def _is_secret_key(key: str) -> bool:
 
 
 def _redact_community(entry: Any, depth: int) -> Any:
-    """One SNMP community entry: its ``name`` is the community string."""
+    """One SNMP community entry: its ``name`` is the community string.
+
+    A bare string is taken for a community too, and a list stays in
+    community mode, so a table that comes back as plain values or nested
+    lists is masked rather than passed through as "not an entry".
+    """
+    if depth > _MAX_DEPTH:
+        return MASK_VALUE
+    if isinstance(entry, str):
+        return MASK_VALUE
+    if isinstance(entry, list):
+        return [_redact_community(item, depth + 1) for item in entry]
     if not isinstance(entry, dict):
         return _redact(entry, depth)
     redacted = _redact(entry, depth)
     if "name" in redacted:
         redacted["name"] = MASK_VALUE
+    # The key copies only when they are strings: an integer id is the
+    # usual mkey here and carries nothing.
+    for field in _ENTRY_KEY_FIELDS:
+        if isinstance(redacted.get(field), str):
+            redacted[field] = MASK_VALUE
     return redacted
 
 
@@ -207,8 +266,6 @@ def _redact(value: Any, depth: int = 0, community: bool = False) -> Any:
     if depth > _MAX_DEPTH:
         return MASK_VALUE
     if community:
-        if isinstance(value, list):
-            return [_redact_community(item, depth + 1) for item in value]
         return _redact_community(value, depth + 1)
     if isinstance(value, dict):
         out: dict[Any, Any] = {}
@@ -262,11 +319,91 @@ def _validate_path(path: str) -> str:
 
 
 def _is_community_table(path: str) -> bool:
+    """True for a cmdb path whose entries are, or may be, SNMP communities."""
     relative = _relative(path)
-    return any(_under(relative, table) for table in _COMMUNITY_TABLES)
+    if not relative.startswith("cmdb/"):
+        return False
+    return _under(relative, _SNMP_TREE) or bool(
+        _COMMUNITY_SEGMENTS.intersection(relative.split("/"))
+    )
 
 
-def _validate_params(params: dict[str, Any] | None, vdom: str | None) -> dict[str, Any]:
+def _masking_enabled() -> bool:
+    return bool(get_settings().MASKING_ENABLED)
+
+
+def _is_secret_field(field: str) -> bool:
+    """A selector field naming a secret, whole or as any dotted/slashed part.
+
+    A community child table counts too: ``snmp-community.name=@x`` on a
+    managed switch would test the community names the redaction hides.
+    "_" and "-" match each other (``snmp_community``), as in _is_secret_key.
+    """
+    parts = [part for part in re.split(r"[./]", field) if part]
+    return (
+        _is_secret_key(field)
+        or any(_is_secret_key(part) for part in parts)
+        or any(part.lower().replace("_", "-") in _COMMUNITY_SEGMENTS for part in parts)
+    )
+
+
+def _selector_fields(name: str, value: str) -> list[str]:
+    """The field names a selector parameter reads, or ValidationError.
+
+    Every comma starts a clause, escaped or not: a value that holds a comma
+    is refused rather than parsed the way the device might not.
+    """
+    if name == "pattern":
+        # A value, not a field: ``key`` names the field it is matched on.
+        return []
+    terms = [value] if name == "key" else value.split(",")
+    fields: list[str] = []
+    for term in terms:
+        if name == "filter":
+            match = _FILTER_CLAUSE.match(term)
+        else:
+            match = (_KEY_FIELD if name == "key" else _SORT_TERM).fullmatch(term)
+        if not match:
+            raise ValidationError(
+                f"could not read the field name in {name} {term!r}; use field==value "
+                "clauses (==, !=, =@, !@, <, <=, >, >=) separated by commas"
+            )
+        fields.append(match.group(1))
+    return fields
+
+
+def _check_selector(name: str, value: Any, path: str) -> None:
+    """Refuse a row selector that could reveal a redacted or masked value.
+
+    Three refusals, in order: any selector on a community table (the
+    community is the entry's name, the field every selector reaches); any
+    selector when output masking is on (a substring filter or a sort on an
+    address field recovers the address one query at a time, and in this
+    tool's free-form output every field may carry one); and, otherwise, a
+    selector on a field whose name marks a secret.
+    """
+    if _is_community_table(path):
+        raise ValidationError(
+            f"parameter {name!r} is refused on SNMP community tables: it would match "
+            "on the community strings the response redacts"
+        )
+    if _masking_enabled():
+        raise ValidationError(
+            f"parameter {name!r} is refused while output masking is on: it would match "
+            "on the values the masking hides. Read the table with count/start and "
+            "select the rows from the masked result"
+        )
+    for field in _selector_fields(name, str(value)):
+        if _is_secret_field(field):
+            raise ValidationError(
+                f"parameter {name!r} names the secret field {field!r}; selecting on a "
+                "redacted field is refused"
+            )
+
+
+def _validate_params(
+    params: dict[str, Any] | None, vdom: str | None, path: str = ""
+) -> dict[str, Any]:
     """Build the query parameters, refusing any name outside the allowlist."""
     query: dict[str, Any] = {}
     for name, value in (params or {}).items():
@@ -275,6 +412,8 @@ def _validate_params(params: dict[str, Any] | None, vdom: str | None) -> dict[st
             raise ValidationError(f"parameter {name!r} is not allowed (allowed: {allowed})")
         if not isinstance(value, str | int | bool):
             raise ValidationError(f"parameter {name!r} must be a string, number or boolean")
+        if name in _SELECTOR_PARAMS:
+            _check_selector(name, value, path)
         query[name] = str(value).lower() if isinstance(value, bool) else value
     if vdom:
         query["vdom"] = validate_object_name(vdom, "VDOM")
@@ -299,7 +438,8 @@ async def query_device_api(
     with everything below it): monitor system status/resource/interface/
     ha-peer/dhcp/link-monitor, router (ipv4, lookup, bgp, ospf, ...), network
     arp/lldp, firewall session/policy hit counts, vpn ipsec/ssl, virtual-wan,
-    switch-controller managed-switch/detected-device, wifi clients and APs,
+    switch-controller managed-switch/status and detected-device, wifi clients
+    and APs,
     user device/firewall; cmdb firewall, router, system interface/zone/sdwan/
     ha/global/dns/snmp, vpn.ipsec, switch-controller, wireless-controller,
     user group and the security profiles. Anything else, and every file
@@ -320,6 +460,20 @@ async def query_device_api(
             ``{"count": 50, "format": "name|subnet"}``. ``filter`` applies to
             cmdb paths; ``monitor/firewall/session`` ignores it and takes
             ``source`` or ``destination``.
+
+            The row selectors ``filter``, ``key``, ``pattern`` and ``sort``
+            are refused where they could reveal what the response hides: on
+            SNMP community tables (any ``community``/``snmp-community``
+            segment, anything under ``system.snmp``), on a field whose name
+            marks a secret (``filter=password=@a``), and entirely while
+            output masking is on, since a substring match or a sort on an
+            address field recovers a masked address one query at a time.
+            ``filter`` must be ``field<op>value`` clauses joined by commas
+            (ops ``==``, ``!=``, ``=@``, ``!@``, ``<``, ``<=``, ``>``,
+            ``>=``); a comma inside a value is refused, not guessed at.
+            ``source``/``destination`` stay available with masking on: they
+            take one whole address, the same exact lookup
+            ``get_device_client_location`` accepts.
 
     Returns:
         dict with keys:
@@ -347,7 +501,7 @@ async def query_device_api(
         adom = validate_adom(adom)
         device = validate_device_name(device)
         path = _validate_path(path)
-        query = _validate_params(params, vdom)
+        query = _validate_params(params, vdom, path)
         raw = await client.proxy_call(
             action="get",
             resource=f"{path}?{urlencode(query)}" if query else path,

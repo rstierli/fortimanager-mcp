@@ -174,8 +174,9 @@ class TestCliTemplateRedaction:
     def test_set_after_a_jinja_tag_on_the_same_line(self) -> None:
         out = self._redact("{% if hub %}set psksecret hubsecret{% endif %}")
         assert "hubsecret" not in out
-        assert out.startswith("{% if hub %}set psksecret ***REDACTED***")
-        assert out.endswith("{% endif %}")
+        # The value is not a lone literal or reference, so everything after
+        # the directive on the line is masked, the closing tag included.
+        assert out == "{% if hub %}set psksecret ***REDACTED***"
 
     def test_conditional_literal_value_is_masked(self) -> None:
         out = self._redact("set password {% if a %}one{% else %}two{% endif %}")
@@ -224,6 +225,138 @@ class TestCliTemplateRedaction:
         )
         assert self._redact(script) == script
 
+    def test_set_after_a_jinja_comment_on_the_same_line(self) -> None:
+        out = self._redact("{# note #}set password Secr3t\n{#- n -#}  set psksecret Secr3t")
+        assert "Secr3t" not in out
+        assert out.startswith("{# note #}set password ***REDACTED***")
+
+    def test_pw_names_are_secret(self) -> None:
+        out = self._redact(
+            "{% set pw = 'Secr3t1' %}\n{% set admin_pwd = 'Secr3t2' %}\n"
+            "{% set root_passwd = 'Secr3t3' %}"
+        )
+        for leaked in ("Secr3t1", "Secr3t2", "Secr3t3"):
+            assert leaked not in out, leaked
+
+    def test_assignment_behind_a_secret_set_reference_is_masked(self) -> None:
+        script = (
+            "{% set x = 'Secr3t' %}\n"
+            "{% set y %}Secr3t2{% endset %}\n"
+            "{% set creds = namespace(v='Secr3t3') %}\n"
+            "set password {{ x }}\n"
+            "set psksecret {{ y | trim }}\n"
+            'set passwd "{{ creds.v }}"\n'
+        )
+        out = self._redact(script)
+        for leaked in ("Secr3t", "Secr3t2", "Secr3t3"):
+            assert leaked not in out, leaked
+        # The reference itself stays visible: it says where the value is from.
+        assert "set password {{ x }}" in out
+        assert 'set passwd "{{ creds.v }}"' in out
+
+    def test_secret_keys_inside_a_dict_literal_are_masked(self) -> None:
+        out = self._redact(
+            "{% set admin = {'name':'x','pw':'Secr3t'} %}\n"
+            '{% set wifi = {"ssid": "corp", "wifi_passphrase": "Secr3t2"} %}'
+        )
+        assert "Secr3t" not in out
+        assert "'name':'x'" in out
+        assert '"ssid": "corp"' in out
+
+    def test_block_set_with_a_filter_is_masked(self) -> None:
+        out = self._redact(
+            "{% set psk | trim %}Secr3t{% endset %}\n"
+            "{%- set tunnel_key | replace('a', 'b') -%}\nSecr3t2\n{%- endset -%}\nnext"
+        )
+        assert "Secr3t" not in out
+        assert out.endswith("next")
+
+    def test_legit_jinja_template_is_untouched(self) -> None:
+        script = (
+            "{# Branch bootstrap #}\n"
+            "{% set wan = 'port1' %}\n"
+            "{% set site = {'name': 'b1', 'id': 1} %}\n"
+            "{% set banner | upper %}welcome{% endset %}\n"
+            "config system interface\n"
+            '    edit "{{ wan }}"\n'
+            "        set alias {{ site.name }}\n"
+            "        set description {{ banner }}\n"
+            "    next\n"
+            "end\n"
+            "{# admin #}set password {{ admin_password }}\n"
+            "set psksecret $(psk)"
+        )
+        assert self._redact(script) == script
+
+    # 1.13.1 re-audit: the redactor tokenizes the template instead of
+    # matching one pattern per construct; each case below is a regression pin.
+
+    def _assert_masked(self, script: str, *secrets: str) -> str:
+        out = self._redact(script)
+        for secret in secrets:
+            assert secret not in out, (secret, out)
+        return out
+
+    def test_every_set_on_one_line_is_examined(self) -> None:
+        out = self._assert_masked(
+            "{% if x %}set password {{ a }}{% else %}set password Lit4{% endif %}", "Lit4"
+        )
+        assert out == "{% if x %}set password ***REDACTED***"
+        self._assert_masked(
+            "{% if a %}set alias x{% endif %}{% if b %}set psksecret Lit6{% endif %}", "Lit6"
+        )
+        self._assert_masked("set alias x\rset password Lit7", "Lit7")
+
+    def test_plus_openers(self) -> None:
+        self._assert_masked("{%+ set q='Lit7' %}\nset password {{ q }}", "Lit7")
+        self._assert_masked("{%+ set psk %}Lit8{%+ endset %}", "Lit8")
+        self._assert_masked("{%+ set psk = 'Lit9' %}", "Lit9")
+
+    def test_tuple_targets(self) -> None:
+        self._assert_masked("{% set (psk, y) = ('Lit9', 1) %}", "Lit9")
+        self._assert_masked("{% set (a, b) = ('Lit10', 1) %}\nset password {{ a }}", "Lit10")
+        self._assert_masked("{% set a, b = 'Lit11', 'x' %}\nset password {{ a }}", "Lit11")
+
+    def test_tag_closer_inside_a_string_literal(self) -> None:
+        self._assert_masked("{% set q = 'a%}Lit9' %}\nset password {{ q }}", "Lit9")
+        self._assert_masked("{% set psk = 'ab%}Lit11' %}", "Lit11")
+
+    def test_literals_reaching_a_secret_through_other_constructs(self) -> None:
+        for script, secret in (
+            ("{% macro m() %}Lit13{% endmacro %}\nset password {{ m() }}", "Lit13"),
+            ("{% for x in ['Lit14'] %}\nset password {{ x }}\n{% endfor %}", "Lit14"),
+            ("{% with s = 'Lit15' %}\nset password {{ s }}\n{% endwith %}", "Lit15"),
+            ("{% set ns = namespace(k='Lit27') %}\nset password {{ ns.k }}", "Lit27"),
+            ("{% set l = [] %}{% do l.append('Lit28') %}\nset password {{ l[0] }}", "Lit28"),
+            ("{% set pin = 4711 %}\nset sim-pin {{ pin }}", "4711"),
+            ("{% set q %}Lit16\nset password {{ q }}", "Lit16"),
+        ):
+            self._assert_masked(script, secret)
+
+    def test_the_reference_stays_readable_when_literals_are_masked(self) -> None:
+        out = self._redact("{% set wan = 'port1' %}{% set q = 'Lit1' %}\nset password {{ q }}")
+        assert "Lit1" not in out and "port1" not in out
+        assert "set password {{ q }}" in out
+        assert "{% set wan = " in out
+
+    def test_unterminated_tag_masks_the_rest(self) -> None:
+        out = self._assert_masked("set alias a\n{% set x = 'Lit1", "Lit1")
+        assert out.startswith("set alias a\n")
+
+    def test_secret_inside_a_jinja_comment(self) -> None:
+        self._assert_masked("{# old: set password Lit1 #}\nend", "Lit1")
+
+    def test_uppercase_and_tabs(self) -> None:
+        self._assert_masked("SET PASSWORD Lit1\nset\tpsksecret Lit2", "Lit1", "Lit2")
+
+    def test_quoted_value_around_a_reference(self) -> None:
+        script = 'set password "{{ x }}"\nset psksecret "$(psk)"\nnext'
+        assert self._redact(script) == script
+        self._assert_masked('set password "ab{{ x }}Lit1"', "Lit1", "ab")
+
+    def test_secret_directive_inside_a_literal(self) -> None:
+        self._assert_masked("{{ 'set password Lit1' }}", "Lit1")
+
     @pytest.mark.asyncio
     async def test_get_cli_template_uses_the_template_redactor(
         self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
@@ -236,3 +369,8 @@ class TestCliTemplateRedaction:
         body = result["cli_template"]["script"]
         assert "k1" not in body
         assert "set psksecret {{ psk }}" in body
+
+
+def test_snmp_community_name_in_a_cli_template_is_masked() -> None:
+    script = "config system snmp community\n    edit 1\n        set name tmplcomm\n    next\nend"
+    assert "tmplcomm" not in template_tools.redact_cli_template_script(script)

@@ -3,7 +3,7 @@
 [![CI](https://github.com/rstierli/fortimanager-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/rstierli/fortimanager-mcp/actions/workflows/ci.yml)
 [![Python Version](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.13.0-green)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.13.1-green)](CHANGELOG.md)
 [![FortiManager](https://img.shields.io/badge/FortiManager-7.0%20%7C%207.2%20%7C%207.4%20%7C%207.6-red)](README.md)
 
 A Model Context Protocol (MCP) server for FortiManager JSON-RPC API. This server enables AI assistants like Claude to interact with FortiManager for centralized firewall policy management, device provisioning, and network configuration.
@@ -492,7 +492,7 @@ networks:
 | `list_packages` | List policy packages in an ADOM |
 | `get_package` | Get policy package details |
 | `install_package` | Install policy package to devices |
-| `install_device_settings` | Install device settings only, with an optional revision comment (`dev_rev_comments`) |
+| `install_device_settings` | Install device settings only, with an optional revision comment (`dev_rev_comments`); needs a `preview_install` with `package=None` first (`FMG_INSTALL_SAFETY`) |
 | `lock_adom` | Lock ADOM for editing (workspace mode) |
 | `unlock_adom` | Unlock ADOM |
 | `commit_adom` | Commit ADOM changes |
@@ -505,7 +505,7 @@ networks:
 | `get_device_status` | Get device connection and sync status |
 | `search_devices` | Search devices with filters |
 | `add_device` | Add a new device to FortiManager |
-| `add_model_device` | Add offline model device; optional `device_blueprint` (saved blueprint name or inline blueprint object; every referenced object is checked to exist first), per-device `meta_variables`, `groups`, patch level via `os_version="7.4.12"`, and model HA clusters via `ha_mode`/`ha_group_name`/`ha_members` |
+| `add_model_device` | Add offline model device; optional `device_blueprint` (saved blueprint name or inline blueprint object; every referenced object is checked to exist first), per-device `meta_variables`, `groups`, patch level via `os_version="7.4.12"`, and model HA clusters via `ha_mode`/`ha_group_name`/`ha_members`. Refused if the name or serial is already in use; a blueprint that enforces a firmware version needs `confirm=True` (`FMG_FIRMWARE_SAFETY`) |
 | `list_metadata_variables` | List an ADOM's metadata variables with their per-device values (password-type values redacted) |
 | `check_device_variables` | Check a device's metadata variables against expected values (match / mismatch / not mapped / undefined) |
 | `set_metadata_variable` | Set a device's value for an existing metadata variable, in every scope the device has unless `vdom` is given |
@@ -859,7 +859,8 @@ can use them.
 
 A prompt is picked by the user, not by the model: the client lists the
 server's prompts, you choose one, and its text (the playbook, with what you
-filled in as the argument appended) goes into the conversation. Nothing is
+filled in as the argument appended as a fenced data block, up to 2 KB per
+argument) goes into the conversation. Nothing is
 sent until you ask for a prompt, so the skills add no context to a session
 that does not use them. Prompts load in both `FMG_TOOL_MODE=full` and
 `dynamic`; in dynamic mode they tell the model to call tools through
@@ -868,7 +869,8 @@ that does not use them. Prompts load in both `FMG_TOOL_MODE=full` and
 The playbooks only read and propose changes: any change, install or device
 command waits for your approval. Running an install preview does create
 FortiManager tasks, and a successful preview allows one install of the same
-package and devices (see `FMG_INSTALL_SAFETY`).
+package (or device settings, with `package=None`) and devices (see
+`FMG_INSTALL_SAFETY`).
 
 | Prompt | Argument | Skill | Use it for |
 |--------|----------|-------|------------|
@@ -1256,7 +1258,7 @@ FMG_REVERT_SAFETY=disabled  # Allow unconditionally
 
 #### Firmware Upgrade Safety (`FMG_FIRMWARE_SAFETY`)
 
-Blocks `upgrade_device_firmware` (reboots the real managed device) unless the caller also passes `confirm=True`.
+Blocks `upgrade_device_firmware` (reboots the real managed device) unless the caller also passes `confirm=True`. The same gate applies to `add_model_device` with a device blueprint that sets a firmware template or `prefer-img-ver` (FortiManager can install that version on the FortiGate when it registers), and to a saved blueprint that cannot be read to check.
 
 ```bash
 FMG_FIRMWARE_SAFETY=strict    # Default: refuse without confirm=True

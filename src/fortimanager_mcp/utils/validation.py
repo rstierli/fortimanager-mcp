@@ -277,9 +277,15 @@ CONFIG_TEXT_SECRET_DIRECTIVES = {
     "wifi-private-key-password",
 }
 
+# Case-insensitive, and "-" and "_" match each other: the redactors are run
+# over text that is not always FortiOS's own export (a task message, a
+# preview envelope), and over-matching costs a masked value at most.
 _CONFIG_TEXT_SECRET_LINE = re.compile(
-    r"^(?P<prefix>\s*set\s+(?:"
-    + "|".join(re.escape(d) for d in CONFIG_TEXT_SECRET_DIRECTIVES)
+    r"^(?P<prefix>\s*(?i:set)\s+(?i:"
+    + "|".join(
+        "".join("[-_]" if c in "-_" else re.escape(c) for c in d)
+        for d in sorted(CONFIG_TEXT_SECRET_DIRECTIVES, key=len, reverse=True)
+    )
     + r")\s+)(?P<rest>.*)$"
 )
 
@@ -291,7 +297,7 @@ _CONFIG_TEXT_SECRET_LINE = re.compile(
 # the name list above learns it. Not a substitute for the list: a secret
 # that is not ENC-encoded (a "set key" typed into a CLI script, a PEM
 # private key) is only recognised by name.
-_CONFIG_TEXT_ENC_LINE = re.compile(r'^(?P<prefix>\s*set\s+\S+\s+)(?P<rest>"?ENC\s.*)$')
+_CONFIG_TEXT_ENC_LINE = re.compile(r'^(?P<prefix>\s*(?i:set)\s+\S+\s+)(?P<rest>"?ENC\s.*)$')
 
 
 def _has_unescaped_quote(text: str) -> bool:
@@ -318,6 +324,25 @@ def _has_unescaped_quote(text: str) -> bool:
     return False
 
 
+# An SNMP community's ``name`` is the community string itself, so under
+# ``config system snmp community`` (and the switch and wireless controllers'
+# ``config snmp-community`` / ``config community``) ``set name`` is a secret
+# though the directive is not one anywhere else.
+_CONFIG_BLOCK_LINE = re.compile(r"^\s*config\s+(?P<path>.+?)\s*$", re.I)
+_CONFIG_END_LINE = re.compile(r"^\s*end\s*$", re.I)
+_CONFIG_TEXT_NAME_LINE = re.compile(r"^(?P<prefix>\s*set\s+name\s+)(?P<rest>.*)$", re.I)
+
+
+def is_snmp_community_block(path: str) -> bool:
+    """Whether a ``config <path>`` line opens an SNMP community table.
+
+    Any path naming "community" counts, quoted or followed by a ``#``
+    comment: an over-masked ``set name`` costs less than a community string
+    left in clear because its table was spelled in a way a list missed.
+    """
+    return "community" in path.split("#", 1)[0].lower()
+
+
 def redact_config_text_secrets(text: str) -> str:
     """Mask secret-bearing directive values in raw FortiOS CLI config text.
 
@@ -339,12 +364,26 @@ def redact_config_text_secrets(text: str) -> str:
     closes it is dropped rather than partially kept -- those lines carry
     only secret content, nothing a reader needs.
     """
-    lines = text.split("\n")
+    # A lone CR or a Unicode line separator ends a line too (FortiOS reads a
+    # bare CR as one); CRLF stays as it is.
+    lines = re.sub(r"\r(?!\n)|[\u2028\u2029]", "\n", text).split("\n")
     out: list[str] = []
+    # Open config blocks (True for a community table) and how many of those
+    # are community tables: a counter, not a scan of the stack per line.
+    blocks: list[bool] = []
+    communities = 0
     i = 0
     while i < len(lines):
         line = lines[i]
+        block = _CONFIG_BLOCK_LINE.match(line)
+        if block:
+            blocks.append(is_snmp_community_block(block.group("path")))
+            communities += blocks[-1]
+        elif _CONFIG_END_LINE.match(line) and blocks:
+            communities -= blocks.pop()
         match = _CONFIG_TEXT_SECRET_LINE.match(line) or _CONFIG_TEXT_ENC_LINE.match(line)
+        if not match and communities:
+            match = _CONFIG_TEXT_NAME_LINE.match(line)
         if not match:
             out.append(line)
             i += 1
@@ -368,11 +407,21 @@ def redact_config_text_secrets(text: str) -> str:
 # Validation Patterns
 # =============================================================================
 
+# Every pattern below ends in ``\Z``, not ``$``: ``$`` also matches just
+# before a trailing newline, so ``ADOM_PATTERN.match("root\n")`` passed. The
+# constants are imported and used with ``.match`` elsewhere, so the anchor
+# has to hold there too; this module uses fullmatch on top of it.
+
 # ADOM name pattern: alphanumeric, underscore, hyphen, 1-64 chars
-ADOM_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+ADOM_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}\Z")
 
 # Device name pattern: alphanumeric, underscore, hyphen, dot, 1-64 chars
-DEVICE_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_.-]{1,64}$")
+DEVICE_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_.-]{1,64}\Z")
+
+# A device name with an optional ``[vdom]`` suffix, matched as one shape.
+# Splitting on the first ``[`` and checking the halves let a second bracket
+# through: ``dev[root[/../../group/All_FortiGate`` passed both halves.
+DEVICE_WITH_VDOM_PATTERN = re.compile(r"^([a-zA-Z0-9_.-]{1,64})(?:\[([a-zA-Z0-9_-]{1,64})\])?\Z")
 
 # Device serial number pattern: starts with device type prefix, alphanumeric.
 #
@@ -384,12 +433,12 @@ DEVICE_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_.-]{1,64}$")
 # use the ``FP`` of the mainline FortiAP models. Adding a product line
 # here is the fix whenever one turns up; the alternative, relaxing the
 # prefix to two arbitrary letters, would drop the check to a length test.
-DEVICE_SERIAL_PATTERN = re.compile(r"^(FG|FM|FW|FA|FS|FD|FP|FC|FV|PU|PS)[A-Z0-9]{10,20}$")
+DEVICE_SERIAL_PATTERN = re.compile(r"^(FG|FM|FW|FA|FS|FD|FP|FC|FV|PU|PS)[A-Z0-9]{10,20}\Z")
 
 # Object name pattern: alphanumeric, underscore, hyphen, dot, space, parens,
 # colon; 1-79 chars. FortiManager object names allow parentheses (e.g. cloned
 # "addr (1)") and colons; path/injection chars (/ \ ; quotes) stay blocked.
-OBJECT_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_.:() -]{1,79}$")
+OBJECT_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_.:() -]{1,79}\Z")
 
 # Package name pattern: one or more path segments, 1-35 chars each.
 # FortiManager addresses a policy package nested in a folder by its full
@@ -401,32 +450,34 @@ OBJECT_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_.:() -]{1,79}$")
 # segment. Segments stay dot-free, so "..", "//", and leading/trailing
 # slashes are rejected.
 _PACKAGE_SEGMENT = r"[a-zA-Z0-9_-](?:[a-zA-Z0-9_ -]{0,33}[a-zA-Z0-9_-])?"
-PACKAGE_NAME_PATTERN = re.compile(rf"^{_PACKAGE_SEGMENT}(?:/{_PACKAGE_SEGMENT}){{0,9}}$")
+PACKAGE_NAME_PATTERN = re.compile(rf"^{_PACKAGE_SEGMENT}(?:/{_PACKAGE_SEGMENT}){{0,9}}\Z")
 
 # Policy name pattern: alphanumeric, underscore, hyphen, dot, space, parens,
 # colon; 1-35 chars. Path/injection chars (/ \ ; quotes) stay blocked.
-POLICY_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_.:() -]{1,35}$")
+POLICY_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_.:() -]{1,35}\Z")
 
 # Interface name pattern: alphanumeric, underscore, hyphen, 1-35 chars
-INTERFACE_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,35}$")
+INTERFACE_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,35}\Z")
 
 # FQDN pattern: valid domain name format
-FQDN_PATTERN = re.compile(r"^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$")
+FQDN_PATTERN = re.compile(r"^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\Z")
 
 # IPv4 address pattern
 IPV4_PATTERN = re.compile(
     r"^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}"
-    r"(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$"
+    r"(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\Z"
 )
 
 # IPv4 CIDR pattern
 IPV4_CIDR_PATTERN = re.compile(
     r"^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}"
-    r"(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)/(?:[0-9]|[1-2][0-9]|3[0-2])$"
+    r"(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)/(?:[0-9]|[1-2][0-9]|3[0-2])\Z"
 )
 
-# Port range pattern: single port, port range, or space-separated ports
-PORT_RANGE_PATTERN = re.compile(r"^(\d{1,5}(-\d{1,5})?(\s+\d{1,5}(-\d{1,5})?)*)$")
+# Port range pattern: single port, port range, or space-separated ports.
+# ASCII, because ``\d`` alone also matches other scripts' digits, which
+# int() then reads as numbers.
+PORT_RANGE_PATTERN = re.compile(r"^(\d{1,5}(-\d{1,5})?(\s+\d{1,5}(-\d{1,5})?)*)\Z", re.ASCII)
 
 # =============================================================================
 # Valid Values
@@ -487,7 +538,7 @@ def validate_adom(adom: str) -> str:
 
     adom = adom.strip()
 
-    if not ADOM_PATTERN.match(adom):
+    if not ADOM_PATTERN.fullmatch(adom):
         raise ValidationError(
             f"Invalid ADOM name '{adom}'. "
             "Must be 1-64 characters, alphanumeric, underscore, or hyphen only."
@@ -514,22 +565,20 @@ def validate_device_name(device: str) -> str:
     device = device.strip()
     _reject_traversal_segment(device, "device name")
 
-    # Check for VDOM suffix like "device[vdom]"
-    if "[" in device:
-        base_name = device.split("[")[0]
-        vdom_part = device.split("[")[1].rstrip("]")
-        _reject_traversal_segment(base_name, "device name")
-        if not DEVICE_NAME_PATTERN.match(base_name):
-            raise ValidationError(f"Invalid device name '{base_name}'")
-        if not ADOM_PATTERN.match(vdom_part):
-            raise ValidationError(f"Invalid VDOM name '{vdom_part}'")
-        return device
-
-    if not DEVICE_NAME_PATTERN.match(device):
+    # One match for the whole value, VDOM suffix ("device[vdom]") included,
+    # so nothing after the closing bracket goes unchecked.
+    match = DEVICE_WITH_VDOM_PATTERN.fullmatch(device)
+    if not match:
+        if "[" in device:
+            raise ValidationError(
+                f"Invalid device name '{device}'. A VDOM suffix must be exactly "
+                "'name[vdom]', the VDOM alphanumeric, underscore or hyphen."
+            )
         raise ValidationError(
             f"Invalid device name '{device}'. "
             "Must be 1-64 characters, alphanumeric, underscore, hyphen, or dot."
         )
+    _reject_traversal_segment(match.group(1), "device name")
 
     return device
 
@@ -573,15 +622,28 @@ def validate_install_scope(devices: Any) -> list[dict[str, str]]:
     devices = validate_device_dict_list(devices)
     if not devices:
         raise ValidationError("devices must name at least one target device")
+    out: list[dict[str, str]] = []
     for index, device in enumerate(devices):
         if not isinstance(device.get("name"), str):
             raise ValidationError(f"devices[{index}] needs a 'name'")
-        validate_device_name(device["name"])
+        # Refused, as validate_install_on does: any other key would reach
+        # FortiManager as part of the scope without being part of what the
+        # preview gate compares.
+        extra = set(device) - {"name", "vdom"}
+        if extra:
+            raise ValidationError(f"devices[{index}] has unknown keys {sorted(extra, key=str)}")
+        # A new dict with the validated (stripped) values: what was checked
+        # is what is sent.
+        entry = {"name": validate_device_name(device["name"])}
         if "vdom" in device:
             vdom = device["vdom"]
-            if not isinstance(vdom, str) or not ADOM_PATTERN.match(vdom):
+            if isinstance(vdom, str):
+                vdom = vdom.strip()
+            if not isinstance(vdom, str) or not ADOM_PATTERN.fullmatch(vdom):
                 raise ValidationError(f"devices[{index}] has an invalid vdom {vdom!r}")
-    return cast(list[dict[str, str]], devices)
+            entry["vdom"] = vdom
+        out.append(entry)
+    return out
 
 
 def validate_install_on(targets: Any) -> list[dict[str, str]]:
@@ -606,7 +668,7 @@ def validate_install_on(targets: Any) -> list[dict[str, str]]:
             raise ValidationError(f"install_on[{index}] has unknown keys {sorted(extra)}")
         if "vdom" in target:
             vdom = target["vdom"]
-            if not isinstance(vdom, str) or not ADOM_PATTERN.match(vdom):
+            if not isinstance(vdom, str) or not ADOM_PATTERN.fullmatch(vdom):
                 raise ValidationError(f"install_on[{index}] has an invalid vdom {vdom!r}")
             out.append({"name": validate_device_name(target["name"]), "vdom": vdom})
         else:
@@ -729,7 +791,7 @@ def validate_device_serial(serial: str) -> str:
 
     serial = serial.strip().upper()
 
-    if not DEVICE_SERIAL_PATTERN.match(serial):
+    if not DEVICE_SERIAL_PATTERN.fullmatch(serial):
         raise ValidationError(
             f"Invalid serial number '{serial}'. "
             "Must start with device type prefix (FG, FM, etc.) "
@@ -761,7 +823,7 @@ def validate_package_name(name: str) -> str:
 
     name = name.strip()
 
-    if not PACKAGE_NAME_PATTERN.match(name):
+    if not PACKAGE_NAME_PATTERN.fullmatch(name):
         raise ValidationError(
             f"Invalid package name '{name}'. "
             "Must be 1-35 characters per segment: alphanumeric, underscore, "
@@ -790,7 +852,7 @@ def validate_policy_name(name: str) -> str:
 
     name = name.strip()
 
-    if not POLICY_NAME_PATTERN.match(name):
+    if not POLICY_NAME_PATTERN.fullmatch(name):
         raise ValidationError(
             f"Invalid policy name '{name}'. "
             "Must be 1-35 characters, alphanumeric, underscore, hyphen, dot, or space."
@@ -836,7 +898,7 @@ def validate_object_name(name: str, object_type: str = "object") -> str:
     name = name.strip()
     _reject_traversal_segment(name, f"{object_type} name")
 
-    if not OBJECT_NAME_PATTERN.match(name):
+    if not OBJECT_NAME_PATTERN.fullmatch(name):
         raise ValidationError(
             f"Invalid {object_type} name '{name}'. "
             "Must be 1-79 characters, alphanumeric, underscore, hyphen, dot, or space."
@@ -862,7 +924,7 @@ def validate_interface_name(name: str) -> str:
 
     name = name.strip()
 
-    if not INTERFACE_NAME_PATTERN.match(name):
+    if not INTERFACE_NAME_PATTERN.fullmatch(name):
         raise ValidationError(
             f"Invalid interface name '{name}'. "
             "Must be 1-35 characters, alphanumeric, underscore, or hyphen."
@@ -888,7 +950,7 @@ def validate_ipv4_address(ip: str) -> str:
 
     ip = ip.strip()
 
-    if not IPV4_PATTERN.match(ip):
+    if not IPV4_PATTERN.fullmatch(ip):
         raise ValidationError(f"Invalid IPv4 address '{ip}'")
 
     return ip
@@ -916,12 +978,12 @@ def validate_ipv4_subnet(subnet: str) -> str:
         parts = subnet.split()
         if len(parts) != 2:
             raise ValidationError(f"Invalid subnet format '{subnet}'")
-        if not IPV4_PATTERN.match(parts[0]) or not IPV4_PATTERN.match(parts[1]):
+        if not IPV4_PATTERN.fullmatch(parts[0]) or not IPV4_PATTERN.fullmatch(parts[1]):
             raise ValidationError(f"Invalid subnet '{subnet}'")
         return subnet
 
     # Check CIDR format
-    if not IPV4_CIDR_PATTERN.match(subnet):
+    if not IPV4_CIDR_PATTERN.fullmatch(subnet):
         raise ValidationError(
             f"Invalid subnet '{subnet}'. "
             "Use CIDR format (e.g., '10.0.0.0/24') or 'IP netmask' format."
@@ -947,7 +1009,7 @@ def validate_fqdn(fqdn: str) -> str:
 
     fqdn = fqdn.strip().lower()
 
-    if not FQDN_PATTERN.match(fqdn):
+    if not FQDN_PATTERN.fullmatch(fqdn):
         raise ValidationError(f"Invalid FQDN '{fqdn}'")
 
     return fqdn
@@ -970,7 +1032,7 @@ def validate_port_range(port_range: str) -> str:
 
     port_range = port_range.strip()
 
-    if not PORT_RANGE_PATTERN.match(port_range):
+    if not PORT_RANGE_PATTERN.fullmatch(port_range):
         raise ValidationError(
             f"Invalid port range '{port_range}'. "
             "Use formats like '80', '8080-8090', or '80 443 8080'."
