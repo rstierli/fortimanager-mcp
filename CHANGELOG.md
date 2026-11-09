@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - `/health` reports a FortiManager that dropped after connecting as not connected. The flag is passive (an idle server notices on its next tool call); `/health` still returns HTTP 200 and makes no FortiManager calls.
+- Dynamic mode validates the arguments of a dispatched tool the way a direct call does. `execute_fortimanager_tool` passed the caller's JSON values to the tool as they came: `confirm="false"` was truthy and opened the confirm gate of `trigger_fmg_restore`, `upgrade_device_firmware`, `add_model_device` and both revision reverts, and `policyids="12"` was iterated per character and deleted policies 1 and 2. A badly typed value is now refused or coerced as in full mode. An unknown argument name is refused with `validation_error`, and a refusal says where and why without repeating the value. With output masking on, the token guard also covers the arguments after they are decoded.
+- `execute_fortimanager_tool` reports `success: false` when the tool it ran answered an error; it reported `true` for every returned value. An error raised past the tool is returned scrubbed, with an `error_code`.
+- With output masking on, a `query_device_api` result fetched through `execute_fortimanager_tool` is masked by value shape, as a direct call is. Addresses under keys FortiOS names itself came back in clear on that route.
+- The policy tools validate `policyid`, and `move_firewall_policy` its target, before the id is put into a request URL. `delete_firewall_policies_bulk` requires a list and checks every id before the first delete.
+- The five template list tools, `list_sdwan_templates` and `list_scripts` return `total` (the number before `limit`) next to `count`, so a list cut at the default 100 says so, and refuse a `limit` below 1. `limit=0` answered an empty success and `limit=-1` dropped the last entry.
+- `check_device_variables` reports a match only if every scope the device holds for a variable has the expected value. It compared the first scope only. A mismatch entry names its scope in a new `vdom` key.
+- `set_metadata_variable` returns the scopes it had already written when a later scope fails. The error carried no sign that anything was saved.
+- An `Authorization` header that is not valid UTF-8, or not ASCII, gets a 401. It raised in the Bearer check and the request got a 500 with a traceback in the log. A non-ASCII `MCP_AUTH_TOKEN` failed every request the same way and now matches its UTF-8 bytes.
+- `get_device_realtime_status`, `get_device_interfaces`, `get_device_client_location`, `get_device_sdwan_monitor` and `policy_lookup` return `device_proxy_error` when the device did not answer. They reported a successful read: the raw envelope, no clients, no SD-WAN members, no matching policy (#127). `get_device_sdwan_monitor` names the read that failed when only one did.
 
 ## [1.13.1] - 2026-11-09
 
