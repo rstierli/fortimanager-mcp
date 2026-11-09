@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 import requests
-from pyFMG.fortimgr import FMGConnectionError
+from pyFMG.fortimgr import FMGBaseException, FMGConnectionError
 from urllib3.exceptions import (
     ConnectTimeoutError,
     MaxRetryError,
@@ -2173,3 +2173,93 @@ class TestVerbAwareRetry:
         with pytest.raises(FortiManagerMCPError):
             await mock_client.proxy_call("post", "/api/v2/monitor/system/os/reboot", target)
         assert mock_fmg_instance.execute.call_count == 1
+
+
+class TestReachability:
+    """``is_reachable`` turns False when a request fails to reach FortiManager
+    and True again on the next answer. ``is_connected`` alone stays True for
+    as long as the appliance is down, since only a session error or
+    ``disconnect()`` clears it, so ``/health`` reads ``is_reachable``."""
+
+    @staticmethod
+    async def _no_sleep(_: float) -> None:
+        return None
+
+    @pytest.mark.asyncio
+    async def test_transport_error_marks_unreachable_until_next_success(
+        self, mock_client: FortiManagerClient
+    ) -> None:
+        async def _down() -> None:
+            raise FMGConnectionError("connection refused")
+
+        async def _up() -> str:
+            return "ok"
+
+        with pytest.raises(FMGConnectionError):
+            await mock_client._execute_resilient(_down, verb="get", sleep=self._no_sleep)
+        assert mock_client.is_connected
+        assert not mock_client.is_reachable
+
+        await mock_client._execute_resilient(_up, verb="get")
+        assert mock_client.is_reachable
+
+    @pytest.mark.asyncio
+    async def test_wrapped_read_timeout_marks_unreachable(
+        self, mock_client: FortiManagerClient
+    ) -> None:
+        """pyfmg re-raises a read timeout as a plain FMGBaseException inside its
+        handler, so the timeout survives only as ``__context__``."""
+
+        async def _timeout() -> None:
+            try:
+                raise requests.exceptions.ReadTimeout("read timed out")
+            except requests.exceptions.ReadTimeout as err:
+                raise FMGBaseException(str(err)) from None
+
+        with pytest.raises(FMGBaseException):
+            await mock_client._execute_resilient(_timeout, verb="get", sleep=self._no_sleep)
+        assert not mock_client.is_reachable
+
+    @pytest.mark.asyncio
+    async def test_error_code_counts_as_reachable(self, mock_client: FortiManagerClient) -> None:
+        """An error code is an answer: the appliance is up."""
+        mock_client._unreachable = True
+
+        async def _not_found() -> None:
+            raise parse_fmg_error(-3, "Object does not exist", "GET /dvmdb/device/x")
+
+        with pytest.raises(FortiManagerMCPError):
+            await mock_client._execute_resilient(_not_found, verb="get")
+        assert mock_client.is_reachable
+
+    @pytest.mark.asyncio
+    async def test_local_not_connected_leaves_flag_alone(
+        self, mock_client: FortiManagerClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A local "Not connected" whose forced reconnect fails says nothing
+        about the appliance, so the flag keeps its value."""
+        mock_client._ever_connected = True
+        mock_client._unreachable = True
+        stub = MagicMock()
+        stub.login.side_effect = ConnectionError("login failed")
+        monkeypatch.setattr("fortimanager_mcp.api.client.FortiManager", lambda *a, **kw: stub)
+
+        async def _lost() -> None:
+            raise ConnectionError("Not connected. Call connect() first.")
+
+        with pytest.raises(ConnectionError):
+            await mock_client._execute_resilient(_lost, verb="get")
+        assert mock_client._unreachable
+
+    @pytest.mark.asyncio
+    async def test_reconnect_clears_flag(
+        self, mock_client: FortiManagerClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mock_client._unreachable = True
+        stub = MagicMock()
+        stub.login.return_value = (0, {"status": {"code": 0}})
+        monkeypatch.setattr("fortimanager_mcp.api.client.FortiManager", lambda *a, **kw: stub)
+
+        mock_client._connected = False
+        await mock_client.connect()
+        assert mock_client.is_reachable

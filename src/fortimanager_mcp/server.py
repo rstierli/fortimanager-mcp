@@ -1330,7 +1330,8 @@ def run_http() -> None:
     # Health check endpoint
     async def health_endpoint(request: Request) -> JSONResponse:
         """HTTP health check endpoint for Docker health checks."""
-        is_connected = _fmg_client is not None and _fmg_client.is_connected
+        # /health is unauthenticated, so it must not make FortiManager calls.
+        is_connected = _fmg_client is not None and _fmg_client.is_reachable
         return JSONResponse(
             {
                 "status": "healthy",
