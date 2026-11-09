@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.13.1] - 2026-11-08
+## [1.13.1] - 2026-11-09
 
 Security release from an audit of everything added since 1.12.3. The audit found no critical or high issues; this release fixes all its medium and low findings. The install gate was also verified live on FortiManager 8.0.2: a preview with changes authorizes exactly one install, and editing an object the package uses makes the preview stale.
 
