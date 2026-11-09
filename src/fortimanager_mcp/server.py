@@ -16,6 +16,7 @@ from typing import Any
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.utilities.func_metadata import func_metadata
 from mcp.server.transport_security import TransportSecuritySettings
+from pydantic import ValidationError as PydanticValidationError
 
 from fortimanager_mcp import __version__
 from fortimanager_mcp.api.client import FortiManagerClient
@@ -1041,12 +1042,38 @@ def register_dynamic_tools(mcp_server: MCPServer) -> None:
             # Execute the tool. The arguments are validated and coerced the
             # way a direct MCP call validates them (Tool.run), or a "false"
             # string opens a confirm gate and a string is iterated as a list
-            # of ids. A failed validation raises into the handler below. The
-            # raw mapping stays underneath so an unknown name is still
-            # refused by the function signature: the SDK model would drop it.
+            # of ids. One difference is kept: the SDK model drops a name it
+            # does not know, and a misspelt ``adom`` would then run against
+            # the default ADOM, so an unknown name is refused, by name.
             params = parameters or {}
-            validated = func_metadata(tool_func, structured_output=False).validate_arguments(params)
-            result = await tool_func(**{**params, **validated})
+            metadata = func_metadata(tool_func, structured_output=False)
+            accepted = {
+                field.alias or name for name, field in metadata.arg_model.model_fields.items()
+            }
+            unknown = sorted(set(params) - accepted)
+            if unknown:
+                return {
+                    "error": (
+                        f"Unknown argument(s): {', '.join(unknown)}. "
+                        f"Accepted: {', '.join(sorted(accepted)) or 'none'}."
+                    ),
+                    "error_code": "validation_error",
+                    "tool": tool_name,
+                }
+            try:
+                validated = metadata.validate_arguments(params)
+            except PydanticValidationError as exc:
+                # Where and why only: pydantic's own text repeats the value.
+                details = "; ".join(
+                    f"{'.'.join(str(loc) for loc in err['loc'])}: {err['msg']}"
+                    for err in exc.errors()
+                )
+                return {
+                    "error": f"Invalid arguments: {details}",
+                    "error_code": "validation_error",
+                    "tool": tool_name,
+                }
+            result = await tool_func(**validated)
             # A tool reports its own failure as a result, under an "error"
             # key or status "error": the call ran, it did not succeed.
             failed = isinstance(result, dict) and (

@@ -157,6 +157,44 @@ class TestDynamicDispatch:
         assert session["dport"] == 443
 
     @pytest.mark.asyncio
+    async def test_a_marker_in_a_json_encoded_list_is_refused_like_a_direct_call(
+        self, dispatching_server: MCPServer, monkeypatch: pytest.MonkeyPatch, engine: FPEEngine
+    ) -> None:
+        """A list sent as a JSON string is decoded before the tool runs, by
+        the SDK on a direct call and by the dispatcher on a dispatched one.
+        The guard has to see what the tool then receives."""
+        from fortimanager_mcp.tools import object_tools
+
+        written: list[Any] = []
+
+        class _Client:
+            async def create_address_group(self, adom: str, group: dict[str, Any]) -> dict:
+                written.append(group["member"])
+                return {}
+
+        monkeypatch.setattr(object_tools, "_get_client", lambda: _Client())
+        monkeypatch.setattr(
+            object_tools,
+            "create_address_group",
+            dispatching_server.tool()(object_tools.create_address_group),
+        )
+        # A cut-off token: no longer a whole one, still a marker value.
+        marked = engine.mask_ip_token("192.0.2.19")[:6]
+        args = {"adom": "demo", "name": "grp", "members": json.dumps([marked])}
+
+        direct = payload(await dispatching_server.call_tool("create_address_group", args))
+        dispatched: Any = await dispatching_server.call_tool(
+            "execute_fortimanager_tool",
+            {"tool_name": "create_address_group", "parameters": args},
+        )
+        envelope = dispatched.structured_content
+
+        assert written == []
+        assert direct["error"] == "masking_token_in_input"
+        assert envelope["result"]["error"] == "masking_token_in_input"
+        assert envelope["success"] is False
+
+    @pytest.mark.asyncio
     async def test_a_named_key_tool_is_not_masked_by_shape(
         self, dispatching_server: MCPServer, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -368,3 +406,26 @@ class TestStartup:
         )
         assert done.returncode == 0, done.stderr
         assert "True" in done.stdout
+
+
+class TestSyncToolsShareTheBoundary:
+    """The sync wrapper records the tools called inside it like the async one."""
+
+    @pytest.mark.asyncio
+    async def test_a_sync_passthrough_tool_called_by_a_sync_tool_is_masked_by_shape(
+        self, masked_server: MCPServer
+    ) -> None:
+        source = "198.51.100.40"
+
+        @masked_server.tool()
+        def query_device_api() -> dict[str, Any]:
+            return {"results": {"details": [{"saddr": source, "dport": 443}]}}
+
+        @masked_server.tool()
+        def session_report() -> dict[str, Any]:
+            return {"sessions": query_device_api()}
+
+        report = payload(await masked_server.call_tool("session_report", {}))
+
+        assert source not in json.dumps(report)
+        assert report["sessions"]["results"]["details"][0]["dport"] == 443

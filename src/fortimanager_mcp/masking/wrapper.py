@@ -614,16 +614,21 @@ def install_masking(mcp: Any) -> OutputMasker:
 
                 @wraps(fn)
                 async def async_wrapped(*fa: Any, **fk: Any) -> Any:
-                    inner = _AT_BOUNDARY.get()
-                    if inner is not None:
-                        inner.add(name)
-                        return await fn(*fa, **fk)
+                    # Guarded on every call, a nested one included: the
+                    # dynamic dispatcher validates and decodes its
+                    # ``parameters`` before it calls the tool, so the tool's
+                    # own arguments are the only place to see what the tool
+                    # body receives.
                     try:
                         guard_args(list(fa), pattern, suffix)
                         guard_args(fk, pattern, suffix)
                     except TokenInInput:
                         logger.warning("refused a masking token supplied to %s", name)
                         return dict(_TOKEN_REFUSED)
+                    inner = _AT_BOUNDARY.get()
+                    if inner is not None:
+                        inner.add(name)
+                        return await fn(*fa, **fk)
                     inner = set()
                     token = _AT_BOUNDARY.set(inner)
                     try:
@@ -636,16 +641,16 @@ def install_masking(mcp: Any) -> OutputMasker:
 
             @wraps(fn)
             def sync_wrapped(*fa: Any, **fk: Any) -> Any:
-                inner = _AT_BOUNDARY.get()
-                if inner is not None:
-                    inner.add(name)
-                    return fn(*fa, **fk)
                 try:
                     guard_args(list(fa), pattern, suffix)
                     guard_args(fk, pattern, suffix)
                 except TokenInInput:
                     logger.warning("refused a masking token supplied to %s", name)
                     return dict(_TOKEN_REFUSED)
+                inner = _AT_BOUNDARY.get()
+                if inner is not None:
+                    inner.add(name)
+                    return fn(*fa, **fk)
                 inner = set()
                 token = _AT_BOUNDARY.set(inner)
                 try:

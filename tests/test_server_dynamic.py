@@ -220,6 +220,43 @@ class TestArgumentValidation:
 
         assert seen == reached
 
+    @pytest.mark.asyncio
+    async def test_an_unknown_argument_is_refused_by_name(
+        self, dynamic_tools: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The SDK model drops a name it does not know, and a misspelt
+        ``adom`` would then run against the default ADOM."""
+        from fortimanager_mcp.tools import policy_tools
+
+        asked: list[str] = []
+
+        class _Client:
+            async def list_policy_blocks(self, adom: str) -> list[dict[str, Any]]:
+                asked.append(adom)
+                return []
+
+        monkeypatch.setattr(policy_tools, "get_fmg_client", lambda: _Client())
+
+        result = await dynamic_tools["execute_fortimanager_tool"](
+            "list_policy_blocks", {"adon": "demo"}
+        )
+
+        assert asked == []
+        assert result["error_code"] == "validation_error"
+        assert "adon" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_a_refused_value_is_not_repeated(self, dynamic_tools: dict[str, Any]) -> None:
+        """The refusal names the argument and the reason, not what was sent."""
+        result = await dynamic_tools["execute_fortimanager_tool"](
+            "get_firewall_policy",
+            {"adom": "demo", "package": "default", "policyid": "not-a-number-7f3a"},
+        )
+
+        assert result["error_code"] == "validation_error"
+        assert "policyid" in result["error"]
+        assert "7f3a" not in result["error"]
+
 
 class TestEnvelope:
     """``success`` says whether the dispatched tool succeeded, and a raised
