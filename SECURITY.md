@@ -47,5 +47,5 @@ manually, and the pinned commit is reviewed before any bump.
 When using this MCP server:
 - Use API tokens with minimum required permissions
 - Store credentials in environment variables, never in code
-- Use `ALLOWED_OUTPUT_DIRS` to restrict file output locations
+- Use `FMG_ALLOWED_OUTPUT_DIRS` to restrict file output locations
 - Run in Docker for additional isolation

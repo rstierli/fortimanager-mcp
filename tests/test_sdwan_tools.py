@@ -254,6 +254,7 @@ class TestGetDeviceSdwanMonitor:
         assert result["device"] == "FGT-HQ"
         assert result["members"] == MOCK_SDWAN_MEMBERS
         assert result["health_check"] == MOCK_SDWAN_HEALTH
+        assert result["unverified"] == []
 
         summary = result["summary"]
         assert summary["member_count"] == 2
@@ -307,9 +308,11 @@ class TestGetDeviceSdwanMonitor:
         ("failing", "label"),
         [("members", "SD-WAN members"), ("health-check", "SD-WAN health checks")],
     )
-    async def test_one_failed_read_is_an_error(self, failing: str, label: str) -> None:
-        """The read that worked does not make the other one's silence an answer,
-        and the error says which read it was."""
+    async def test_one_failed_read_keeps_the_other(self, failing: str, label: str) -> None:
+        """FortiOS 7.4.5 answers virtual-wan/health-check with HTTP 500 on a
+        working SD-WAN (large ADVPN, fixed in 7.4.8) while members still
+        reads. The read that worked is returned, the failed one is named in
+        ``unverified`` and contributes nothing to the summary."""
 
         def proxy(action: str, resource: str, target: list) -> list:
             if failing in resource:
@@ -321,10 +324,15 @@ class TestGetDeviceSdwanMonitor:
         with patch.object(sdwan_tools, "get_fmg_client", return_value=client):
             result = await sdwan_tools.get_device_sdwan_monitor(adom="root", device="FGT-HQ")
 
-        assert result == {
-            "error": f"{label}: device API error (HTTP 500)",
-            "error_code": "device_proxy_error",
-        }
+        assert "error" not in result
+        assert result["unverified"] == [f"{label}: device API error (HTTP 500)"]
+        summary = result["summary"]
+        if failing == "members":
+            assert summary["member_count"] == 0
+            assert summary["sla_entry_count"] == 2
+        else:
+            assert summary["member_count"] == 2
+            assert summary["sla_entry_count"] == 0
 
 
 MOCK_BGP_NEIGHBORS = [

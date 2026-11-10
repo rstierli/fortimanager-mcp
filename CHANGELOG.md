@@ -17,7 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `check_device_variables` reports a match only if every scope the device holds for a variable has the expected value. It compared the first scope only. A mismatch entry names its scope in a new `vdom` key.
 - `set_metadata_variable` returns the scopes it had already written when a later scope fails. The error carried no sign that anything was saved.
 - An `Authorization` header that is not valid UTF-8, or not ASCII, gets a 401. It raised in the Bearer check and the request got a 500 with a traceback in the log. A non-ASCII `MCP_AUTH_TOKEN` failed every request the same way and now matches its UTF-8 bytes.
-- `get_device_realtime_status`, `get_device_interfaces`, `get_device_client_location`, `get_device_sdwan_monitor` and `policy_lookup` return `device_proxy_error` when the device did not answer. They reported a successful read: the raw envelope, no clients, no SD-WAN members, no matching policy (#127). `get_device_sdwan_monitor` names the read that failed when only one did.
+- `get_device_realtime_status`, `get_device_interfaces`, `get_device_client_location`, `get_device_sdwan_monitor` and `policy_lookup` return `device_proxy_error` when the device did not answer. They reported a successful read: the raw envelope, no clients, no SD-WAN members, no matching policy (#127). `get_device_sdwan_monitor` returns an error only when both of its reads fail. When one fails, it returns the other with the failed read named in a new `unverified` key, as `get_device_bgp_status` does: FortiOS 7.4.5 answers `virtual-wan/health-check` with HTTP 500 on a working SD-WAN in large ADVPN setups (fixed in 7.4.8), and the member links still read.
+- `FORTIMANAGER_MAX_RETRIES` sets the number of transient retries. It was read and never used: the retry count was fixed at 2. The default is now 2, the count the server has used since the retry was added, instead of 3.
+- `SECURITY.md` names the output-directory setting `FMG_ALLOWED_OUTPUT_DIRS`, its actual name.
+- The `policy_lookup` docstring no longer calls `srcintf` optional. Verified on FortiOS 7.6.7: without it the device answers HTTP 424, and with `any` HTTP 400.
 
 ## [1.13.1] - 2026-11-09
 

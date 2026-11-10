@@ -71,10 +71,13 @@ class Settings(BaseSettings):
     )
 
     FORTIMANAGER_MAX_RETRIES: int = Field(
-        default=3,
+        default=2,
         ge=0,
         le=10,
-        description="Maximum number of retry attempts",
+        description="Retries, with exponential backoff, of a request that failed with a "
+        "transient error (network error or FortiManager internal error -1). Requests "
+        "that could change something twice (install, script run, add, clone, move) are "
+        "retried only when they never left the client.",
     )
 
     # Default ADOM

@@ -130,6 +130,18 @@ def leak_of(text: str, payload: Any) -> str | None:
     return f"ENC={enc} keys={keys}" if enc or keys else None
 
 
+#: The answer a live read through the FortiManager proxy gives for a device
+#: that is not connected. TEST_DEVICE is usually offline (the default
+#: FGT-MCP-TEST-01 is), so for these tools this error is the right answer;
+#: before #127 they reported an empty success instead.
+LIVE_READ_OFFLINE = {"get_device_sdwan_monitor": "device_proxy_error"}
+
+
+def failure_of(name: str, result: Any, payload: Any) -> str | None:
+    err = error_of(result, payload)
+    return None if err is not None and LIVE_READ_OFFLINE.get(name) == err else err
+
+
 def read_only_plan(adom: str, device: str) -> list[tuple[str, dict[str, Any]]]:
     """Read-only calls that must succeed on the test ADOM/device.
 
@@ -200,7 +212,7 @@ class TestReadOnlyCalls:
             for name, args in read_only_plan(test_adom, test_device):
                 result = await session.call_tool(name, args, read_timeout_seconds=CALL_TIMEOUT)
                 text, payload = decode(result)
-                if err := error_of(result, payload):
+                if err := failure_of(name, result, payload):
                     failures.append(f"{name}: {err}")
                 if leak := leak_of(text, payload):
                     failures.append(f"{name}: leak {leak}")
@@ -227,7 +239,7 @@ class TestReadOnlyCalls:
                 )
                 text, wrapper = decode(result)
                 payload = wrapper.get("result") if isinstance(wrapper, dict) else wrapper
-                if err := error_of(result, wrapper) or error_of(result, payload):
+                if err := failure_of(name, result, wrapper) or failure_of(name, result, payload):
                     failures.append(f"{name}: {err}")
                 if leak := leak_of(text, payload):
                     failures.append(f"{name}: leak {leak}")
