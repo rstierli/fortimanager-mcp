@@ -4,7 +4,7 @@
 [![Python Version](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/version-1.13.1-green)](CHANGELOG.md)
-[![FortiManager](https://img.shields.io/badge/FortiManager-7.0%20%7C%207.2%20%7C%207.4%20%7C%207.6-red)](README.md)
+[![FortiManager](https://img.shields.io/badge/FortiManager-7.0%20%7C%207.2%20%7C%207.4%20%7C%207.6%20%7C%208.0-red)](README.md)
 
 A Model Context Protocol (MCP) server for FortiManager JSON-RPC API. This server enables AI assistants like Claude to interact with FortiManager for centralized firewall policy management, device provisioning, and network configuration.
 
@@ -43,7 +43,7 @@ This MCP server provides a comprehensive interface to FortiManager's capabilitie
 ## Requirements
 
 - **Python**: 3.12 or higher
-- **FortiManager**: 7.x with JSON-RPC API access enabled
+- **FortiManager**: 7.x or 8.0 with JSON-RPC API access enabled
 - **Authentication**: API token (recommended) or username/password
 - **Network**: HTTPS access to FortiManager management interface
 
@@ -1010,10 +1010,14 @@ The server communicates with FortiManager using the JSON-RPC API over HTTPS. All
 
 ### Supported FortiManager Versions
 
-- FortiManager 7.0.x
-- FortiManager 7.2.x
-- FortiManager 7.4.x
-- FortiManager 7.6.x (primary development target)
+| Version | Status |
+|---------|--------|
+| 8.0.x | Supported. Every release is tested live against 8.0.2 (primary development target). 8.0.0 and 8.0.1 are untested; they use the task-based install preview, since the staged preview needs 8.0.2. |
+| 7.6.x | Supported. Tested live against 7.6.7 up to 1.12.0. Before 7.6.7, the install preview is task-based. |
+| 7.4.x, 7.2.x | Expected to work. Built against the FNDN API reference for 7.4.8 and 7.2.11, not tested live. |
+| 7.0.x | Expected to work, not tested. |
+
+Details and version-specific differences: [docs/test-results/compatibility.md](docs/test-results/compatibility.md).
 
 ### Authentication Methods
 
