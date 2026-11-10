@@ -119,8 +119,10 @@ async def policy_lookup(
             carried the same value; the guide does not show a case where
             they differ.
         srcintf: Ingress interface name the traffic would arrive on (e.g.
-            "internal"). Optional -- omitted from the query when not given,
-            matching the FortiGate monitor API default.
+            "internal"). Pass it: the How-To Guide example sends it, and
+            FortiOS 7.6.7 answers a lookup without it with HTTP 424 and one
+            with ``any`` (not an interface) with HTTP 400, both returned as
+            ``device_proxy_error``. Omitted from the query when not given.
         sourceip: Source IPv4 address to test (optional; omitted from the
             query when not given -- the How-To Guide's own example queried
             with this field empty)

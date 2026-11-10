@@ -173,7 +173,7 @@ FORTIMANAGER_VERIFY_SSL=true
 
 # Request Settings
 FORTIMANAGER_TIMEOUT=30
-FORTIMANAGER_MAX_RETRIES=3
+FORTIMANAGER_MAX_RETRIES=2  # retries of a transient error
 
 # Logging
 LOG_LEVEL=INFO  # DEBUG for troubleshooting

@@ -107,7 +107,8 @@ class FortiManagerClient:
     # reached FortiManager would run twice, so they are retried only when
     # the request provably never left this client (_never_sent).
     _REPLAY_SAFE_VERBS = frozenset({"get", "set", "update", "delete"})
-    # Bounded transient retry: at most this many retries with exponential backoff.
+    # Bounded transient retry: at most this many retries with exponential
+    # backoff, unless FORTIMANAGER_MAX_RETRIES (max_retries) says otherwise.
     _TRANSIENT_RETRIES = 2
     _TRANSIENT_BACKOFF_BASE = 0.5  # seconds; doubled each retry
     # Seconds the session logout on disconnect may take. A server stop waits
@@ -130,7 +131,7 @@ class FortiManagerClient:
         verify_ssl: bool = True,
         ca_bundle: str | None = None,
         timeout: int = 30,
-        max_retries: int = 3,
+        max_retries: int = _TRANSIENT_RETRIES,
         connect_on_demand: bool = False,
     ) -> None:
         """Initialize FortiManager client."""
@@ -781,7 +782,7 @@ class FortiManagerClient:
         A stale-session error triggers exactly one forced reconnect (re-login)
         and a retry — this revives a session the appliance dropped while the
         local client still believed it was connected. Transient FMG/network
-        errors are then retried up to ``_TRANSIENT_RETRIES`` with exponential
+        errors are then retried up to ``max_retries`` times with exponential
         backoff -- for a ``verb`` outside ``_REPLAY_SAFE_VERBS`` (and not
         ``read_only``) only when the request never left the client, see
         :meth:`_is_transient_error`. Validation, not-found, permission,
@@ -803,7 +804,7 @@ class FortiManagerClient:
         if self.connect_on_demand:
             # Outside the retry loop: one connect attempt per call, not one per retry.
             await self.ensure_connected()
-        retries_left = self._TRANSIENT_RETRIES
+        retries_left = self.max_retries
         reconnect_left = 1
         attempt = 0
         while True:

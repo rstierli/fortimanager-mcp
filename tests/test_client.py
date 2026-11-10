@@ -54,7 +54,7 @@ class TestClientInitialization:
         client = FortiManagerClient(host="test-fmg.example.com")
         assert client.verify_ssl is True
         assert client.timeout == 30
-        assert client.max_retries == 3
+        assert client.max_retries == FortiManagerClient._TRANSIENT_RETRIES == 2
 
 
 class TestClientConnection:
@@ -458,6 +458,29 @@ class TestExecuteResilient:
         assert exc_info.value.retries_attempted == mock_client._TRANSIENT_RETRIES
         # exponential backoff: 0.5, 1.0 (for _TRANSIENT_RETRIES=2)
         assert sleeps == [0.5, 1.0]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("max_retries", [0, 4])
+    async def test_max_retries_sets_the_transient_retry_count(self, max_retries: int) -> None:
+        """FORTIMANAGER_MAX_RETRIES reaches the client as max_retries and
+        bounds the transient retries; it was read and then never used."""
+        client = FortiManagerClient(host="test-fmg.example.com", max_retries=max_retries)
+        attempts = []
+
+        class _CodedExc(Exception):
+            code = -1
+
+        async def _factory() -> None:
+            attempts.append("call")
+            raise _CodedExc("transient")
+
+        async def _no_sleep(_: float) -> None:
+            return None
+
+        with pytest.raises(_CodedExc) as exc_info:
+            await client._execute_resilient(_factory, verb="get", sleep=_no_sleep)
+        assert len(attempts) == 1 + max_retries
+        assert exc_info.value.retries_attempted == max_retries
 
     @pytest.mark.asyncio
     async def test_does_not_retry_validation_error(self, mock_client: FortiManagerClient) -> None:
