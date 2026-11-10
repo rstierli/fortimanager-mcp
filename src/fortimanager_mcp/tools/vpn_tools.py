@@ -37,6 +37,7 @@ from typing import Any
 
 from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.errors import client_safe_error
+from fortimanager_mcp.utils.redaction import strip_secret_fields
 from fortimanager_mcp.utils.validation import (
     ValidationError,
     validate_device_name,
@@ -132,27 +133,9 @@ _PHASE1_SECRET_FIELDS = frozenset(
 )
 
 
-def _strip_secret_fields(result: Any, secret_fields: frozenset[str]) -> Any:
-    """Strip named credential fields from anything FMG echoes back.
-
-    Recurses through dict values and list items at any depth -- see the
-    identical helper in device_config_tools.py for why a shallow strip is
-    not safe here either.
-    """
-    if isinstance(result, dict):
-        return {
-            k: _strip_secret_fields(v, secret_fields)
-            for k, v in result.items()
-            if k not in secret_fields
-        }
-    if isinstance(result, list):
-        return [_strip_secret_fields(item, secret_fields) for item in result]
-    return result
-
-
 def _sanitize_phase1_result(result: Any) -> Any:
     """Strip every credential field from a ``vpn ipsec phase1-interface`` echo."""
-    return _strip_secret_fields(result, _PHASE1_SECRET_FIELDS)
+    return strip_secret_fields(result, _PHASE1_SECRET_FIELDS)
 
 
 #: Fields FMG stores as ``format=password`` on a
@@ -166,7 +149,7 @@ _PORTAL_SECRET_FIELDS = frozenset({"logon-password", "sso-password"})
 
 def _sanitize_portal_result(result: Any) -> Any:
     """Strip every bookmark credential field from a ``vpn ssl web portal`` echo."""
-    return _strip_secret_fields(result, _PORTAL_SECRET_FIELDS)
+    return strip_secret_fields(result, _PORTAL_SECRET_FIELDS)
 
 
 # FMG 7.6.7 live-verified: an enable/disable field that genuinely persists

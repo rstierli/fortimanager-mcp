@@ -26,11 +26,16 @@ def strip_secret_fields(result: Any, secret_fields: frozenset[str]) -> Any:
     the top level only is not safe: the secrets this is used for sit one
     table down (``health-check[].password`` under ``system sdwan``,
     ``neighbor[].password`` under ``router bgp``, ``wifi-networks[]`` under
-    ``system interface``).
+    ``system interface``, ``sam-private-key-password`` inside the
+    ``radio-1``..``radio-4`` sub-objects of ``wireless-controller
+    wtp-profile``). The first version of this helper, in the VAP tools,
+    stripped the top level only, so ``{"data": {"passphrase": "..."}}`` kept
+    its passphrase. ``sanitize_for_logging`` recurses fully for the same
+    reason: a sanitizer that depends on the shape it is handed is one
+    response format away from leaking.
 
     The field is dropped, not replaced by ``MASK_VALUE``: the caller sees
-    the record without it, which is what the long-standing copies of this
-    helper in ``device_config_tools`` and ``vpn_tools`` do as well.
+    the record without it.
 
     ``secret_fields`` is matched against keys as-is (FortiOS field names
     such as ``"password"`` or ``"eap-password"``), not normalized.

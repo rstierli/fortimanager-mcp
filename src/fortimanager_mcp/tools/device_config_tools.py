@@ -18,6 +18,7 @@ from typing import Any
 
 from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.errors import client_safe_error
+from fortimanager_mcp.utils.redaction import strip_secret_fields
 from fortimanager_mcp.utils.validation import (
     Id,
     ValidationError,
@@ -881,42 +882,9 @@ async def _check_six_ghz_vap(
     )
 
 
-def _strip_secret_fields(result: Any, secret_fields: frozenset[str]) -> Any:
-    """Strip named credential fields from anything FMG echoes back.
-
-    Recurses through dict VALUES as well as list items, at any depth. An
-    earlier version of this (in the VAP tools this was lifted from) stripped
-    top-level keys only, so a credential one level down survived the
-    function whose entire purpose is that it cannot::
-
-        {"data": {"passphrase": "..."}}   ->   passphrase survived
-
-    That was latent rather than live there, since the echo was flat. It
-    would not be latent for a nested table: ``wireless-controller
-    wtp-profile`` carries ``radio-1``..``radio-4`` sub-objects, and
-    ``sam-private-key-password`` lives inside those, not at the top level.
-    The repo's own ``sanitize_for_logging`` recurses fully for the same
-    reason: a sanitizer that depends on the shape it is handed is one
-    response format away from leaking.
-
-    ``secret_fields`` is matched against keys as-is (FortiOS field names,
-    e.g. ``"passphrase"``, ``"login-passwd"``), not normalized, matching
-    every other exact-key lookup in this module.
-    """
-    if isinstance(result, dict):
-        return {
-            k: _strip_secret_fields(v, secret_fields)
-            for k, v in result.items()
-            if k not in secret_fields
-        }
-    if isinstance(result, list):
-        return [_strip_secret_fields(item, secret_fields) for item in result]
-    return result
-
-
 def _sanitize_vap_result(result: Any) -> Any:
     """Strip every credential field from a ``wireless-controller vap`` echo."""
-    return _strip_secret_fields(result, _VAP_SECRET_FIELDS)
+    return strip_secret_fields(result, _VAP_SECRET_FIELDS)
 
 
 @mcp.tool()
@@ -1238,7 +1206,7 @@ async def assign_vap_to_wtp_profile(
 #: PSK), ``wan-port-auth-password`` (WAN port PPPoE/PAP auth), and
 #: ``sam-private-key-password`` -- nested under each ``radio-1``..``radio-4``
 #: sub-object rather than at the top level, which is exactly the case
-#: ``_strip_secret_fields`` recurses for.
+#: ``strip_secret_fields`` recurses for.
 _WTP_PROFILE_SECRET_FIELDS = frozenset(
     {
         "login-passwd",
@@ -1260,12 +1228,12 @@ _WTP_SECRET_FIELDS = frozenset({"login-passwd"})
 
 def _sanitize_wtp_profile_result(result: Any) -> Any:
     """Strip every credential field from a ``wireless-controller wtp-profile`` echo."""
-    return _strip_secret_fields(result, _WTP_PROFILE_SECRET_FIELDS)
+    return strip_secret_fields(result, _WTP_PROFILE_SECRET_FIELDS)
 
 
 def _sanitize_wtp_result(result: Any) -> Any:
     """Strip every credential field from a ``wireless-controller wtp`` echo."""
-    return _strip_secret_fields(result, _WTP_SECRET_FIELDS)
+    return strip_secret_fields(result, _WTP_SECRET_FIELDS)
 
 
 @mcp.tool()
