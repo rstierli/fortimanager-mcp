@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **HTTP:** an `MCP_AUTH_TOKEN` holding a byte that is not valid UTF-8 made every request a 500, because the Bearer check could not encode it. The server now refuses to start with that token, as it does without one.
+- **Metadata variables:** `list_metadata_variables(device=)` reported only the first of a device's mappings in `device_values`, although a device can hold one per scope (`global` and a VDOM such as `root`) with different values. Each entry now lists every scope in `scopes`, and `value` is `null` when they differ, because FortiManager does not document which scope a template reads. `check_device_variables` uses the same list.
 
 ## [1.13.2] - 2026-11-10
 

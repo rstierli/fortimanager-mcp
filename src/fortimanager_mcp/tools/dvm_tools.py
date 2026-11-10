@@ -1301,13 +1301,23 @@ def _summarize_metadata_variable(raw: dict[str, Any]) -> dict[str, Any]:
 def _device_variable_values(
     variables: list[dict[str, Any]], device: str
 ) -> dict[str, dict[str, Any]]:
-    """Effective value of every variable for ``device``: its own mapping when
-    it has one, else the ADOM default."""
+    """Value of every variable for ``device``: its own mappings when it has
+    any, else the ADOM default.
+
+    A device can hold one mapping per scope ("global" and a VDOM such as
+    "root"). All of them are listed in ``scopes``; ``value`` is their common
+    value, or None when they differ, since which scope a template reads is
+    not documented."""
     values: dict[str, dict[str, Any]] = {}
     for var in variables:
-        own = next((m for m in var["mappings"] if m["device"] == device), None)
-        if own is not None:
-            values[var["name"]] = {"value": own["value"], "source": "device"}
+        own = [m for m in var["mappings"] if m["device"] == device]
+        if own:
+            distinct = {m["value"] for m in own}
+            values[var["name"]] = {
+                "value": own[0]["value"] if len(distinct) == 1 else None,
+                "source": "device",
+                "scopes": [{"vdom": m["vdom"], "value": m["value"]} for m in own],
+            }
         else:
             values[var["name"]] = {"value": var["default"], "source": "default"}
     return values
@@ -1332,9 +1342,10 @@ async def list_metadata_variables(
 
     Args:
         adom: ADOM name
-        device: Optional device name; when given, ``device_values`` holds the
-            effective value of every variable for that device and where it
-            comes from ("device" mapping or ADOM "default")
+        device: Optional device name; when given, ``device_values`` holds
+            every variable's value for that device and where it comes from
+            ("device" mapping or ADOM "default"). A device mapping lists each
+            of its scopes in ``scopes``; ``value`` is None when they differ.
 
     Returns:
         dict: status, count, variables (name, type, description, default,
@@ -1490,10 +1501,9 @@ async def check_device_variables(
         device = validate_device_name(device)
         wanted = _validate_meta_variables(expected)
         variables = await _load_metadata_variables(adom)
-        values = _device_variable_values(variables, device)
         # A device can hold one mapping per scope (see set_metadata_variable),
-        # so the first one alone does not show that the value landed.
-        own = {v["name"]: [m for m in v["mappings"] if m["device"] == device] for v in variables}
+        # so every scope has to hold the value for it to have landed.
+        values = _device_variable_values(variables, device)
 
         match: list[str] = []
         mismatch: list[dict[str, Any]] = []
@@ -1504,7 +1514,7 @@ async def check_device_variables(
                 undefined.append(name)
                 continue
             got = values[name]
-            differing = [m for m in own[name] if m["value"] != want]
+            differing = [m for m in got.get("scopes", []) if m["value"] != want]
             if got["source"] != "device":
                 not_mapped.append({"name": name, "expected": want, "default": got["value"]})
             elif not differing:

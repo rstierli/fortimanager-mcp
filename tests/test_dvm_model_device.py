@@ -502,7 +502,11 @@ class TestMetadataVariables:
     async def test_list_for_device_gives_effective_values(self) -> None:
         with patch.object(dvm_tools, "get_fmg_client", return_value=_var_client()):
             result = await dvm_tools.list_metadata_variables(adom="demo", device="branch2")
-        assert result["device_values"]["hostname"] == {"value": "branch2", "source": "device"}
+        assert result["device_values"]["hostname"] == {
+            "value": "branch2",
+            "source": "device",
+            "scopes": [{"vdom": "global", "value": "branch2"}],
+        }
         assert result["device_values"]["branch_id"] == {"value": "0", "source": "default"}
 
     @pytest.mark.asyncio
@@ -558,6 +562,22 @@ class TestMetadataVariables:
         ]
         assert all_same["ok"] is True
         assert all_same["match"] == ["branch_id"]
+
+    @pytest.mark.asyncio
+    async def test_list_for_device_shows_every_scope(self) -> None:
+        """Which scope a template reads is not documented, so differing scopes
+        give no single value; both are listed."""
+        client = _var_client(_SCOPED_VARIABLES)
+        with patch.object(dvm_tools, "get_fmg_client", return_value=client):
+            differ = await dvm_tools.list_metadata_variables(adom="demo", device="branch1")
+            agree = await dvm_tools.list_metadata_variables(adom="demo", device="branch3")
+        assert differ["device_values"]["branch_id"] == {
+            "value": None,
+            "source": "device",
+            "scopes": [{"vdom": "global", "value": "1"}, {"vdom": "root", "value": "2"}],
+        }
+        assert agree["device_values"]["branch_id"]["value"] == "3"
+        assert len(agree["device_values"]["branch_id"]["scopes"]) == 2
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

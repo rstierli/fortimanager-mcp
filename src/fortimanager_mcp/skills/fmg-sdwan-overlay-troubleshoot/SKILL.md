@@ -37,7 +37,7 @@ Run `policy_lookup` for each real direction.
 ## 4. Addressing and variables
 After a template re-run, read the real IPs with `get_device_interfaces`, then `list_metadata_variables(device=...)`.
 
-A variable such as `branch_id` can hold more than one mapping for the same device, one per scope (the `vdom` of each entry in `mappings`, seen in the field as `global` and `root`), with different values. `device_values` shows only one of them, so read `mappings`. LANs, loopbacks and router IDs depend on it: if it is wrong, the fix belongs in the variable, not in the IPs, or the next install overwrites them. `get_cli_template` shows how a variable is used.
+A variable such as `branch_id` can hold more than one mapping for the same device, one per scope (the `vdom` of each entry in `mappings`, seen in the field as `global` and `root`), with different values. `device_values` lists each scope in `scopes`, and its `value` is empty when they differ. LANs, loopbacks and router IDs depend on it: if it is wrong, the fix belongs in the variable, not in the IPs, or the next install overwrites them. `get_cli_template` shows how a variable is used.
 
 To see what changed: `diff_device_revision(device, revision, sections=["router bgp", "system interface", "system dhcp server"])`.
 
