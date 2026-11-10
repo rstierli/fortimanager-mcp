@@ -73,6 +73,7 @@ from fortimanager_mcp.utils.config import get_settings
 from fortimanager_mcp.utils.errors import client_safe_error
 from fortimanager_mcp.utils.task_guard import TaskSlotsExhausted, mark_task_done, spawn_guarded
 from fortimanager_mcp.utils.validation import (
+    Id,
     ValidationError,
     validate_capture_id,
     validate_interface_name,
@@ -473,7 +474,7 @@ async def add_packet_capture(
 
 
 @mcp.tool()
-async def start_packet_capture(capture_id: int) -> dict[str, Any]:
+async def start_packet_capture(capture_id: Id) -> dict[str, Any]:
     """Start a packet capture from an existing definition.
 
     Args:
@@ -508,7 +509,7 @@ async def start_packet_capture(capture_id: int) -> dict[str, Any]:
 
 
 @mcp.tool()
-async def stop_packet_capture(capture_id: int) -> dict[str, Any]:
+async def stop_packet_capture(capture_id: Id) -> dict[str, Any]:
     """Stop a running packet capture.
 
     Args:
@@ -542,7 +543,7 @@ async def stop_packet_capture(capture_id: int) -> dict[str, Any]:
 
 
 @mcp.tool()
-async def get_packet_capture_status(capture_id: int | None = None) -> dict[str, Any]:
+async def get_packet_capture_status(capture_id: Id | None = None) -> dict[str, Any]:
     """Get the running/packet-count status of packet captures.
 
     FortiManager reports capture progress for all definitions in one call;
@@ -638,7 +639,7 @@ async def get_fmg_license() -> dict[str, Any]:
 
 
 @mcp.tool()
-async def delete_task(task_id: int) -> dict[str, Any]:
+async def delete_task(task_id: Id) -> dict[str, Any]:
     """Delete a task record from FortiManager's task list.
 
     Deletes a completed task's record, or cancels/stops a still-running one

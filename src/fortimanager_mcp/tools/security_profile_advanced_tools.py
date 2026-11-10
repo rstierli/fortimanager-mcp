@@ -24,6 +24,7 @@ from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_default_adom
 from fortimanager_mcp.utils.errors import ValidationError, client_safe_error
 from fortimanager_mcp.utils.validation import (
+    Id,
     and_filters,
     substring_filter,
     validate_adom,
@@ -379,7 +380,7 @@ async def add_ips_sensor_signature_override(
     adom: str,
     sensor: str,
     rule: list[str] | None = None,
-    entry_id: int | None = None,
+    entry_id: Id | None = None,
     status: str = "enable",
     action: str = "default",
     log: str | None = None,
@@ -506,7 +507,7 @@ async def add_ips_sensor_signature_override(
 async def remove_ips_sensor_signature_override(
     adom: str,
     sensor: str,
-    entry_id: int,
+    entry_id: Id,
 ) -> dict[str, Any]:
     """Remove a signature filter/override entry from an IPS sensor.
 

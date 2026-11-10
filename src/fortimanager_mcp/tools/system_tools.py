@@ -36,6 +36,7 @@ from fortimanager_mcp.utils.task_guard import (
     spawn_guarded,
 )
 from fortimanager_mcp.utils.validation import (
+    Id,
     validate_adom,
     validate_device_name,
     validate_install_scope,
@@ -411,7 +412,7 @@ async def list_tasks(
 
 @mcp.tool()
 async def get_task(
-    task_id: int,
+    task_id: Id,
     include_details: bool = False,
 ) -> dict[str, Any]:
     """Get detailed status of a specific task.
@@ -455,7 +456,7 @@ async def get_task(
 
 @mcp.tool()
 async def wait_for_task(
-    task_id: int,
+    task_id: Id,
     timeout: int = 300,
     poll_interval: int = 5,
 ) -> dict[str, Any]:

@@ -330,9 +330,30 @@ class TestGetDeviceSdwanMonitor:
         if failing == "members":
             assert summary["member_count"] == 0
             assert summary["sla_entry_count"] == 2
+            assert result["members"] is None
+            assert result["health_check"] == MOCK_SDWAN_HEALTH
         else:
             assert summary["member_count"] == 2
             assert summary["sla_entry_count"] == 0
+            assert result["health_check"] is None
+            assert result["members"] == MOCK_SDWAN_MEMBERS
+
+    @pytest.mark.asyncio
+    async def test_failed_read_does_not_return_raw_device_text(self) -> None:
+        """The failed envelope carries the device's own text. Only the
+        scrubbed copy in ``unverified`` is returned."""
+        raw_failure = [{"status": {"code": -1, "message": "error: set password hunter2"}}]
+
+        def proxy(action: str, resource: str, target: list) -> list:
+            return MOCK_SDWAN_MEMBERS if "members" in resource else raw_failure
+
+        client = AsyncMock()
+        client.proxy_call = AsyncMock(side_effect=proxy)
+        with patch.object(sdwan_tools, "get_fmg_client", return_value=client):
+            result = await sdwan_tools.get_device_sdwan_monitor(adom="root", device="FGT-HQ")
+
+        assert "hunter2" not in str(result)
+        assert result["unverified"]
 
 
 MOCK_BGP_NEIGHBORS = [

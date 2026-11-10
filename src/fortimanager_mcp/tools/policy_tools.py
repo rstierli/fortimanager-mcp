@@ -27,6 +27,7 @@ from fortimanager_mcp.utils.install_preview import redact_preview as _redact_pre
 from fortimanager_mcp.utils.responses import error_response
 from fortimanager_mcp.utils.task_guard import TaskSlotsExhausted, spawn_guarded
 from fortimanager_mcp.utils.validation import (
+    Id,
     ValidationError,
     and_filters,
     check_policy_safety,
@@ -591,7 +592,7 @@ async def list_policy_block_policies(
 async def get_firewall_policy(
     adom: str,
     package: str,
-    policyid: int,
+    policyid: Id,
 ) -> dict[str, Any]:
     """Get detailed information about a specific firewall policy.
 
@@ -774,7 +775,7 @@ async def create_firewall_policy(
     logtraffic: str = "utm",
     status: str = "enable",
     comments: str | None = None,
-    policyid: int | None = None,
+    policyid: Id | None = None,
     srcaddr_negate: bool | None = None,
     dstaddr_negate: bool | None = None,
     service_negate: bool | None = None,
@@ -963,7 +964,7 @@ async def create_firewall_policy(
 async def update_firewall_policy(
     adom: str,
     package: str,
-    policyid: int,
+    policyid: Id,
     name: str | None = None,
     srcintf: list[str] | None = None,
     dstintf: list[str] | None = None,
@@ -1184,7 +1185,7 @@ async def update_firewall_policy(
 async def delete_firewall_policy(
     adom: str,
     package: str,
-    policyid: int,
+    policyid: Id,
 ) -> dict[str, Any]:
     """Delete a firewall policy.
 
@@ -1221,7 +1222,7 @@ async def delete_firewall_policy(
 async def delete_firewall_policies_bulk(
     adom: str,
     package: str,
-    policyids: list[int],
+    policyids: list[Id],
 ) -> dict[str, Any]:
     """Delete multiple firewall policies at once.
 
@@ -1298,8 +1299,8 @@ async def delete_firewall_policies_bulk(
 async def move_firewall_policy(
     adom: str,
     package: str,
-    policyid: int,
-    target_policyid: int,
+    policyid: Id,
+    target_policyid: Id,
     position: str = "before",
 ) -> dict[str, Any]:
     """Move a firewall policy to a new position.
@@ -1540,7 +1541,7 @@ async def _resolve_single_service(
 async def get_policy_services(
     adom: str,
     package: str,
-    policy_id: int,
+    policy_id: Id,
     resolve: bool = True,
 ) -> dict[str, Any]:
     """Get services configured on a firewall policy with optional group resolution.
@@ -1720,7 +1721,7 @@ async def preview_install(
 async def get_preview_result(
     adom: str,
     devices: list[dict[str, str]],
-    preview_taskid: int | None = None,
+    preview_taskid: Id | None = None,
 ) -> dict[str, Any]:
     """Fetch the result of an installation preview.
 
@@ -1919,7 +1920,7 @@ async def list_local_in_policies(
 async def get_local_in_policy(
     adom: str,
     package: str,
-    policyid: int,
+    policyid: Id,
 ) -> dict[str, Any]:
     """Get detailed information about a specific IPv4 local-in policy.
 
@@ -1969,7 +1970,7 @@ async def create_local_in_policy(
     status: str = "enable",
     logtraffic: str | None = None,
     comments: str | None = None,
-    policyid: int | None = None,
+    policyid: Id | None = None,
     srcaddr_negate: bool | None = None,
     dstaddr_negate: bool | None = None,
     service_negate: bool | None = None,
@@ -2092,7 +2093,7 @@ async def create_local_in_policy(
 async def update_local_in_policy(
     adom: str,
     package: str,
-    policyid: int,
+    policyid: Id,
     action: str | None = None,
     intf: list[str] | None = None,
     srcaddr: list[str] | None = None,
@@ -2218,7 +2219,7 @@ async def update_local_in_policy(
 async def delete_local_in_policy(
     adom: str,
     package: str,
-    policyid: int,
+    policyid: Id,
 ) -> dict[str, Any]:
     """Delete an IPv4 local-in policy.
 
@@ -2318,7 +2319,7 @@ async def list_local_in_policies6(
 async def get_local_in_policy6(
     adom: str,
     package: str,
-    policyid: int,
+    policyid: Id,
 ) -> dict[str, Any]:
     """Get detailed information about a specific IPv6 local-in policy.
 
@@ -2368,7 +2369,7 @@ async def create_local_in_policy6(
     status: str = "enable",
     logtraffic: str | None = None,
     comments: str | None = None,
-    policyid: int | None = None,
+    policyid: Id | None = None,
     srcaddr_negate: bool | None = None,
     dstaddr_negate: bool | None = None,
     service_negate: bool | None = None,
@@ -2481,7 +2482,7 @@ async def create_local_in_policy6(
 async def update_local_in_policy6(
     adom: str,
     package: str,
-    policyid: int,
+    policyid: Id,
     action: str | None = None,
     intf: list[str] | None = None,
     srcaddr: list[str] | None = None,
@@ -2601,7 +2602,7 @@ async def update_local_in_policy6(
 async def delete_local_in_policy6(
     adom: str,
     package: str,
-    policyid: int,
+    policyid: Id,
 ) -> dict[str, Any]:
     """Delete an IPv6 local-in policy.
 

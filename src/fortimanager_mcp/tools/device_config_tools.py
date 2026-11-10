@@ -19,6 +19,7 @@ from typing import Any
 from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.errors import client_safe_error
 from fortimanager_mcp.utils.validation import (
+    Id,
     ValidationError,
     validate_device_name,
     validate_device_serial,
@@ -141,7 +142,7 @@ async def create_device_interface(
     device: str,
     name: str,
     parent: str,
-    vlanid: int,
+    vlanid: Id,
     ip: str | None = None,
     allowaccess: list[str] | None = None,
     role: str | None = None,
@@ -226,7 +227,7 @@ async def update_device_interface(
     role: str | None = None,
     alias: str | None = None,
     description: str | None = None,
-    vlanid: int | None = None,
+    vlanid: Id | None = None,
 ) -> dict[str, Any]:
     """Update fields on a device-DB interface. Only provided fields change.
 
@@ -449,7 +450,7 @@ async def create_device_sniffer(
     capture_non_ip: bool = False,
     status: str = "enable",
     logtraffic: str | None = None,
-    sniffer_id: int | None = None,
+    sniffer_id: Id | None = None,
     vdom: str = "root",
 ) -> dict[str, Any]:
     """Create a firewall sniffer definition on a managed device.
@@ -624,7 +625,7 @@ async def create_device_on_demand_sniffer(
 @mcp.tool()
 async def update_device_dhcp_server(
     device: str,
-    dhcp_server_id: int,
+    dhcp_server_id: Id,
     start_ip: str | None = None,
     end_ip: str | None = None,
     netmask: str | None = None,
@@ -706,7 +707,7 @@ async def update_device_dhcp_server(
 @mcp.tool()
 async def delete_device_dhcp_server(
     device: str,
-    dhcp_server_id: int,
+    dhcp_server_id: Id,
     vdom: str = "root",
 ) -> dict[str, Any]:
     """Delete a DHCP server scope from a device's device DB.
@@ -960,7 +961,7 @@ async def create_device_vap(
     ssid: str,
     security: str = "wpa2-only-personal",
     passphrase: str | None = None,
-    vlanid: int | None = None,
+    vlanid: Id | None = None,
     vdom: str = "root",
 ) -> dict[str, Any]:
     """Create a wireless VAP (SSID) in a device's device DB.
