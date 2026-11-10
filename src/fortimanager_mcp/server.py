@@ -14,12 +14,15 @@ import logging
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.utilities.func_metadata import func_metadata
 from mcp.server.transport_security import TransportSecuritySettings
+from pydantic import ValidationError as PydanticValidationError
 
 from fortimanager_mcp import __version__
 from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.utils.adom_locks import release_held_locks
 from fortimanager_mcp.utils.config import get_settings
+from fortimanager_mcp.utils.errors import client_safe_error
 
 # Get settings
 settings = get_settings()
@@ -1036,14 +1039,55 @@ def register_dynamic_tools(mcp_server: MCPServer) -> None:
                     "hint": "Use find_fortimanager_tool() to discover available tools",
                 }
 
-            # Execute the tool
+            # Execute the tool. The arguments are validated and coerced the
+            # way a direct MCP call validates them (Tool.run), or a "false"
+            # string opens a confirm gate and a string is iterated as a list
+            # of ids. One difference is kept: the SDK model drops a name it
+            # does not know, and a misspelt ``adom`` would then run against
+            # the default ADOM, so an unknown name is refused, by name.
             params = parameters or {}
-            result = await tool_func(**params)
-            return {"success": True, "result": result}
+            metadata = func_metadata(tool_func, structured_output=False)
+            accepted = {
+                field.alias or name for name, field in metadata.arg_model.model_fields.items()
+            }
+            unknown = sorted(set(params) - accepted)
+            if unknown:
+                return {
+                    "error": (
+                        f"Unknown argument(s): {', '.join(unknown)}. "
+                        f"Accepted: {', '.join(sorted(accepted)) or 'none'}."
+                    ),
+                    "error_code": "validation_error",
+                    "tool": tool_name,
+                }
+            try:
+                validated = metadata.validate_arguments(params)
+            except PydanticValidationError as exc:
+                # Where and why only: pydantic's own text repeats the value.
+                details = "; ".join(
+                    f"{'.'.join(str(loc) for loc in err['loc'])}: {err['msg']}"
+                    for err in exc.errors()
+                )
+                return {
+                    "error": f"Invalid arguments: {details}",
+                    "error_code": "validation_error",
+                    "tool": tool_name,
+                }
+            result = await tool_func(**validated)
+            # A tool reports its own failure as a result, under an "error"
+            # key or status "error": the call ran, it did not succeed.
+            failed = isinstance(result, dict) and (
+                "error" in result or result.get("status") == "error"
+            )
+            return {"success": not failed, "result": result}
 
         except Exception as e:
+            # Scrubbed like the tools scrub their own: an API error names
+            # the endpoint it failed on.
+            msg, code = client_safe_error(e)
             return {
-                "error": str(e),
+                "error": msg,
+                "error_code": code,
                 "tool": tool_name,
             }
 
@@ -1367,11 +1411,13 @@ def run_http() -> None:
                 await self.app(scope, receive, send)
                 return
 
-            # Check Authorization header
+            # Check Authorization header. Compare raw bytes: the caller picks
+            # the header, so it need not be UTF-8, and compare_digest raises
+            # on non-ASCII str. Decoding first turns a wrong token into a 500.
             headers = dict(scope.get("headers", []))
-            auth_header = headers.get(b"authorization", b"").decode()
+            auth_header = headers.get(b"authorization", b"")
 
-            if not hmac.compare_digest(auth_header, f"Bearer {token}"):
+            if not hmac.compare_digest(auth_header, f"Bearer {token}".encode()):
                 response = JSONResponse(
                     {"error": "Unauthorized", "detail": "Invalid or missing Bearer token"},
                     status_code=401,

@@ -460,9 +460,25 @@ _VARIABLES = [
 ]
 
 
-def _var_client() -> MagicMock:
+#: One mapping per scope: branch1 differs between them, branch3 does not.
+_SCOPED_VARIABLES = [
+    {
+        "name": "branch_id",
+        "type": 0,
+        "value": "0",
+        "dynamic_mapping": [
+            {"_scope": [{"name": "branch1", "vdom": "global"}], "value": "1"},
+            {"_scope": [{"name": "branch1", "vdom": "root"}], "value": "2"},
+            {"_scope": [{"name": "branch3", "vdom": "global"}], "value": "3"},
+            {"_scope": [{"name": "branch3", "vdom": "root"}], "value": "3"},
+        ],
+    },
+]
+
+
+def _var_client(variables: list[dict[str, Any]] = _VARIABLES) -> MagicMock:
     client = MagicMock()
-    client.get_metadata_variables = AsyncMock(return_value=_VARIABLES)
+    client.get_metadata_variables = AsyncMock(return_value=variables)
     return client
 
 
@@ -512,8 +528,36 @@ class TestMetadataVariables:
             good = await dvm_tools.check_device_variables(
                 adom="demo", device="branch2", expected={"hostname": "branch2"}
             )
-        assert bad["mismatch"] == [{"name": "hostname", "expected": "other", "actual": "branch2"}]
+        assert bad["mismatch"] == [
+            {"name": "hostname", "expected": "other", "actual": "branch2", "vdom": "global"}
+        ]
         assert good["ok"] is True
+
+    @pytest.mark.asyncio
+    async def test_check_needs_every_scope_of_the_device_to_match(self) -> None:
+        client = _var_client(_SCOPED_VARIABLES)
+        with patch.object(dvm_tools, "get_fmg_client", return_value=client):
+            one_off = await dvm_tools.check_device_variables(
+                adom="demo", device="branch1", expected={"branch_id": "1"}
+            )
+            both_off = await dvm_tools.check_device_variables(
+                adom="demo", device="branch1", expected={"branch_id": "9"}
+            )
+            all_same = await dvm_tools.check_device_variables(
+                adom="demo", device="branch3", expected={"branch_id": "3"}
+            )
+        # global holds 1, but root holds 2: not a match, and the scope is named.
+        assert one_off["ok"] is False
+        assert one_off["match"] == []
+        assert one_off["mismatch"] == [
+            {"name": "branch_id", "expected": "1", "actual": "2", "vdom": "root"}
+        ]
+        assert both_off["mismatch"] == [
+            {"name": "branch_id", "expected": "9", "actual": "1", "vdom": "global"},
+            {"name": "branch_id", "expected": "9", "actual": "2", "vdom": "root"},
+        ]
+        assert all_same["ok"] is True
+        assert all_same["match"] == ["branch_id"]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

@@ -190,6 +190,29 @@ MOCK_DATASRC = {
     ]
 }
 
+# What /sys/proxy/json answers for a device FortiManager cannot reach: a
+# per-target status and no "response". The JSON-RPC call itself succeeds.
+MOCK_UNREACHABLE = [
+    {
+        "status": {"code": -1, "message": "branch1(228) error: No tunnel 80."},
+        "target": "/adom/root/device/branch1",
+    }
+]
+
+# The proxy reached the device and the device's own API answered an error.
+MOCK_DEVICE_API_ERROR = [
+    {
+        "response": {"http_status": 500, "status": "error"},
+        "status": {"code": 0, "message": "OK"},
+        "target": "branch1",
+    }
+]
+
+_PROXY_FAILURES = [
+    pytest.param(MOCK_UNREACHABLE, "branch1(228) error: No tunnel 80.", id="no-response"),
+    pytest.param(MOCK_DEVICE_API_ERROR, "device API error (HTTP 500)", id="response-status-error"),
+]
+
 
 def _monitor_client() -> AsyncMock:
     """An async client whose proxy_call returns the canned monitor envelopes."""
@@ -266,6 +289,42 @@ class TestGetDeviceSdwanMonitor:
                 adom="root", device="bad name; drop"
             )
         assert "error" in result
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("envelope", "message"), _PROXY_FAILURES)
+    async def test_device_failure_is_an_error(self, envelope: list[dict], message: str) -> None:
+        """upstream #127: FortiManager answers the JSON-RPC call for a device
+        that did not, so nothing raises. That is not "no members"."""
+        client = AsyncMock()
+        client.proxy_call = AsyncMock(return_value=envelope)
+        with patch.object(sdwan_tools, "get_fmg_client", return_value=client):
+            result = await sdwan_tools.get_device_sdwan_monitor(adom="root", device="branch1")
+
+        assert result == {"error": message, "error_code": "device_proxy_error"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("failing", "label"),
+        [("members", "SD-WAN members"), ("health-check", "SD-WAN health checks")],
+    )
+    async def test_one_failed_read_is_an_error(self, failing: str, label: str) -> None:
+        """The read that worked does not make the other one's silence an answer,
+        and the error says which read it was."""
+
+        def proxy(action: str, resource: str, target: list) -> list:
+            if failing in resource:
+                return MOCK_DEVICE_API_ERROR
+            return MOCK_SDWAN_MEMBERS if "members" in resource else MOCK_SDWAN_HEALTH
+
+        client = AsyncMock()
+        client.proxy_call = AsyncMock(side_effect=proxy)
+        with patch.object(sdwan_tools, "get_fmg_client", return_value=client):
+            result = await sdwan_tools.get_device_sdwan_monitor(adom="root", device="FGT-HQ")
+
+        assert result == {
+            "error": f"{label}: device API error (HTTP 500)",
+            "error_code": "device_proxy_error",
+        }
 
 
 MOCK_BGP_NEIGHBORS = [
@@ -561,6 +620,48 @@ MOCK_STATIC = [
 def _client_returning(mock_client: FortiManagerClient, mock_fmg_instance: MagicMock, payload):
     mock_fmg_instance.get.side_effect = lambda url, **kwargs: (0, payload)
     return mock_client
+
+
+class TestListSdwanTemplates:
+    """``limit`` is applied in the tool, so the answer has to say what it left out."""
+
+    @staticmethod
+    async def _list(
+        mock_client: FortiManagerClient, mock_fmg_instance: MagicMock, names: int, **kwargs
+    ) -> dict:
+        payload = [{"name": f"t{i}"} for i in range(names)]
+        client = _client_returning(mock_client, mock_fmg_instance, payload)
+        with patch.object(sdwan_tools, "get_fmg_client", return_value=client):
+            return await sdwan_tools.list_sdwan_templates(adom="demo", **kwargs)
+
+    @pytest.mark.asyncio
+    async def test_total_counts_what_the_default_limit_left_out(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        result = await self._list(mock_client, mock_fmg_instance, 250)
+
+        assert len(result["sdwan_templates"]) == 100
+        assert (result["count"], result.get("total")) == (100, 250)
+
+    @pytest.mark.asyncio
+    async def test_a_limit_of_one_is_the_smallest_accepted(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        result = await self._list(mock_client, mock_fmg_instance, 3, limit=1)
+
+        assert [t["name"] for t in result["sdwan_templates"]] == ["t0"]
+        assert (result["count"], result.get("total")) == (1, 3)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("limit", [0, -1, None, "5", 2.0, True])
+    async def test_a_limit_that_is_not_a_positive_integer_is_refused(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock, limit: object
+    ) -> None:
+        result = await self._list(mock_client, mock_fmg_instance, 3, limit=limit)
+
+        assert result.get("error_code") == "validation_error", result
+        assert "limit" in result["error"]
+        mock_fmg_instance.get.assert_not_called()
 
 
 class TestGetSdwanTemplateConfig:

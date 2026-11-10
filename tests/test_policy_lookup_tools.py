@@ -40,6 +40,24 @@ MOCK_MATCH = [
     }
 ]
 
+# What /sys/proxy/json answers for a device FortiManager cannot reach: a
+# per-target status and no "response". The JSON-RPC call itself succeeds.
+MOCK_UNREACHABLE = [
+    {
+        "status": {"code": -1, "message": "branch1_fgt(228) error: No tunnel 80."},
+        "target": "/adom/DEMO/device/branch1_fgt",
+    }
+]
+
+# The proxy reached the device and the device's own API answered an error.
+MOCK_DEVICE_API_ERROR = [
+    {
+        "response": {"http_status": 500, "status": "error"},
+        "status": {"code": 0, "message": "OK"},
+        "target": "branch1_fgt",
+    }
+]
+
 
 def _client(proxy_return: object) -> AsyncMock:
     client = AsyncMock()
@@ -239,6 +257,36 @@ class TestPolicyLookup:
         assert result["status"] == "success"
         assert result["matched"] is None
         assert result["result"] is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("envelope", "message"),
+        [
+            pytest.param(
+                MOCK_UNREACHABLE, "branch1_fgt(228) error: No tunnel 80.", id="no-response"
+            ),
+            pytest.param(
+                MOCK_DEVICE_API_ERROR, "device API error (HTTP 500)", id="response-status-error"
+            ),
+        ],
+    )
+    async def test_device_failure_is_an_error(self, envelope: list[dict], message: str) -> None:
+        """upstream #127: FortiManager answers the JSON-RPC call for a device
+        that did not, so nothing raises. That is not "no matching policy"."""
+        client = _client(envelope)
+        with patch.object(policy_lookup_tools, "get_fmg_client", return_value=client):
+            result = await policy_lookup_tools.policy_lookup(
+                adom="DEMO",
+                device="branch1_fgt",
+                protocol=6,
+                dest="192.0.2.10",
+            )
+
+        assert result == {
+            "status": "error",
+            "message": message,
+            "error_code": "device_proxy_error",
+        }
 
 
 class TestProxyResultsHelper:

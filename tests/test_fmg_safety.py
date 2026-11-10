@@ -402,6 +402,36 @@ class TestBulkDeletePartialSuccess:
         result = await self._bulk(client, [])
         assert result["status"] == "error"
 
+    @pytest.mark.asyncio
+    async def test_a_string_is_not_iterated_as_ids(self) -> None:
+        """policyids="12" passed the emptiness check, was iterated per
+        character and deleted policies 1 and 2."""
+        client = _client(delete_firewall_policy={"return_value": {}})
+        result = await self._bulk(client, "12")
+        assert result["status"] == "error", result
+        assert result.get("error_code") == "validation_error"
+        client.delete_firewall_policy.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("not_a_list", [12, (1, 2)])
+    async def test_anything_but_a_list_is_refused(self, not_a_list: Any) -> None:
+        """A bare id or a tuple of ids is not a list, and nothing is deleted."""
+        client = _client(delete_firewall_policy={"return_value": {}})
+        result = await self._bulk(client, not_a_list)
+        assert result["status"] == "error", result
+        assert result.get("error_code") == "validation_error"
+        client.delete_firewall_policy.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad", ["2", True, 1.5, -1, None])
+    async def test_one_bad_id_refuses_the_whole_list(self, bad: Any) -> None:
+        """Checked before the first delete, so a malformed list deletes nothing."""
+        client = _client(delete_firewall_policy={"return_value": {}})
+        result = await self._bulk(client, [1, bad, 3])
+        assert result["status"] == "error", result
+        assert result.get("error_code") == "validation_error"
+        client.delete_firewall_policy.assert_not_called()
+
 
 class TestPreviewRevisionGate:
     """Revision fingerprinting closes the TOCTOU between preview and install

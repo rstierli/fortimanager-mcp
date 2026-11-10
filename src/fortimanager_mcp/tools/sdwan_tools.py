@@ -18,12 +18,15 @@ from typing import Any
 
 from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_default_adom, get_default_device
+from fortimanager_mcp.utils.device_proxy import proxy_error as _proxy_error
+from fortimanager_mcp.utils.device_proxy import proxy_results as _proxy_results
 from fortimanager_mcp.utils.errors import ResourceNotFoundError, client_safe_error
-from fortimanager_mcp.utils.redaction import safe_device_message, strip_secret_fields
+from fortimanager_mcp.utils.redaction import strip_secret_fields
 from fortimanager_mcp.utils.validation import (
     ValidationError,
     validate_adom,
     validate_device_name,
+    validate_limit,
     validate_object_name,
 )
 
@@ -46,10 +49,13 @@ async def list_sdwan_templates(
 
     Args:
         adom: ADOM name (default: from DEFAULT_ADOM env var, or "root")
-        limit: Maximum number of templates to return
+        limit: Maximum number of templates to return (default: 100, minimum: 1)
 
     Returns:
-        List of SD-WAN templates with name, type, and assigned devices
+        List of SD-WAN templates with name, type, and assigned devices.
+        ``count`` is the number returned and ``total`` the number before
+        ``limit``: if ``total`` is larger the list was cut, raise ``limit``
+        for the rest.
     """
     adom = adom or get_default_adom()
     client = get_fmg_client()
@@ -58,12 +64,15 @@ async def list_sdwan_templates(
 
     try:
         adom = validate_adom(adom)
+        limit = validate_limit(limit)
         templates = await client.list_sdwan_templates(adom=adom)
+        total = len(templates) if templates else 0
         templates = templates[:limit] if templates else []
 
         return {
             "adom": adom,
             "count": len(templates),
+            "total": total,
             "sdwan_templates": templates,
         }
     except Exception as e:
@@ -547,22 +556,6 @@ async def get_device_static_routes(
         return {"error": msg, "error_code": code}
 
 
-def _proxy_results(raw: Any) -> Any:
-    """Extract the FortiGate payload from a FMG proxy-response envelope.
-
-    ``proxy_call`` returns ``[{"response": {"results": <data>, ...}, ...}]``.
-    Returns the inner ``results`` (list or dict), or ``None`` if the envelope
-    is off-shape (defensive: the proxy layer can return errors or empties).
-    """
-    if isinstance(raw, list) and raw:
-        raw = raw[0]
-    if isinstance(raw, dict):
-        response = raw.get("response")
-        if isinstance(response, dict):
-            return response.get("results")
-    return None
-
-
 def _summarize_sdwan_monitor(members_raw: Any, health_raw: Any) -> dict[str, Any]:
     """Condense the live SD-WAN member + health-check monitor payloads.
 
@@ -673,6 +666,26 @@ async def get_device_sdwan_monitor(
             resource="/api/v2/monitor/virtual-wan/health-check",
             target=target,
         )
+        # The JSON-RPC call succeeds for a device that did not answer, and
+        # summarizing that envelope reads as "no members, no health checks".
+        failed = {
+            label: error
+            for label, error in (
+                ("SD-WAN members", _proxy_error(members)),
+                ("SD-WAN health checks", _proxy_error(health)),
+            )
+            if error
+        }
+        if failed:
+            # One text for a device that answered neither read; otherwise
+            # say which read failed, the other one's data is not returned.
+            texts = set(failed.values())
+            message = (
+                texts.pop()
+                if len(failed) == 2 and len(texts) == 1
+                else "; ".join(f"{label}: {error}" for label, error in failed.items())
+            )
+            return {"error": message, "error_code": "device_proxy_error"}
         return {
             "adom": adom,
             "device": device,
@@ -838,34 +851,6 @@ def _since(epoch: Any) -> str | None:
     if isinstance(epoch, int | float) and epoch > 0:
         return datetime.fromtimestamp(epoch, tz=UTC).isoformat()
     return None
-
-
-def _proxy_error(raw: Any) -> str | None:
-    """Why the device did not answer, or None when it did.
-
-    Two layers can fail: the FMG proxy (``status.code`` non-zero, e.g. "No
-    tunnel" for an offline device, or "Invalid url" for a path the device
-    does not serve) and the device's own API (``response.status`` "error").
-    The device's HTTP status rides beside either and is kept: a 404 (no
-    such endpoint on this FortiOS) and a 500 (feature not configured, as
-    ``router/bgp/neighbors`` answers on a device without BGP, measured on
-    FortiOS 7.4 through FMG 8.0.2) call for different next steps. The
-    message is the device's text, so it goes through ``safe_device_message``.
-    """
-    entry = raw[0] if isinstance(raw, list) and raw else raw
-    if not isinstance(entry, dict):
-        return None
-    status = entry.get("status")
-    response = entry.get("response")
-    http_status = response.get("http_status") if isinstance(response, dict) else None
-    message: str | None = None
-    if isinstance(status, dict) and status.get("code") not in (0, None):
-        message = safe_device_message(status.get("message"))
-    elif isinstance(response, dict) and response.get("status") == "error":
-        message = "device API error"
-    if message is None:
-        return None
-    return f"{message} (HTTP {http_status})" if http_status is not None else message
 
 
 async def _live_get(client: Any, adom: str, device: str, resource: str) -> tuple[Any, str | None]:

@@ -53,6 +53,67 @@ class TestCliTemplates:
         assert "error" in result
 
 
+@pytest.mark.parametrize(
+    ("tool", "key"),
+    [
+        ("list_templates", "templates"),
+        ("list_system_templates", "templates"),
+        ("list_cli_templates", "cli_templates"),
+        ("list_cli_template_groups", "cli_template_groups"),
+        ("list_template_groups", "template_groups"),
+    ],
+)
+class TestListToolsSayWhenTheLimitCut:
+    """``limit`` is applied in the tool, so the answer has to say what it left out."""
+
+    @staticmethod
+    async def _list(
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        tool: str,
+        names: int,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        _client_get(mock_client, mock_fmg_instance, [{"name": f"t{i}"} for i in range(names)])
+        with patch.object(template_tools, "get_fmg_client", return_value=mock_client):
+            result: dict[str, Any] = await getattr(template_tools, tool)(adom="demo", **kwargs)
+        return result
+
+    @pytest.mark.asyncio
+    async def test_total_counts_what_the_default_limit_left_out(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock, tool: str, key: str
+    ) -> None:
+        result = await self._list(mock_client, mock_fmg_instance, tool, 250)
+
+        assert len(result[key]) == 100
+        assert (result["count"], result.get("total")) == (100, 250)
+
+    @pytest.mark.asyncio
+    async def test_a_limit_of_one_is_the_smallest_accepted(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock, tool: str, key: str
+    ) -> None:
+        result = await self._list(mock_client, mock_fmg_instance, tool, 3, limit=1)
+
+        assert [t["name"] for t in result[key]] == ["t0"]
+        assert (result["count"], result.get("total")) == (1, 3)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("limit", [0, -1, None, "5", 2.0, True])
+    async def test_a_limit_that_is_not_a_positive_integer_is_refused(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        tool: str,
+        key: str,
+        limit: Any,
+    ) -> None:
+        result = await self._list(mock_client, mock_fmg_instance, tool, 3, limit=limit)
+
+        assert result.get("error_code") == "validation_error", result
+        assert "limit" in result["error"]
+        mock_fmg_instance.get.assert_not_called()
+
+
 class TestPolicyBlocks:
     @pytest.mark.asyncio
     async def test_lists_blocks(

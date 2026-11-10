@@ -13,6 +13,8 @@ from typing import Any
 from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_default_adom, get_default_device, get_settings
+from fortimanager_mcp.utils.device_proxy import proxy_error as _proxy_error
+from fortimanager_mcp.utils.device_proxy import proxy_results as _proxy_results
 from fortimanager_mcp.utils.errors import ResourceNotFoundError, client_safe_error
 from fortimanager_mcp.utils.install_gate import task_state
 from fortimanager_mcp.utils.redaction import safe_device_message, strip_secret_fields
@@ -1388,8 +1390,10 @@ async def set_metadata_variable(
 
     Returns:
         dict: status, variable, device, changes[{vdom, old, new}] (password
-        variables redacted), or message on failure
+        variables redacted), or message on failure. A failure after some
+        scopes were written also carries changes, for those scopes only
     """
+    changes: list[dict[str, Any]] = []
     try:
         adom = validate_adom(adom)
         device = validate_device_name(device)
@@ -1418,7 +1422,6 @@ async def set_metadata_variable(
             and isinstance(scope.get("vdom"), str)
         }
         scopes = [vdom] if vdom else sorted(current) or ["global"]
-        changes = []
         for scope in scopes:
             if scope in current:
                 await client.update_metadata_mapping(adom, name, device, scope, text)
@@ -1442,7 +1445,17 @@ async def set_metadata_variable(
     except Exception as e:
         logger.error(f"Failed to set metadata variable {name} for {device}: {e}")
         msg, code = client_safe_error(e)
-        return {"status": "error", "message": msg, "error_code": code}
+        error: dict[str, Any] = {"status": "error", "message": msg, "error_code": code}
+        if changes:
+            # Scopes written before the failing one stay written; without
+            # them the caller would take the variable for untouched.
+            done = ", ".join(c["vdom"] for c in changes)
+            error["changes"] = changes
+            error["message"] = (
+                f"{msg.rstrip('.')}. The value was already saved before this failure, "
+                f"so the scopes of the device can now differ, in: {done}"
+            )
+        return error
 
 
 @mcp.tool()
@@ -1454,9 +1467,11 @@ async def check_device_variables(
     """Check a device's metadata variable values against what was imported.
 
     Use after ``add_model_device`` to confirm every ``meta_variables`` entry
-    landed as a per-device mapping. A variable is reported as:
-      - match: the device has its own mapping with the expected value
-      - mismatch: the device mapping holds another value
+    landed as a per-device mapping. A device can hold one mapping per scope
+    ("global" and a VDOM such as "root"). A variable is reported as:
+      - match: every mapping the device has holds the expected value
+      - mismatch: a device mapping holds another value; one entry per
+        differing scope, named in ``vdom``
       - not_mapped: no device mapping, so templates get the ADOM default
       - undefined: no such variable exists in the ADOM
 
@@ -1467,8 +1482,8 @@ async def check_device_variables(
             {"branch_id": "1", "hostname": "branch1"}
 
     Returns:
-        dict: status, ok (all match), match / mismatch / not_mapped /
-        undefined lists
+        dict: status, ok (all match), match / mismatch[{name, expected,
+        actual, vdom}] / not_mapped / undefined lists
     """
     try:
         adom = validate_adom(adom)
@@ -1476,6 +1491,9 @@ async def check_device_variables(
         wanted = _validate_meta_variables(expected)
         variables = await _load_metadata_variables(adom)
         values = _device_variable_values(variables, device)
+        # A device can hold one mapping per scope (see set_metadata_variable),
+        # so the first one alone does not show that the value landed.
+        own = {v["name"]: [m for m in v["mappings"] if m["device"] == device] for v in variables}
 
         match: list[str] = []
         mismatch: list[dict[str, Any]] = []
@@ -1486,12 +1504,16 @@ async def check_device_variables(
                 undefined.append(name)
                 continue
             got = values[name]
+            differing = [m for m in own[name] if m["value"] != want]
             if got["source"] != "device":
                 not_mapped.append({"name": name, "expected": want, "default": got["value"]})
-            elif got["value"] == want:
+            elif not differing:
                 match.append(name)
             else:
-                mismatch.append({"name": name, "expected": want, "actual": got["value"]})
+                mismatch.extend(
+                    {"name": name, "expected": want, "actual": m["value"], "vdom": m["vdom"]}
+                    for m in differing
+                )
 
         return {
             "status": "success",
@@ -1847,6 +1869,11 @@ async def get_device_realtime_status(
             target=[f"/adom/{adom}/device/{device}"],
         )
 
+        # The JSON-RPC call succeeds for a device that did not answer.
+        error = _proxy_error(result)
+        if error:
+            return {"status": "error", "message": error, "error_code": "device_proxy_error"}
+
         return {
             "status": "success",
             "data": result,
@@ -1894,6 +1921,11 @@ async def get_device_interfaces(
             resource="/api/v2/monitor/system/interface?include_vlan=true",
             target=[f"/adom/{adom}/device/{device}"],
         )
+
+        # The JSON-RPC call succeeds for a device that did not answer.
+        error = _proxy_error(result)
+        if error:
+            return {"status": "error", "message": error, "error_code": "device_proxy_error"}
 
         return {
             "status": "success",
@@ -2036,21 +2068,6 @@ async def get_device_interface_config(
         return {"error": msg, "error_code": code}
 
 
-def _proxy_results(raw: Any) -> Any:
-    """Extract the FortiGate payload from a FMG proxy-response envelope.
-
-    ``proxy_call`` returns ``[{"response": {"results": <data>, ...}, ...}]``.
-    Returns the inner ``results``, or ``None`` if the envelope is off-shape.
-    """
-    if isinstance(raw, list) and raw:
-        raw = raw[0]
-    if isinstance(raw, dict):
-        response = raw.get("response")
-        if isinstance(response, dict):
-            return response.get("results")
-    return None
-
-
 def _summarize_detected_client(rec: dict[str, Any]) -> dict[str, Any]:
     """Condense a detected-device record to the 'where is it connected' fields."""
     return {
@@ -2144,6 +2161,11 @@ async def get_device_client_location(
             resource="/api/v2/monitor/user/device/query",
             target=[f"/adom/{adom}/device/{device}"],
         )
+        # The JSON-RPC call succeeds for a device that did not answer, and
+        # an inventory that was never read is not "no such client".
+        error = _proxy_error(raw)
+        if error:
+            return {"error": error, "error_code": "device_proxy_error"}
         results = _proxy_results(raw)
         records = [r for r in results if isinstance(r, dict)] if isinstance(results, list) else []
 

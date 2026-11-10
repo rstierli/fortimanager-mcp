@@ -130,3 +130,185 @@ class TestPortedToolsDispatch:
             "get_package_install_status",
             "check_device_policy_sync",
         }
+
+
+class TestArgumentValidation:
+    """The dispatcher validates and coerces ``parameters`` the way a direct
+    MCP call does, so a badly typed value never reaches a tool body."""
+
+    @pytest.mark.asyncio
+    async def test_a_false_string_does_not_open_a_confirm_gate(
+        self, dynamic_tools: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A non-empty string is truthy: ``"false"`` used to pass
+        ``if not confirm`` and start the restore."""
+        from fortimanager_mcp.tools import fmg_ops_tools
+
+        sent: list[str] = []
+
+        class _Client:
+            async def execute(self, url: str, data: Any = None) -> dict[str, Any]:
+                sent.append(url)
+                return {}
+
+        monkeypatch.setattr(fmg_ops_tools, "get_fmg_client", lambda: _Client())
+
+        result = await dynamic_tools["execute_fortimanager_tool"](
+            "trigger_fmg_restore",
+            {
+                "service": "sftp",
+                "server": "backup.example.com",
+                "filename": "fmg.dat",
+                "confirm": "false",
+            },
+        )
+
+        assert sent == []
+        assert result["result"]["error_code"] == "confirmation_required"
+
+    @pytest.mark.asyncio
+    async def test_a_string_is_not_iterated_as_a_list_of_ids(
+        self, dynamic_tools: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``policyids="12"`` used to delete policies "1" and "2"."""
+        from fortimanager_mcp.tools import policy_tools
+
+        deleted: list[Any] = []
+
+        class _Client:
+            async def delete_firewall_policy(self, adom: str, package: str, policyid: Any) -> None:
+                deleted.append(policyid)
+
+        monkeypatch.setattr(policy_tools, "get_fmg_client", lambda: _Client())
+
+        result = await dynamic_tools["execute_fortimanager_tool"](
+            "delete_firewall_policies_bulk",
+            {"adom": "demo", "package": "default", "policyids": "12"},
+        )
+
+        assert deleted == []
+        assert "policyids" in result["error"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("policyid", "reached"), [("12", [12]), ("12a", [])])
+    async def test_a_string_id_is_coerced_or_refused(
+        self,
+        dynamic_tools: dict[str, Any],
+        monkeypatch: pytest.MonkeyPatch,
+        policyid: str,
+        reached: list[int],
+    ) -> None:
+        """The id is formatted into the API URL: a numeric string arrives
+        as an int, anything else never reaches the client."""
+        from fortimanager_mcp.tools import policy_tools
+
+        seen: list[Any] = []
+
+        class _Client:
+            async def get_firewall_policy(
+                self, adom: str, package: str, policyid: Any, scope_member: bool = False
+            ) -> dict[str, Any]:
+                seen.append(policyid)
+                return {"policyid": policyid}
+
+        monkeypatch.setattr(policy_tools, "get_fmg_client", lambda: _Client())
+
+        await dynamic_tools["execute_fortimanager_tool"](
+            "get_firewall_policy",
+            {"adom": "demo", "package": "default", "policyid": policyid},
+        )
+
+        assert seen == reached
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_argument_is_refused_by_name(
+        self, dynamic_tools: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The SDK model drops a name it does not know, and a misspelt
+        ``adom`` would then run against the default ADOM."""
+        from fortimanager_mcp.tools import policy_tools
+
+        asked: list[str] = []
+
+        class _Client:
+            async def list_policy_blocks(self, adom: str) -> list[dict[str, Any]]:
+                asked.append(adom)
+                return []
+
+        monkeypatch.setattr(policy_tools, "get_fmg_client", lambda: _Client())
+
+        result = await dynamic_tools["execute_fortimanager_tool"](
+            "list_policy_blocks", {"adon": "demo"}
+        )
+
+        assert asked == []
+        assert result["error_code"] == "validation_error"
+        assert "adon" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_a_refused_value_is_not_repeated(self, dynamic_tools: dict[str, Any]) -> None:
+        """The refusal names the argument and the reason, not what was sent."""
+        result = await dynamic_tools["execute_fortimanager_tool"](
+            "get_firewall_policy",
+            {"adom": "demo", "package": "default", "policyid": "not-a-number-7f3a"},
+        )
+
+        assert result["error_code"] == "validation_error"
+        assert "policyid" in result["error"]
+        assert "7f3a" not in result["error"]
+
+
+class TestEnvelope:
+    """``success`` says whether the dispatched tool succeeded, and a raised
+    error is scrubbed the way the tools scrub their own."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("module_name", "tool_name", "parameters"),
+        [
+            # reports failure as {"status": "error", ...}
+            ("system_tools", "list_adoms", {}),
+            # reports failure as {"error": ...}
+            ("device_proxy_tools", "query_device_api", {"path": "/api/v2/monitor/router/ipv4"}),
+        ],
+    )
+    async def test_an_inner_error_is_not_a_success(
+        self,
+        dynamic_tools: dict[str, Any],
+        monkeypatch: pytest.MonkeyPatch,
+        module_name: str,
+        tool_name: str,
+        parameters: dict[str, Any],
+    ) -> None:
+        import importlib
+
+        module = importlib.import_module(f"fortimanager_mcp.tools.{module_name}")
+        monkeypatch.setattr(module, "get_fmg_client", lambda: None)
+
+        result = await dynamic_tools["execute_fortimanager_tool"](tool_name, parameters)
+
+        inner = result["result"]
+        assert "error" in inner or inner["status"] == "error"
+        assert result["success"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_raised_api_error_loses_its_endpoint(
+        self, dynamic_tools: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The tools catch their own API errors, so this stands in for one
+        that does not: the dispatcher is then the last handler."""
+        from fortimanager_mcp.tools import policy_tools
+        from fortimanager_mcp.utils.errors import parse_fmg_error
+
+        async def list_policy_blocks(adom: str = "root") -> dict[str, Any]:
+            raise parse_fmg_error(-3, "Object does not exist", f"/pm/pblock/adom/{adom}")
+
+        monkeypatch.setattr(policy_tools, "list_policy_blocks", list_policy_blocks)
+
+        result = await dynamic_tools["execute_fortimanager_tool"](
+            "list_policy_blocks", {"adom": "demo"}
+        )
+
+        assert result["error"] == "Object does not exist"
+        assert result["error_code"] == "not_found"
+        assert result["tool"] == "list_policy_blocks"

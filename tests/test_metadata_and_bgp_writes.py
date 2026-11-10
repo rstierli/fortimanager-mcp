@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from fortimanager_mcp.tools import dvm_tools, sdwan_tools, security_profile_tools
+from fortimanager_mcp.utils.errors import APIError
 from fortimanager_mcp.utils.validation import MASK_VALUE
 
 BRANCH_ID = {
@@ -116,6 +117,43 @@ class TestSetMetadataVariable:
         assert "hunter2" not in str(result)
         assert "3" not in str(result["changes"])
         assert {c["new"] for c in result["changes"]} == {MASK_VALUE}
+
+    @pytest.mark.asyncio
+    async def test_failure_names_the_scopes_already_changed(self) -> None:
+        client = _dvm_client()
+        client.update_metadata_mapping = AsyncMock(
+            side_effect=[{}, APIError("Invalid parameter", code=-8)]
+        )
+        result = await _set(client, value="5")
+
+        assert result["status"] == "error"
+        assert result["error_code"] == "api_error"
+        # global was written before root failed, and the caller has to know.
+        assert result.get("changes") == [{"vdom": "global", "old": "1", "new": "5"}]
+        assert "global" in result["message"]
+
+    @pytest.mark.asyncio
+    async def test_failure_on_the_first_scope_reports_no_change(self) -> None:
+        client = _dvm_client()
+        client.update_metadata_mapping = AsyncMock(
+            side_effect=APIError("Invalid parameter", code=-8)
+        )
+        result = await _set(client, value="5")
+
+        assert result["status"] == "error"
+        assert result["message"] == "Invalid parameter"
+        assert "changes" not in result
+
+    @pytest.mark.asyncio
+    async def test_failure_does_not_echo_password_values(self) -> None:
+        client = _dvm_client({**BRANCH_ID, "type": 1})
+        client.update_metadata_mapping = AsyncMock(
+            side_effect=[{}, APIError("Invalid parameter", code=-8)]
+        )
+        result = await _set(client, value="hunter2")
+
+        assert "hunter2" not in str(result)
+        assert result.get("changes") == [{"vdom": "global", "old": MASK_VALUE, "new": MASK_VALUE}]
 
     @pytest.mark.asyncio
     async def test_client_addresses_a_mapping_by_device_and_vdom(

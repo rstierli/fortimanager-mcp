@@ -42,6 +42,7 @@ import ipaddress
 import logging
 import os
 import re
+from collections.abc import Iterable
 from functools import wraps
 from typing import Any
 
@@ -500,13 +501,15 @@ class OutputMasker:
             return [self.mask_result(item) for item in obj]
         return obj
 
-    def mask_tool_result(self, result: Any, tool_name: str) -> Any:
+    def mask_tool_result(self, result: Any, tool_name: str, inner_tools: Iterable[str] = ()) -> Any:
         """Mask a result, withholding it entirely if masking fails.
 
         A PASSTHROUGH_TOOLS result additionally has its unnamed keys masked
-        by value shape (see ``_mask_address_or_name``).
+        by value shape (see ``_mask_address_or_name``). So does the result
+        of a tool that called one: ``inner_tools`` names the tools that ran
+        inside this one's boundary.
         """
-        mode = _PASSTHROUGH.set(tool_name in PASSTHROUGH_TOOLS)
+        mode = _PASSTHROUGH.set(not PASSTHROUGH_TOOLS.isdisjoint((tool_name, *inner_tools)))
         try:
             return self.mask_result(result)
         except Exception:
@@ -549,13 +552,21 @@ def guard_args(value: Any, pattern: re.Pattern[str], suffix: str) -> None:
             guard_args(item, pattern, suffix)
 
 
-#: True while a wrapped tool call is inside its masking boundary. Tools
-#: call other registered tools through their module-level names, and
-#: those names are the WRAPPED functions, so without a guard the inner
-#: result is masked twice: a second pass over a token stops it round
-#: tripping and can fail it closed into a placeholder.
-_AT_BOUNDARY: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "fmg_masking_boundary", default=False
+#: The names of the tools called inside the current masking boundary, or
+#: None outside one. Tools call other registered tools through their
+#: module-level names, and those names are the WRAPPED functions, so
+#: without a guard the inner result is masked twice: a second pass over a
+#: token stops it round tripping and can fail it closed into a
+#: placeholder.
+#:
+#: The names are kept because the tool that masks is then not the tool
+#: that produced the result. The dynamic dispatcher reaches every tool
+#: that way, and a PASSTHROUGH_TOOLS result has to keep its value-shape
+#: masking under the dispatcher's name. One set shared by reference, so
+#: a call made from a child task, which gets a copy of the context, is
+#: still recorded.
+_AT_BOUNDARY: contextvars.ContextVar[set[str] | None] = contextvars.ContextVar(
+    "fmg_masking_boundary", default=None
 )
 
 _TOKEN_REFUSED = {
@@ -603,39 +614,50 @@ def install_masking(mcp: Any) -> OutputMasker:
 
                 @wraps(fn)
                 async def async_wrapped(*fa: Any, **fk: Any) -> Any:
-                    if _AT_BOUNDARY.get():
-                        return await fn(*fa, **fk)
+                    # Guarded on every call, a nested one included: the
+                    # dynamic dispatcher validates and decodes its
+                    # ``parameters`` before it calls the tool, so the tool's
+                    # own arguments are the only place to see what the tool
+                    # body receives.
                     try:
                         guard_args(list(fa), pattern, suffix)
                         guard_args(fk, pattern, suffix)
                     except TokenInInput:
                         logger.warning("refused a masking token supplied to %s", name)
                         return dict(_TOKEN_REFUSED)
-                    token = _AT_BOUNDARY.set(True)
+                    inner = _AT_BOUNDARY.get()
+                    if inner is not None:
+                        inner.add(name)
+                        return await fn(*fa, **fk)
+                    inner = set()
+                    token = _AT_BOUNDARY.set(inner)
                     try:
                         result = await fn(*fa, **fk)
                     finally:
                         _AT_BOUNDARY.reset(token)
-                    return masker.mask_tool_result(result, name)
+                    return masker.mask_tool_result(result, name, inner)
 
                 return decorator(async_wrapped)
 
             @wraps(fn)
             def sync_wrapped(*fa: Any, **fk: Any) -> Any:
-                if _AT_BOUNDARY.get():
-                    return fn(*fa, **fk)
                 try:
                     guard_args(list(fa), pattern, suffix)
                     guard_args(fk, pattern, suffix)
                 except TokenInInput:
                     logger.warning("refused a masking token supplied to %s", name)
                     return dict(_TOKEN_REFUSED)
-                token = _AT_BOUNDARY.set(True)
+                inner = _AT_BOUNDARY.get()
+                if inner is not None:
+                    inner.add(name)
+                    return fn(*fa, **fk)
+                inner = set()
+                token = _AT_BOUNDARY.set(inner)
                 try:
                     result = fn(*fa, **fk)
                 finally:
                     _AT_BOUNDARY.reset(token)
-                return masker.mask_tool_result(result, name)
+                return masker.mask_tool_result(result, name, inner)
 
             return decorator(sync_wrapped)
 

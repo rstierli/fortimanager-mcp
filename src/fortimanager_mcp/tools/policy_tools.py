@@ -39,6 +39,7 @@ from fortimanager_mcp.utils.validation import (
     validate_move_position,
     validate_object_name,
     validate_package_name,
+    validate_policy_id,
     validate_policy_name,
     validate_security_profiles,
     validate_task_id,
@@ -612,6 +613,10 @@ async def get_firewall_policy(
     try:
         adom = validate_adom(adom)
         package = validate_package_name(package)
+        # The id goes into the request URL, so it is validated here like
+        # adom and package and not left to the caller's route to type-check
+        # (here and in every policy tool below that takes one).
+        policyid = validate_policy_id(policyid)
         client = _get_client()
         policy = await client.get_firewall_policy(adom, package, policyid, scope_member=True)
 
@@ -1070,6 +1075,7 @@ async def update_firewall_policy(
     try:
         adom = validate_adom(adom)
         package = validate_package_name(package)
+        policyid = validate_policy_id(policyid)
         if name is not None:
             name = validate_policy_name(name)
         validate_security_profiles(
@@ -1197,6 +1203,7 @@ async def delete_firewall_policy(
     try:
         adom = validate_adom(adom)
         package = validate_package_name(package)
+        policyid = validate_policy_id(policyid)
         client = _get_client()
         await client.delete_firewall_policy(adom, package, policyid)
 
@@ -1246,6 +1253,12 @@ async def delete_firewall_policies_bulk(
 
         adom = validate_adom(adom)
         package = validate_package_name(package)
+        # A list of ids and nothing else, all checked before the first
+        # delete: the str "12" passed the emptiness check above, was
+        # iterated per character and deleted policies 1 and 2.
+        if not isinstance(policyids, list):
+            raise ValidationError("Policy IDs must be a list of integers")
+        policyids = [validate_policy_id(policyid) for policyid in policyids]
         client = _get_client()
     except Exception as e:
         logger.error(f"Failed to delete policies: {e}")
@@ -1319,6 +1332,10 @@ async def move_firewall_policy(
     try:
         adom = validate_adom(adom)
         package = validate_package_name(package)
+        policyid = validate_policy_id(policyid)
+        # The target travels in the request body, not the URL, but it names
+        # a policy the same way and takes the same guard.
+        target_policyid = validate_policy_id(target_policyid)
         position = validate_move_position(position)
         client = _get_client()
         await client.move_firewall_policy(adom, package, policyid, target_policyid, position)
@@ -1561,6 +1578,7 @@ async def get_policy_services(
     try:
         adom = validate_adom(adom)
         package = validate_package_name(package)
+        policy_id = validate_policy_id(policy_id)
         client = _get_client()
         policy = await client.get_firewall_policy(adom, package, policy_id)
 
@@ -1922,6 +1940,7 @@ async def get_local_in_policy(
     try:
         adom = validate_adom(adom)
         package = validate_package_name(package)
+        policyid = validate_policy_id(policyid)
         client = _get_client()
         policy = await client.get(
             f"{_LOCAL_IN_POLICY_URL.format(adom=adom, pkg=package)}/{policyid}"
@@ -2135,6 +2154,7 @@ async def update_local_in_policy(
     try:
         adom = validate_adom(adom)
         package = validate_package_name(package)
+        policyid = validate_policy_id(policyid)
         client = _get_client()
 
         safety_result = await _check_partial_update_safety(
@@ -2217,6 +2237,7 @@ async def delete_local_in_policy(
     try:
         adom = validate_adom(adom)
         package = validate_package_name(package)
+        policyid = validate_policy_id(policyid)
         client = _get_client()
         await client.delete(f"{_LOCAL_IN_POLICY_URL.format(adom=adom, pkg=package)}/{policyid}")
 
@@ -2318,6 +2339,7 @@ async def get_local_in_policy6(
     try:
         adom = validate_adom(adom)
         package = validate_package_name(package)
+        policyid = validate_policy_id(policyid)
         client = _get_client()
         policy = await client.get(
             f"{_LOCAL_IN_POLICY6_URL.format(adom=adom, pkg=package)}/{policyid}"
@@ -2517,6 +2539,7 @@ async def update_local_in_policy6(
     try:
         adom = validate_adom(adom)
         package = validate_package_name(package)
+        policyid = validate_policy_id(policyid)
         client = _get_client()
 
         safety_result = await _check_partial_update_safety(
@@ -2597,6 +2620,7 @@ async def delete_local_in_policy6(
     try:
         adom = validate_adom(adom)
         package = validate_package_name(package)
+        policyid = validate_policy_id(policyid)
         client = _get_client()
         await client.delete(f"{_LOCAL_IN_POLICY6_URL.format(adom=adom, pkg=package)}/{policyid}")
 
