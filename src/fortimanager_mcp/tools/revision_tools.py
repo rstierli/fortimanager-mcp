@@ -56,6 +56,7 @@ from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_settings
 from fortimanager_mcp.utils.errors import client_safe_error
 from fortimanager_mcp.utils.validation import (
+    Id,
     ValidationError,
     check_policy_safety,
     collect_scope_values,
@@ -243,7 +244,7 @@ async def list_device_revisions(device: str) -> dict[str, Any]:
 
 
 @mcp.tool()
-async def get_device_revision(device: str, revision: int = -1) -> dict[str, Any]:
+async def get_device_revision(device: str, revision: Id = -1) -> dict[str, Any]:
     """Check out one device DB revision's stored configuration text.
 
     Note:
@@ -335,7 +336,7 @@ def _validate_sections(sections: Any) -> list[str] | None:
 
 @mcp.tool()
 async def diff_device_revision(
-    device: str, revision: int, sections: list[str] | None = None
+    device: str, revision: Id, sections: list[str] | None = None
 ) -> dict[str, Any]:
     """Diff a past device DB revision against the CURRENT device DB.
 
@@ -429,7 +430,7 @@ async def diff_device_revision(
 
 @mcp.tool()
 async def revert_device_revision(
-    device: str, revision: int, confirm: bool = False
+    device: str, revision: Id, confirm: bool = False
 ) -> dict[str, Any]:
     """Revert a device's device DB to a past revision.
 
@@ -532,7 +533,7 @@ async def list_adom_revisions(
 
 
 @mcp.tool()
-async def get_adom_revision(adom: str, revision: int) -> dict[str, Any]:
+async def get_adom_revision(adom: str, revision: Id) -> dict[str, Any]:
     """Get one ADOM DB revision's metadata.
 
     Args:
@@ -559,7 +560,7 @@ async def get_adom_revision(adom: str, revision: int) -> dict[str, Any]:
 @mcp.tool()
 async def diff_adom_revision(
     adom: str,
-    revision: int,
+    revision: Id,
     timeout: int = 60,
     poll_interval: int = 2,
 ) -> dict[str, Any]:
@@ -608,7 +609,7 @@ async def diff_adom_revision(
 @mcp.tool()
 async def revert_adom_revision(
     adom: str,
-    revision: int,
+    revision: Id,
     name: str | None = None,
     desc: str | None = None,
     locked: bool = False,
@@ -693,7 +694,7 @@ async def revert_adom_revision(
 async def list_policy_revisions(
     adom: str,
     package: str,
-    policyid: int | None = None,
+    policyid: Id | None = None,
 ) -> dict[str, Any]:
     """List the change log for a policy package's firewall policies.
 
@@ -739,7 +740,7 @@ async def list_policy_revisions(
 async def diff_policy_package(
     adom: str,
     package: str,
-    revision: int,
+    revision: Id,
     timeout: int = 60,
     poll_interval: int = 2,
 ) -> dict[str, Any]:

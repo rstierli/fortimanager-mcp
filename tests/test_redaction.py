@@ -44,6 +44,25 @@ class TestSafeDeviceMessage:
         assert "hunter2" not in out
         assert "\n" not in out
 
+    def test_cli_set_secret_is_masked_anywhere(self) -> None:
+        """A device error can quote the CLI line it failed on, mid-sentence,
+        with the secret in plain text or quoted."""
+        for message in (
+            "branch1(228) error: set password hunter2",
+            "failed at 'set psksecret hunter2' line 3",
+            'error: set passwd "hunter 2" next',
+            "error: SET Private-Key hunter2",
+        ):
+            out = safe_device_message(message)
+            assert "hunter" not in out, out
+            assert "set" in out.lower(), out
+
+    def test_cli_set_of_a_plain_field_is_kept(self) -> None:
+        """Only secret directives: ``set name`` and ``set password-expire``
+        are configuration, not credentials."""
+        message = "error: set name wan1; set password-expire 2026-01-01"
+        assert safe_device_message(message) == message
+
     def test_length_is_bounded(self) -> None:
         out = safe_device_message("x " * 1000)
         assert len(out) <= 300

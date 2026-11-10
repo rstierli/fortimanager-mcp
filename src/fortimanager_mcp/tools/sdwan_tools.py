@@ -635,8 +635,9 @@ async def get_device_sdwan_monitor(
     Returns:
         dict with keys:
             - adom, device
-            - members: raw virtual-wan/members proxy response
-            - health_check: raw virtual-wan/health-check proxy response
+            - members: raw virtual-wan/members proxy response (None if it failed)
+            - health_check: raw virtual-wan/health-check proxy response (None
+              if it failed)
             - summary: condensed member links/bandwidth + per-member SLA
             - unverified: reads that failed while the other one worked; a
               failed read adds nothing to the summary
@@ -690,13 +691,17 @@ async def get_device_sdwan_monitor(
         # One failed read keeps the other, as get_device_bgp_status does:
         # FortiOS 7.4.5 answers virtual-wan/health-check with HTTP 500 on a
         # working SD-WAN in large ADVPN setups (fixed in 7.4.8), and the
-        # member links still read. A failed envelope summarizes to nothing.
+        # member links still read. A failed envelope summarizes to nothing,
+        # and is not returned raw: its message is the device's own text, and
+        # only the scrubbed copy in unverified goes back.
+        members_out = None if "SD-WAN members" in failed else members
+        health_out = None if "SD-WAN health checks" in failed else health
         return {
             "adom": adom,
             "device": device,
-            "members": members,
-            "health_check": health,
-            "summary": _summarize_sdwan_monitor(members, health),
+            "members": members_out,
+            "health_check": health_out,
+            "summary": _summarize_sdwan_monitor(members_out, health_out),
             "unverified": [f"{label}: {error}" for label, error in failed.items()],
         }
     except Exception as e:

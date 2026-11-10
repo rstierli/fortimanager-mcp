@@ -11,7 +11,9 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Any, cast
+from typing import Annotated, Any, cast
+
+from pydantic import BeforeValidator
 
 from fortimanager_mcp.utils.config import get_settings
 
@@ -1205,6 +1207,21 @@ def validate_move_position(position: str) -> str:
         )
 
     return position
+
+
+def _refuse_bool(value: Any) -> Any:
+    if isinstance(value, bool):
+        raise ValueError("must be an integer, not a boolean")
+    return value
+
+
+#: An integer that selects an object by number (policy, task, revision...).
+#: Both MCP routes validate tool arguments with pydantic in lax mode, which
+#: turns JSON ``true`` into ``1`` before the tool runs, so a tool's own bool
+#: check never sees it and ``delete_firewall_policy(policyid=true)`` would
+#: delete policy 1. This refuses the boolean in the argument model and keeps
+#: the rest of lax mode (``"7"`` is still 7). The JSON schema stays integer.
+Id = Annotated[int, BeforeValidator(_refuse_bool)]
 
 
 def validate_policy_id(policyid: int) -> int:

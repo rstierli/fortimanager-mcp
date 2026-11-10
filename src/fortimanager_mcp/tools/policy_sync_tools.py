@@ -42,6 +42,7 @@ from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.errors import client_safe_error
 from fortimanager_mcp.utils.responses import error_response
 from fortimanager_mcp.utils.validation import (
+    Id,
     ValidationError,
     validate_adom,
     validate_device_name,
@@ -628,7 +629,7 @@ async def check_device_policy_sync(
     vdom: str = "root",
     package: str | None = None,
     source: str = "both",
-    revision: int = -1,
+    revision: Id = -1,
 ) -> dict[str, Any]:
     """Compare a device's firewall policies with its assigned policy package.
 

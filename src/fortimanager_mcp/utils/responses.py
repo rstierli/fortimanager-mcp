@@ -66,6 +66,13 @@ _KV_PATTERN = re.compile(
 )
 #: A secret key followed by an ENC blob without a separator (``psksecret ENC x``).
 _KV_ENC_PATTERN = re.compile(r"(?i)\b(?P<key>" + _KEY_ALTERNATION + r")\b(?P<sep>\s+)ENC\s+\S+")
+#: A CLI ``set <secret> <value>`` anywhere in a line, as a device error quotes
+#: the command it failed on. The line-anchored CLI-text redactors do not see
+#: it mid-sentence. A quoted value runs to its closing quote.
+_CLI_SET_PATTERN = re.compile(
+    r"(?i)\b(?P<head>set\s+(?:" + _KEY_ALTERNATION + r"))(?![\w-])(?P<sep>\s+)"
+    r"(?P<value>\"(?:\\.|[^\"\\])*\"?|'(?:\\.|[^'\\])*'?|\S+)"
+)
 #: An ENC blob anywhere: how FortiOS writes a stored secret, whatever its key.
 _ENC_BLOB_PATTERN = re.compile(r"\bENC\s+[A-Za-z0-9+/=]{16,}")
 #: An HTTP credential after its scheme word (``Authorization: Bearer x``).
@@ -157,6 +164,9 @@ def redact(text: str) -> str:
     redacted = _KV_PATTERN.sub(mask, redacted)
     redacted = _KV_ENC_PATTERN.sub(
         lambda m: f"{m.group('key')}{m.group('sep')}{MASK_VALUE}", redacted
+    )
+    redacted = _CLI_SET_PATTERN.sub(
+        lambda m: f"{m.group('head')}{m.group('sep')}{MASK_VALUE}", redacted
     )
     redacted = _URL_USERINFO_PATTERN.sub(lambda m: f"{m.group('head')}{MASK_VALUE}@", redacted)
     redacted = _ENC_BLOB_PATTERN.sub(MASK_VALUE, redacted)

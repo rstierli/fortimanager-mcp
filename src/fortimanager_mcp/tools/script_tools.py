@@ -15,6 +15,7 @@ from fortimanager_mcp.utils.errors import client_safe_error
 from fortimanager_mcp.utils.responses import error_response
 from fortimanager_mcp.utils.task_guard import TaskSlotsExhausted, spawn_guarded
 from fortimanager_mcp.utils.validation import (
+    Id,
     and_filters,
     coerce_device_name_list,
     validate_adom,
@@ -740,7 +741,7 @@ async def get_script_log_summary(
 @mcp.tool()
 async def get_script_log_output(
     adom: str,
-    log_id: int,
+    log_id: Id,
     device: str | None = None,
 ) -> dict[str, Any]:
     """Get specific script execution output by log ID.
