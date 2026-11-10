@@ -3,6 +3,7 @@
 Provides mocked client fixtures for testing tools without a real FortiManager.
 """
 
+import os
 from collections.abc import Generator
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -10,6 +11,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from fortimanager_mcp.api.client import FortiManagerClient
+
+# The unit tests walk the full tool registry, which server.py builds at import
+# from FMG_TOOL_MODE. Pin it so an exported FMG_TOOL_MODE=dynamic does not
+# change what they see; the dynamic-mode tests set the mode themselves.
+# Settings are created lazily, so this runs before the first get_settings().
+os.environ["FMG_TOOL_MODE"] = "full"
 
 # =============================================================================
 # Mock Response Data
