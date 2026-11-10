@@ -86,6 +86,17 @@ class TestHttpAuthFailClosed:
         with pytest.raises(SystemExit):
             server._ensure_http_auth_or_die()
 
+    def test_non_utf8_token_fails_closed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A non-UTF-8 byte in the environment arrives as a lone surrogate. The
+        Bearer check cannot encode it, so the server refuses to start instead of
+        answering every request with a 500."""
+        monkeypatch.setattr(server.settings, "MCP_AUTH_TOKEN", "secret\udcfftoken")
+        monkeypatch.setattr(server.settings, "MCP_ALLOW_NO_AUTH", False)
+        with pytest.raises(SystemExit) as exc:
+            server._ensure_http_auth_or_die()
+        assert "UTF-8" in str(exc.value)
+        assert "secret" not in str(exc.value)
+
     def test_explicit_optout_allows_no_auth(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Explicit MCP_ALLOW_NO_AUTH=true permits unauthenticated start (logged)."""
         monkeypatch.setattr(server.settings, "MCP_AUTH_TOKEN", None)
