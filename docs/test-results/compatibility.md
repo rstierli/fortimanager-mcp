@@ -1,70 +1,49 @@
 # FortiManager MCP - Version Compatibility Matrix
 
-**Last Updated:** 2025-01-15
+**Last Updated:** 2026-11-10
 
 ## Supported Versions
 
-| FMG Version | MCP Version | Status | Unit Tests | Integration Tests | Notes |
-|-------------|-------------|--------|------------|-------------------|-------|
-| 7.6.5 | 0.1.0-alpha | Supported | Pending | Pending | Primary target |
-| 7.6.4 | 0.1.0-alpha | Supported | Pending | Pending | |
-| 7.4.x | 0.1.0-alpha | Expected | Pending | Pending | Should work |
-| 7.2.x | 0.1.0-alpha | Expected | Pending | Pending | Should work |
-| 7.0.x | 0.1.0-alpha | Unknown | Not tested | Not tested | May work |
+| FMG Version | Status | Tested | Notes |
+|-------------|--------|--------|-------|
+| 8.0.2 | Supported | Every release since 1.12.1 | Primary development target |
+| 8.0.0, 8.0.1 | Expected | No | The install preview is task-based (see below). The 8.0.0 FNDN reference is bundled in `docs/fndn/8.0.0`. |
+| 7.6.7 | Supported | Releases up to 1.12.0 | |
+| 7.6.0 - 7.6.6 | Expected | No | The install preview is task-based (see below) |
+| 7.4.x | Expected | No | Built against the bundled 7.4.8 FNDN reference |
+| 7.2.x | Expected | No | Built against the bundled 7.2.11 FNDN reference |
+| 7.0.x | Expected | No | No reference bundled |
+
+"Tested" means the release gate: unit tests plus the live integration suite (`pytest tests/`), `tests/integration/test_real_fmg.py`, the Docker image smoke tests and a secret leak sweep, all against a lab FortiManager with managed FortiGates.
 
 ## Status Legend
 
 | Status | Meaning |
 |--------|---------|
-| **Supported** | Actively tested and maintained |
-| **Expected** | Should work based on API compatibility |
+| **Supported** | Tested live and maintained |
+| **Expected** | Should work based on the API reference, not tested live |
 | **Unknown** | Not tested, may or may not work |
 | **Deprecated** | No longer supported |
 
-## API Compatibility Notes
+## Version-Specific Differences
 
-FortiManager and FortiAnalyzer share the same JSON-RPC API codebase. General patterns are identical across versions:
+The server detects the FortiManager version once per connection (`/sys/status`) and adapts where the API differs:
 
-- Authentication: Same across all versions
-- Request/Response format: Same across all versions
-- Error codes: Same across all versions
+| Feature | Behaviour |
+|---------|-----------|
+| CLI scripts | 7.6 and later use `/pm/config/adom/{adom}/obj/fmg/script`; earlier versions use `/dvmdb/adom/{adom}/script`. 8.0.2 no longer serves the `/dvmdb` path. |
+| Install preview | 7.6.7+ and 8.0.2+ run the staged preview (`preview_taskid`) and return the diff in one call. Earlier versions, including 8.0.0 and 8.0.1, start a preview task: run `wait_for_task`, then `get_preview_result`. |
+| FortiManager backup | 7.0.11+, 7.2.5+ and 7.4.2+ refuse an unencrypted backup: `trigger_fmg_backup` needs `passwd`. |
 
-### Version-Specific Differences
-
-#### FMG 7.6.x
-- Full feature support
-- All 101 tools tested
-- SD-WAN enhancements
-
-#### FMG 7.4.x
-- Expected full compatibility
-- Some SD-WAN features may differ
-
-#### FMG 7.2.x
-- Expected compatibility for core features
-- Template features may have differences
-
-## Tool Categories
-
-| Category | Tools | Description |
-|----------|-------|-------------|
-| System | 17 | Status, ADOMs, tasks |
-| Device Management | 12 | Devices, groups, VDOMs |
-| Policy | 14 | Firewall policies, packages |
-| Objects | 24 | Addresses, services, groups |
-| Scripts | 12 | CLI script execution |
-| Templates | 15 | Provisioning templates |
-| SD-WAN | 7 | SD-WAN configuration |
+Several endpoints are not in the bundled FNDN references and were verified on FortiManager 8.0.2 only. They include firmware templates (`/pm/fwmprof`), BGP template neighbor groups, metadata-variable writes, `add_model_device` with `meta_variables`, and the tools added in 1.13.0. Their docstrings say so. On 7.x they are expected to work, but they are untested there.
 
 ## Python Version Support
 
 | Python | Status |
 |--------|--------|
-| 3.13.x | Supported |
-| 3.12.x | Supported (Primary) |
-| 3.11.x | Should work |
-| 3.10.x | Not tested |
-| < 3.10 | Not supported |
+| 3.13.x | Supported (CI) |
+| 3.12.x | Supported (CI, primary) |
+| < 3.12 | Not supported (`requires-python = ">=3.12"`) |
 
 ## Testing Your Version
 
@@ -79,14 +58,14 @@ cp .env.example .env
 # ADOM: mcp-dev-test
 # Device: FGT-MCP-TEST-01 (Model FortiGate)
 
-# 3. Run unit tests (no FMG required)
+# 3. Run unit and live integration tests (FMG required for the live part)
 uv run pytest tests/ -v
 
-# 4. Run integration tests (FMG required)
-uv run pytest tests/integration/ -v -m integration
+# 4. Run the read-only live check script
+uv run python tests/integration/test_real_fmg.py
 
 # 5. Report results
-# Create docs/test-results/fmg-X.Y.Z.md with your results
+# Open an issue or PR with your FMG version, build and the test output
 ```
 
 ## Reporting Issues
@@ -103,6 +82,5 @@ If you encounter version-specific issues:
 Help us expand compatibility testing:
 
 1. Test against your FMG version
-2. Document results using template in README.md
-3. Submit PR with test results
-4. Report any version-specific issues
+2. Share the results in an issue or PR
+3. Report any version-specific issues

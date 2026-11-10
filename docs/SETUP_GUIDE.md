@@ -18,7 +18,7 @@ This guide explains how to set up and use the FortiManager MCP server with Claud
 ## Prerequisites
 
 - **Python 3.12+** installed
-- **FortiManager** instance (7.0.x, 7.2.x, 7.4.x, 7.6.x supported)
+- **FortiManager** instance (8.0 and 7.6 tested; 7.0, 7.2 and 7.4 expected to work, see [compatibility](test-results/compatibility.md))
 - **FortiManager API credentials** (API token recommended, or username/password)
 - **Claude Desktop** or **Claude Code** (optional - can run standalone)
 

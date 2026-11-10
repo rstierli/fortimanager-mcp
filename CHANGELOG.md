@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- FortiManager 8.0 is listed as supported. Every release since 1.12.1 has been tested live against 8.0.2, now the primary development target. The README, setup guide and compatibility matrix (`docs/test-results/compatibility.md`) now say which versions are tested live (8.0.2, and 7.6.7 up to 1.12.0) and which are expected to work from the API reference (7.0 to 7.4, 7.6 before 7.6.7, 8.0.0 and 8.0.1). The matrix lists the version-specific behaviour: the script endpoint, the staged versus task-based install preview, and encrypted backups.
+
 ### Fixed
 - `/health` reports a FortiManager that dropped after connecting as not connected. The flag is passive (an idle server notices on its next tool call); `/health` still returns HTTP 200 and makes no FortiManager calls.
 - Dynamic mode validates the arguments of a dispatched tool the way a direct call does. `execute_fortimanager_tool` passed the caller's JSON values to the tool as they came: `confirm="false"` was truthy and opened the confirm gate of `trigger_fmg_restore`, `upgrade_device_firmware`, `add_model_device` and both revision reverts, and `policyids="12"` was iterated per character and deleted policies 1 and 2. A badly typed value is now refused or coerced as in full mode. An unknown argument name is refused with `validation_error`, and a refusal says where and why without repeating the value. With output masking on, the token guard also covers the arguments after they are decoded.
