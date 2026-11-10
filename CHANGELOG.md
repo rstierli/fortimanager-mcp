@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **HTTP:** an `MCP_AUTH_TOKEN` holding a byte that is not valid UTF-8 made every request a 500, because the Bearer check could not encode it. The server now refuses to start with that token, as it does without one.
+
 ## [1.13.2] - 2026-11-10
 
 Security release. It closes a confirm-gate bypass in dynamic mode (found by Christian Dassy, #131) and the three low findings of an audit of everything since 1.13.1. That audit found no critical, high or medium issues. FortiManager 8.0 is now listed as supported.

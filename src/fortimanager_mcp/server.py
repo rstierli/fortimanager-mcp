@@ -1327,9 +1327,19 @@ def _ensure_http_auth_or_die() -> None:
     a trusted, isolated bind such as 127.0.0.1 behind a gateway), in which case
     we log a CRITICAL warning.
 
-    Raises ``SystemExit`` when no token is configured and the opt-out is not set.
+    Raises ``SystemExit`` when no token is configured and the opt-out is not set,
+    or when the token cannot be encoded as UTF-8.
     """
     if settings.MCP_AUTH_TOKEN:
+        # A non-UTF-8 byte in the environment reaches us as a lone surrogate,
+        # which the Bearer check cannot encode: every request would be a 500.
+        try:
+            settings.MCP_AUTH_TOKEN.encode()
+        except UnicodeEncodeError:
+            raise SystemExit(
+                "FATAL: MCP_AUTH_TOKEN is not valid UTF-8, so no request could match "
+                "it. Set a token such as the output of `openssl rand -hex 32`."
+            ) from None
         return
     if not settings.MCP_ALLOW_NO_AUTH:
         raise SystemExit(
