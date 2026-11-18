@@ -1082,12 +1082,19 @@ async def assign_vap_to_wtp_profile(
     vap: str,
     radios: list[int] | None = None,
     vdom: str = "root",
+    switch_to_manual: bool = False,
 ) -> dict[str, Any]:
     """Add a VAP (SSID) to a FortiAP profile's radios so it gets broadcast.
 
-    Reads the profile, appends the VAP to each selected radio's manual VAP
-    list, and switches that radio's vap-all mode to "manual" (the mode that
-    honors an explicit list). VAPs already present are left in place.
+    Reads the profile and appends the VAP to each selected radio's manual VAP
+    list. VAPs already in that list are left in place.
+
+    A radio only honors its list in vap-all mode "manual". In "tunnel" or
+    "bridge" mode it broadcasts every SSID of that mode by itself, and
+    switching it to manual stops all of them except the ones in its list,
+    with the next install. So a radio that is not in manual mode is refused
+    unless switch_to_manual is set: nothing is written for any radio, and the
+    error names the radios and their mode.
 
     Args:
         device: Managed device name
@@ -1095,9 +1102,15 @@ async def assign_vap_to_wtp_profile(
         vap: VAP object name to broadcast
         radios: Radios to add the SSID to, from 1-3 (default [1, 2])
         vdom: VDOM the profile lives in (default "root")
+        switch_to_manual: Also switch a selected radio that is in tunnel or
+            bridge mode (or has no mode stored) to manual. Every SSID that
+            mode was broadcasting on the radio stops with the next install,
+            except the VAPs in its list. Check what the radio serves first
+            (list_device_vaps). Default False.
 
     Returns:
-        Update result listing the radios changed
+        Update result listing the radios changed. With switch_to_manual, a
+        "warning" names the radios that left tunnel or bridge mode.
     """
     client = get_fmg_client()
     if not client:
@@ -1131,6 +1144,33 @@ async def assign_vap_to_wtp_profile(
                 "error_code": "not_found",
             }
 
+        # A radio in tunnel or bridge mode broadcasts every SSID of that mode
+        # by itself. Going to manual with a list that holds the new VAP stops
+        # all the others with the next install (#139). Refused for the whole
+        # call unless asked for: a warning in a result is too easy to miss,
+        # and a partial write would be a silent change of scope. A radio with
+        # no mode stored counts as not manual: the mode is not known, and
+        # FortiOS's default is tunnel.
+        not_manual: dict[int, str] = {}
+        for n in radios:
+            stored_radio = stored.get(f"radio-{n}")
+            mode = stored_radio.get("vap-all") if isinstance(stored_radio, dict) else None
+            if mode != "manual":
+                not_manual[n] = f"vap-all '{mode}'" if mode else "no vap-all mode stored"
+        leaving = ", ".join(f"radio-{n} ({what})" for n, what in sorted(not_manual.items()))
+        if not_manual and not switch_to_manual:
+            return {
+                "error": (
+                    f"{leaving} of profile '{profile}' not in manual mode. A radio in "
+                    "tunnel or bridge mode broadcasts every SSID of that mode by itself. "
+                    f"Adding '{vap}' would switch it to manual, where only the VAPs in its "
+                    "list are broadcast, so every other SSID it serves now would stop with "
+                    "the next install. Nothing was changed. Check what the radio serves "
+                    "(list_device_vaps), then pass switch_to_manual=True to do it."
+                ),
+                "error_code": "validation_error",
+            }
+
         # 6 GHz radios are WPA3-only, so a VAP with the wrong security mode
         # is rejected at install time, possibly bundled with unrelated
         # changes. Check before staging anything, and refuse the WHOLE call
@@ -1153,6 +1193,13 @@ async def assign_vap_to_wtp_profile(
             refusal, warning = await _check_six_ghz_vap(client, device, vdom, vap, sorted(six_ghz))
             if refusal:
                 return refusal
+        if not_manual:
+            switched = (
+                f"{leaving} switched to manual, as asked. Every SSID that mode was "
+                "broadcasting on the radio stops with the next install, except the VAPs "
+                "now in its list."
+            )
+            warning = f"{warning} {switched}" if warning else switched
 
         data: dict[str, Any] = {}
         for radio_num in radios:

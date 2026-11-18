@@ -635,7 +635,7 @@ class TestAssignVapToWtpProfile:
 
         with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
             result = await device_config_tools.assign_vap_to_wtp_profile(
-                device="FGT-01", profile="AP-profile", vap="TEST"
+                device="FGT-01", profile="AP-profile", vap="TEST", switch_to_manual=True
             )
 
         assert result.get("success") is True
@@ -684,7 +684,11 @@ class TestAssignVapToWtpProfile:
 
         with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
             await device_config_tools.assign_vap_to_wtp_profile(
-                device="FGT-01", profile="AP-profile", vap="TEST", radios=[1]
+                device="FGT-01",
+                profile="AP-profile",
+                vap="TEST",
+                radios=[1],
+                switch_to_manual=True,
             )
 
         written = mock_fmg_instance.update.call_args.kwargs["data"]["radio-1"]
@@ -746,7 +750,11 @@ class TestAssignVapToWtpProfile:
 
         with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
             result = await device_config_tools.assign_vap_to_wtp_profile(
-                device="FGT-01", profile="AP-profile", vap="TEST", radios=[2]
+                device="FGT-01",
+                profile="AP-profile",
+                vap="TEST",
+                radios=[2],
+                switch_to_manual=True,
             )
 
         assert result.get("success") is True
@@ -784,7 +792,11 @@ class TestAssignVapToWtpProfile:
 
         with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
             result = await device_config_tools.assign_vap_to_wtp_profile(
-                device="FGT-01", profile="AP-profile", vap="TEST", radios=[1]
+                device="FGT-01",
+                profile="AP-profile",
+                vap="TEST",
+                radios=[1],
+                switch_to_manual=True,
             )
 
         assert result.get("success") is True
@@ -800,6 +812,135 @@ MOCK_WTP_PROFILES = [
         "radio-3": {"vap-all": "manual", "band": "802.11ax-6G", "channel-bonding": "160MHz"},
     }
 ]
+
+
+class TestAssignVapToARadioThatIsNotManual:
+    """A radio in tunnel or bridge mode broadcasts every SSID of that mode.
+
+    Adding a VAP switches the radio to manual, where only the VAPs in its
+    list are broadcast: every other SSID the radio was serving stops with the
+    next install (#139 item 3). The tool refuses that unless the caller asks
+    for it, because a warning in a result is too easy to miss.
+    """
+
+    async def _assign(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        profile: dict[str, Any],
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        mock_fmg_instance.get.return_value = (0, {"name": "AP-profile", **profile})
+        mock_fmg_instance.update.return_value = (0, {"name": "AP-profile"})
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result: dict[str, Any] = await device_config_tools.assign_vap_to_wtp_profile(
+                device="FGT-01", profile="AP-profile", vap="TEST", **kwargs
+            )
+        return result
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", ["tunnel", "bridge"])
+    async def test_it_is_refused_and_nothing_is_written(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock, mode: str
+    ) -> None:
+        result = await self._assign(
+            mock_client,
+            mock_fmg_instance,
+            {"radio-1": {"vap-all": mode, "band": "802.11ax-5G"}},
+            radios=[1],
+        )
+
+        assert result["error_code"] == "validation_error"
+        assert "radio-1" in result["error"]
+        assert mode in result["error"]
+        assert "switch_to_manual" in result["error"]
+        mock_fmg_instance.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_radio_with_no_mode_stored_is_refused_too(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """The mode is not known to be manual, and FortiOS's default is tunnel."""
+        result = await self._assign(
+            mock_client, mock_fmg_instance, {"radio-1": {"band": "802.11ax-5G"}}, radios=[1]
+        )
+
+        assert result["error_code"] == "validation_error"
+        mock_fmg_instance.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_one_such_radio_refuses_the_whole_call(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """Not a partial write: the manual radio is not changed either."""
+        result = await self._assign(
+            mock_client,
+            mock_fmg_instance,
+            {
+                "radio-1": {"vap-all": "manual", "vaps": ["corp"]},
+                "radio-2": {"vap-all": "tunnel"},
+            },
+        )
+
+        assert result["error_code"] == "validation_error"
+        assert "radio-2" in result["error"]
+        assert "radio-1" not in result["error"]
+        mock_fmg_instance.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_asked_for_it_is_done_and_the_result_says_what_stops(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        result = await self._assign(
+            mock_client,
+            mock_fmg_instance,
+            {"radio-1": {"vap-all": "tunnel", "vaps": ["corp"], "band": "802.11ax-5G"}},
+            radios=[1],
+            switch_to_manual=True,
+        )
+
+        assert result.get("success") is True
+        data = mock_fmg_instance.update.call_args.kwargs["data"]
+        assert data["radio-1"] == {
+            "vap-all": "manual",
+            "vaps": ["corp", "TEST"],
+            "band": "802.11ax-5G",
+        }
+        assert "radio-1" in result["warning"]
+        assert "tunnel" in result["warning"]
+
+    @pytest.mark.asyncio
+    async def test_a_manual_radio_needs_no_asking(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        result = await self._assign(
+            mock_client,
+            mock_fmg_instance,
+            {"radio-1": {"vap-all": "manual", "vaps": ["corp"]}},
+            radios=[1],
+        )
+
+        assert result.get("success") is True
+        assert mock_fmg_instance.update.call_args.kwargs["data"]["radio-1"]["vaps"] == [
+            "corp",
+            "TEST",
+        ]
+        assert "warning" not in result
+
+    @pytest.mark.asyncio
+    async def test_asking_changes_nothing_for_a_manual_radio(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        result = await self._assign(
+            mock_client,
+            mock_fmg_instance,
+            {"radio-1": {"vap-all": "manual", "vaps": ["corp"]}},
+            radios=[1],
+            switch_to_manual=True,
+        )
+
+        assert result.get("success") is True
+        assert "warning" not in result
 
 
 class TestListDeviceWtpProfiles:
@@ -1891,8 +2032,8 @@ class TestSixGhzWpa3Guard:
 
     PROFILE_6G = {
         "name": "AP-profile",
-        "radio-1": {"vap-all": "tunnel", "band": "802.11ax-5G"},
-        "radio-3": {"vap-all": "tunnel", "band": "802.11ax-6G"},
+        "radio-1": {"vap-all": "manual", "band": "802.11ax-5G"},
+        "radio-3": {"vap-all": "manual", "band": "802.11ax-6G"},
     }
 
     @staticmethod
@@ -2008,7 +2149,7 @@ class TestSixGhzWpa3Guard:
         # FortiManager stores some scalars as one-element lists; channel is
         # documented that way in this module and vaps arrives as a list.
         mock_fmg_instance.get.side_effect = [
-            (0, {"name": "AP-profile", "radio-3": {"band": ["802.11be-6G"]}}),
+            (0, {"name": "AP-profile", "radio-3": {"vap-all": "manual", "band": ["802.11be-6G"]}}),
             (0, {"security": "open"}),
         ]
 
@@ -2023,7 +2164,12 @@ class TestSixGhzWpa3Guard:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "radio",
-        [{"vap-all": "tunnel"}, {"band": "802.11ax-5G"}, {"band": ""}, {"band": ["a", "b"]}],
+        [
+            {"vap-all": "manual"},
+            {"vap-all": "manual", "band": "802.11ax-5G"},
+            {"vap-all": "manual", "band": ""},
+            {"vap-all": "manual", "band": ["a", "b"]},
+        ],
         ids=["band-absent", "five-ghz", "band-empty", "band-multi-list"],
     )
     async def test_a_non_6ghz_or_unknown_band_costs_no_extra_read(
