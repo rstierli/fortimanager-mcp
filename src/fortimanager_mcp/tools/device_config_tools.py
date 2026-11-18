@@ -623,6 +623,12 @@ async def create_device_on_demand_sniffer(
         return {"error": msg, "error_code": code}
 
 
+#: What FortiOS stores in a DNS server slot of a DHCP scope that is not set.
+#: A value written to a device's configuration, not an address this server
+#: binds to, which is what bandit's B104 takes the literal for.
+_UNSET_DNS_SERVER = "0.0.0.0"  # nosec B104
+
+
 @mcp.tool()
 async def update_device_dhcp_server(
     device: str,
@@ -647,7 +653,11 @@ async def update_device_dhcp_server(
         end_ip: New last address of the lease range
         netmask: New scope netmask
         default_gateway: New gateway handed to clients
-        dns_servers: Up to three DNS servers; replaces the served set
+        dns_servers: Up to three DNS servers. The list replaces the served
+            set: the servers given are written in order and the remaining
+            slots are cleared. An empty list switches the scope back to the
+            device's system DNS (dns-service default), as create does when
+            no server is given. Omitted, DNS is left as it is.
         lease_time: New lease time in seconds
         vdom: VDOM the scope lives in (default "root")
 
@@ -681,9 +691,21 @@ async def update_device_dhcp_server(
                 raise ValidationError(
                     f"dns_servers accepts at most 3 entries, got {len(dns_servers)}"
                 )
-            data["dns-service"] = "specify"
-            for i, server in enumerate(dns_servers, start=1):
-                data[f"dns-server{i}"] = validate_ipv4_address(server)
+            if dns_servers:
+                data["dns-service"] = "specify"
+                # All three slots are written. FortiManager keeps a slot the
+                # update does not name, so a shorter list left the old
+                # servers 2 and 3 in place and they were still handed out.
+                # 0.0.0.0 clears a slot. Both measured on FortiManager 8.0.2
+                # with a model device (#139).
+                slots = [validate_ipv4_address(server) for server in dns_servers]
+                slots += [_UNSET_DNS_SERVER] * (3 - len(slots))
+                for i, server in enumerate(slots, start=1):
+                    data[f"dns-server{i}"] = server
+            else:
+                # No server: back to the device's own DNS, as on create.
+                # "specify" with no server changed nothing (measured).
+                data["dns-service"] = "default"
         if lease_time is not None:
             data["lease-time"] = lease_time
 

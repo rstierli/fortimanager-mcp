@@ -261,6 +261,83 @@ class TestUpdateDeviceDhcpServer:
         assert "error" in result
         mock_fmg_instance.update.assert_not_called()
 
+    async def _sent_for(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        dns_servers: list[str] | None,
+        **more: Any,
+    ) -> dict[str, Any]:
+        mock_fmg_instance.update.return_value = (0, {"id": 1})
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.update_device_dhcp_server(
+                device="FGT-01", dhcp_server_id=1, dns_servers=dns_servers, **more
+            )
+        assert result.get("success") is True
+        data: dict[str, Any] = mock_fmg_instance.update.call_args.kwargs["data"]
+        return data
+
+    @pytest.mark.asyncio
+    async def test_one_dns_server_clears_the_other_two_slots(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """The list replaces the served set (#139 item 2).
+
+        Measured on FortiManager 8.0.2 with a model device: an update that
+        sends dns-server1 alone leaves dns-server2 and dns-server3 as they
+        were stored, and an update that sends 0.0.0.0 for a slot clears it.
+        """
+        data = await self._sent_for(mock_client, mock_fmg_instance, ["192.0.2.53"])
+
+        assert data == {
+            "dns-service": "specify",
+            "dns-server1": "192.0.2.53",
+            "dns-server2": "0.0.0.0",
+            "dns-server3": "0.0.0.0",
+        }
+
+    @pytest.mark.asyncio
+    async def test_two_dns_servers_clear_the_third_slot(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        data = await self._sent_for(mock_client, mock_fmg_instance, ["192.0.2.53", "198.51.100.53"])
+
+        assert data["dns-server1"] == "192.0.2.53"
+        assert data["dns-server2"] == "198.51.100.53"
+        assert data["dns-server3"] == "0.0.0.0"
+
+    @pytest.mark.asyncio
+    async def test_three_dns_servers_fill_every_slot(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        data = await self._sent_for(
+            mock_client, mock_fmg_instance, ["192.0.2.1", "192.0.2.2", "192.0.2.3"]
+        )
+
+        assert [data[f"dns-server{i}"] for i in (1, 2, 3)] == [
+            "192.0.2.1",
+            "192.0.2.2",
+            "192.0.2.3",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_an_empty_list_goes_back_to_the_devices_own_dns(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """As on create, where no server means dns-service default. It sent
+        "specify" with no server before, which changed nothing (measured)."""
+        data = await self._sent_for(mock_client, mock_fmg_instance, [])
+
+        assert data == {"dns-service": "default"}
+
+    @pytest.mark.asyncio
+    async def test_no_dns_argument_leaves_dns_alone(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        data = await self._sent_for(mock_client, mock_fmg_instance, None, lease_time=7200)
+
+        assert data == {"lease-time": 7200}
+
 
 class TestDeleteDeviceDhcpServer:
     @pytest.mark.asyncio
