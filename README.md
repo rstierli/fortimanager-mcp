@@ -532,12 +532,12 @@ nothing talks to the FortiGate directly.
 | `delete_device_interface` | Delete a device-DB interface |
 | `list_device_dhcp_servers` | List DHCP server scopes in the device DB |
 | `create_device_dhcp_server` | Create a DHCP scope (interface, range, netmask, gateway, DNS) |
-| `update_device_dhcp_server` | Update a DHCP scope by id |
+| `update_device_dhcp_server` | Update a DHCP scope by id. A DNS server list replaces the served set |
 | `delete_device_dhcp_server` | Delete a DHCP scope by id |
 | `list_device_vaps` | List wireless VAPs (SSIDs), passphrases stripped |
 | `create_device_vap` | Create a wireless VAP/SSID with security mode and VLAN mapping |
 | `delete_device_vap` | Delete a wireless VAP |
-| `assign_vap_to_wtp_profile` | Add a VAP to FortiAP profile radios so the SSID broadcasts |
+| `assign_vap_to_wtp_profile` | Add a VAP to FortiAP profile radios so the SSID broadcasts. Refuses a radio in tunnel or bridge mode unless `switch_to_manual` is set |
 | `list_device_wtp_profiles` | List FortiAP (WTP) profiles in the device DB |
 | `get_device_wtp_profile` | Get a FortiAP (WTP) profile, radios included |
 | `update_device_wtp_profile_radio` | Update one radio's `channel`/`channel-bonding`, other fields untouched |
