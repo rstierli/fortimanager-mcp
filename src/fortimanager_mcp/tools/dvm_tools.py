@@ -1211,7 +1211,9 @@ async def add_model_device(
         # whatever the record holds, not only what was submitted, and a
         # model-device record can come back with blanked or default-populated
         # psk and private_key fields.
-        echoed = strip_device_credentials(result.get("device", device_config))
+        echoed = strip_device_credentials(
+            result.get("device", device_config) if isinstance(result, dict) else device_config
+        )
         if isinstance(echoed, dict) and "meta variables" in echoed:
             # Password-type variable values are masked as the read paths
             # (list_metadata_variables) do; all of them if the types are
