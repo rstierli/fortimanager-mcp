@@ -614,6 +614,7 @@ def _summarize_sdwan_monitor(members_raw: Any, health_raw: Any) -> dict[str, Any
 async def get_device_sdwan_monitor(
     adom: str | None = None,
     device: str | None = None,
+    vdom: str | None = None,
 ) -> dict[str, Any]:
     """Read a device's LIVE SD-WAN Monitor status through the FortiManager proxy.
 
@@ -632,6 +633,9 @@ async def get_device_sdwan_monitor(
         adom: ADOM name (defaults to DEFAULT_ADOM / "root" when omitted)
         device: Managed device name (e.g. "FGT-HQ"). Defaults to DEFAULT_DEVICE
             when omitted; required if that is not configured.
+        vdom: VDOM to read (optional). Without it the request names no VDOM
+            and the device answers for one of its own choice, as with
+            ``query_device_api``
 
     Returns:
         dict with keys:
@@ -659,15 +663,16 @@ async def get_device_sdwan_monitor(
     try:
         adom = validate_adom(adom)
         device = validate_device_name(device)
+        vdom = validate_object_name(vdom, "VDOM") if vdom else None
         target = [f"/adom/{adom}/device/{device}"]
         members = await client.proxy_call(
             action="get",
-            resource="/api/v2/monitor/virtual-wan/members",
+            resource=_in_vdom("/api/v2/monitor/virtual-wan/members", vdom),
             target=target,
         )
         health = await client.proxy_call(
             action="get",
-            resource="/api/v2/monitor/virtual-wan/health-check",
+            resource=_in_vdom("/api/v2/monitor/virtual-wan/health-check", vdom),
             target=target,
         )
         # The JSON-RPC call succeeds for a device that did not answer, and
@@ -771,6 +776,7 @@ def _summarize_bgp_status(neighbors: Any, paths: Any, routes: Any) -> dict[str, 
 async def get_device_bgp_status(
     adom: str | None = None,
     device: str | None = None,
+    vdom: str | None = None,
 ) -> dict[str, Any]:
     """Read a device's LIVE BGP state through the FortiManager proxy.
 
@@ -790,6 +796,9 @@ async def get_device_bgp_status(
         adom: ADOM name (defaults to DEFAULT_ADOM / "root" when omitted)
         device: Managed device name (e.g. "FGT-HQ"). Defaults to DEFAULT_DEVICE
             when omitted; required if that is not configured.
+        vdom: VDOM to read (optional). Without it the request names no VDOM
+            and the device answers for one of its own choice, as with
+            ``query_device_api``
 
     Returns:
         dict with keys:
@@ -814,18 +823,21 @@ async def get_device_bgp_status(
     try:
         adom = validate_adom(adom)
         device = validate_device_name(device)
+        vdom = validate_object_name(vdom, "VDOM") if vdom else None
     except Exception as e:
         msg, code = client_safe_error(e)
         return {"error": msg, "error_code": code}
 
     unverified: list[str] = []
-    neighbors, err = await _live_get(client, adom, device, "/api/v2/monitor/router/bgp/neighbors")
+    neighbors, err = await _live_get(
+        client, adom, device, "/api/v2/monitor/router/bgp/neighbors", vdom
+    )
     if err:
         unverified.append(f"BGP neighbors: {err}")
-    paths, err = await _live_get(client, adom, device, "/api/v2/monitor/router/bgp/paths")
+    paths, err = await _live_get(client, adom, device, "/api/v2/monitor/router/bgp/paths", vdom)
     if err:
         unverified.append(f"BGP paths: {err}")
-    routes, err = await _live_get(client, adom, device, "/api/v2/monitor/router/ipv4")
+    routes, err = await _live_get(client, adom, device, "/api/v2/monitor/router/ipv4", vdom)
     if err:
         unverified.append(f"routing table: {err}")
 

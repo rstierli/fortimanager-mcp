@@ -13,6 +13,7 @@ from typing import Any
 from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_default_adom, get_default_device, get_settings
+from fortimanager_mcp.utils.device_proxy import in_vdom as _in_vdom
 from fortimanager_mcp.utils.device_proxy import proxy_error as _proxy_error
 from fortimanager_mcp.utils.device_proxy import proxy_results as _proxy_results
 from fortimanager_mcp.utils.errors import ResourceNotFoundError, client_safe_error
@@ -1848,6 +1849,7 @@ async def reload_device_list(
 async def get_device_realtime_status(
     adom: str,
     device: str,
+    vdom: str | None = None,
 ) -> dict[str, Any]:
     """Get real-time status from a managed device.
 
@@ -1857,6 +1859,9 @@ async def get_device_realtime_status(
     Args:
         adom: ADOM name
         device: Device name
+        vdom: VDOM to read (optional). Without it the request names no VDOM
+            and the device answers for one of its own choice, as with
+            ``query_device_api``
 
     Returns:
         dict: Real-time status with keys:
@@ -1871,11 +1876,12 @@ async def get_device_realtime_status(
     try:
         adom = validate_adom(adom)
         device = validate_device_name(device)
+        vdom = validate_object_name(vdom, "VDOM") if vdom else None
         client = _get_client()
 
         result = await client.proxy_call(
             action="get",
-            resource="/api/v2/monitor/system/status",
+            resource=_in_vdom("/api/v2/monitor/system/status", vdom),
             target=[f"/adom/{adom}/device/{device}"],
         )
 
@@ -1898,6 +1904,7 @@ async def get_device_realtime_status(
 async def get_device_interfaces(
     adom: str,
     device: str,
+    vdom: str | None = None,
 ) -> dict[str, Any]:
     """Get interface information from a managed device.
 
@@ -1907,6 +1914,9 @@ async def get_device_interfaces(
     Args:
         adom: ADOM name
         device: Device name
+        vdom: VDOM to read (optional). Without it the request names no VDOM
+            and the device answers for one of its own choice, as with
+            ``query_device_api``
 
     Returns:
         dict: Interface information with keys:
@@ -1922,13 +1932,14 @@ async def get_device_interfaces(
     try:
         adom = validate_adom(adom)
         device = validate_device_name(device)
+        vdom = validate_object_name(vdom, "VDOM") if vdom else None
         client = _get_client()
 
         # Without include_vlan the monitor leaves VLAN interfaces out, so a LAN
         # on a VLAN interface reads as missing.
         result = await client.proxy_call(
             action="get",
-            resource="/api/v2/monitor/system/interface?include_vlan=true",
+            resource=_in_vdom("/api/v2/monitor/system/interface?include_vlan=true", vdom),
             target=[f"/adom/{adom}/device/{device}"],
         )
 
@@ -2122,6 +2133,7 @@ async def get_device_client_location(
     ip: str | None = None,
     mac: str | None = None,
     hostname: str | None = None,
+    vdom: str | None = None,
 ) -> dict[str, Any]:
     """Locate a client on a device (Asset Identity Center): which FortiAP / FortiSwitch + VLAN it is connected through.
 
@@ -2142,6 +2154,9 @@ async def get_device_client_location(
         ip: Client IPv4 address to locate (exact match)
         mac: Client MAC address to locate (case-insensitive)
         hostname: Client hostname to locate (case-insensitive substring)
+        vdom: VDOM to read (optional). Without it the request names no VDOM
+            and the device answers for one of its own choice, as with
+            ``query_device_api``
 
     Returns:
         dict with keys:
@@ -2166,9 +2181,10 @@ async def get_device_client_location(
     try:
         adom = validate_adom(adom)
         device = validate_device_name(device)
+        vdom = validate_object_name(vdom, "VDOM") if vdom else None
         raw = await client.proxy_call(
             action="get",
-            resource="/api/v2/monitor/user/device/query",
+            resource=_in_vdom("/api/v2/monitor/user/device/query", vdom),
             target=[f"/adom/{adom}/device/{device}"],
         )
         # The JSON-RPC call succeeds for a device that did not answer, and
