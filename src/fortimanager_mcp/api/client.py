@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from pyFMG.fortimgr import FortiManager
+from requests import Response
 from requests.exceptions import ConnectTimeout as RequestsConnectTimeout
 from urllib3.exceptions import ConnectTimeoutError, MaxRetryError
 
@@ -98,6 +99,11 @@ class FortiManagerClient:
     # is really permission/stale-session -- retrying it without a reconnect
     # just replays the failure; it is handled by the reconnect path above.)
     _TRANSIENT_ERROR_CODES = frozenset({-1})
+    # pyfmg's own code for a reply whose body is not JSON: it hands back the
+    # HTTP response in place of FortiManager's result. FortiManager's codes
+    # are zero or negative. Such a reply comes from something in front of
+    # FortiManager (a proxy's 502 or 503 page), not from FortiManager.
+    _NOT_JSON_CODE = 100
     # Verbs a replay cannot turn into a second change: get reads, set/update
     # write the same values again, and delete removes what is already gone
     # (a replay after a delete that did land can at worst fail, e.g. -3
@@ -706,7 +712,7 @@ class FortiManagerClient:
 
     def _note_reachability(self, exc: Exception) -> None:
         """Update ``is_reachable`` from a failed request."""
-        if self._is_unreachable_error(exc):
+        if self._is_unreachable_error(exc) or getattr(exc, "code", None) == self._NOT_JSON_CODE:
             self._unreachable = True
         elif isinstance(exc, FortiManagerMCPError) and not isinstance(exc, ConnectionError):
             # FortiManager answered with an error code. A ConnectionError is the
@@ -880,6 +886,11 @@ class FortiManagerClient:
 
         if isinstance(response, dict):
             error_msg = response.get("status", {}).get("message", str(response))
+        elif isinstance(response, Response):
+            error_msg = (
+                f"HTTP {response.status_code} with a body that is not JSON: "
+                "FortiManager did not answer, something in front of it did"
+            )
         else:
             error_msg = str(response)
 

@@ -9,8 +9,10 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 
 from fortimanager_mcp.api.client import FortiManagerClient
+from tests.appliance_wire import Wire
 
 # The unit tests walk the full tool registry, which server.py builds at import
 # from FMG_TOOL_MODE. Pin it so an exported FMG_TOOL_MODE=dynamic does not
@@ -180,6 +182,19 @@ def mock_client(mock_fmg_instance: MagicMock) -> FortiManagerClient:
     client._fmg = mock_fmg_instance
     client._connected = True
     return client
+
+
+@pytest.fixture
+def wire(monkeypatch: pytest.MonkeyPatch) -> Wire:
+    """Every HTTP request of the test is answered by the returned ``Wire``,
+    under the real pyfmg (see tests/appliance_wire.py)."""
+    answering = Wire()
+    monkeypatch.setattr(
+        requests.adapters.HTTPAdapter,
+        "send",
+        lambda adapter, request, **kwargs: answering.send(request),
+    )
+    return answering
 
 
 @pytest.fixture
