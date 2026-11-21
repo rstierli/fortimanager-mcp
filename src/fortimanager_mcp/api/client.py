@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from pyFMG.fortimgr import FortiManager
+from requests import Response
 from requests.exceptions import ConnectTimeout as RequestsConnectTimeout
 from urllib3.exceptions import ConnectTimeoutError, MaxRetryError
 
@@ -98,6 +99,11 @@ class FortiManagerClient:
     # is really permission/stale-session -- retrying it without a reconnect
     # just replays the failure; it is handled by the reconnect path above.)
     _TRANSIENT_ERROR_CODES = frozenset({-1})
+    # pyfmg's own code for a reply whose body is not JSON: it hands back the
+    # HTTP response in place of FortiManager's result. FortiManager's codes
+    # are zero or negative. Such a reply comes from something in front of
+    # FortiManager (a proxy's 502 or 503 page), not from FortiManager.
+    _NOT_JSON_CODE = 100
     # Verbs a replay cannot turn into a second change: get reads, set/update
     # write the same values again, and delete removes what is already gone
     # (a replay after a delete that did land can at worst fail, e.g. -3
@@ -284,6 +290,12 @@ class FortiManagerClient:
                     use_ssl=True,
                     verify_ssl=self.resolve_verify(),
                     timeout=self.timeout,
+                    # With it on, pyfmg's login() goes on to read the workspace
+                    # mode, for lock helpers of its own that this client does
+                    # not use (it locks through execute). After a login that
+                    # opened no session that read raises, so a rejected login
+                    # never came back as a result.
+                    check_adom_workspace=False,
                 )
             else:
                 raise AuthenticationError(
@@ -293,8 +305,7 @@ class FortiManagerClient:
             code, response = await self._run_fmg_call(self._fmg.login)
 
             if code != 0:
-                error_msg = response.get("status", {}).get("message", "Login failed")
-                raise AuthenticationError(f"FortiManager login failed: {error_msg}")
+                raise self._login_failure(self._fmg, response)
 
             # With an API token, pyfmg's login() performs no network round-trip
             # (it just stores the key), so an unreachable FMG or a bad token is
@@ -310,6 +321,12 @@ class FortiManagerClient:
                         if isinstance(vresp, dict)
                         else str(vresp)
                     )
+                    if vcode == -11:
+                        # FortiManager answered and refused: the token, or
+                        # what its administrator may do over JSON-RPC.
+                        raise AuthenticationError(
+                            f"FortiManager token verification failed: {detail}", code=vcode
+                        )
                     raise ConnectionError(f"FortiManager token verification failed: {detail}")
 
             self._connected = True
@@ -322,6 +339,33 @@ class FortiManagerClient:
         except Exception as e:
             logger.error(f"Connection failed: {e}")
             raise ConnectionError(f"Failed to connect to FortiManager: {e}") from e
+
+    @staticmethod
+    def _login_failure(fmg: FortiManager, response: Any) -> FortiManagerMCPError:
+        """The error for a login pyfmg reports as failed.
+
+        pyfmg's own result says only that no session was opened. FortiManager's
+        reply to the login says why, and pyfmg keeps it as the last response
+        it parsed. Only that is read: the request beside it holds the password.
+        """
+        reply = fmg.req_resp_object.response_json
+        if reply is None:
+            # pyfmg parsed nothing, so the body was not JSON.
+            return ConnectionError(
+                "the login was answered with a body that is not JSON: "
+                "FortiManager did not answer, something in front of it did"
+            )
+        result = reply.get("result") if isinstance(reply, dict) else None
+        if isinstance(result, list) and result:
+            result = result[0]
+        status = result.get("status") if isinstance(result, dict) else None
+        if isinstance(status, dict) and isinstance(status.get("code"), int) and status["code"]:
+            return AuthenticationError(
+                f"FortiManager login failed: {status.get('message', 'no message')}",
+                code=status["code"],
+            )
+        error_msg = response.get("status", {}).get("message", "Login failed")
+        return AuthenticationError(f"FortiManager login failed: {error_msg}")
 
     async def disconnect(self) -> None:
         """Disconnect and cleanup resources.
@@ -433,7 +477,10 @@ class FortiManagerClient:
             # Unreachable (failed on-demand connect, or a transient error from
             # a dropped session): raise rather than send the real request to a
             # guessed endpoint and wait out the same timeout a second time.
-            if isinstance(e, ConnectionError) or self._is_transient_error(e, verb="get"):
+            # A rejected login too: the real request would log in once more.
+            if isinstance(e, ConnectionError | AuthenticationError) or self._is_transient_error(
+                e, verb="get"
+            ):
                 raise
             # Do NOT cache the fallback: it says nothing about the version.
             # The next call probes again.
@@ -706,7 +753,7 @@ class FortiManagerClient:
 
     def _note_reachability(self, exc: Exception) -> None:
         """Update ``is_reachable`` from a failed request."""
-        if self._is_unreachable_error(exc):
+        if self._is_unreachable_error(exc) or getattr(exc, "code", None) == self._NOT_JSON_CODE:
             self._unreachable = True
         elif isinstance(exc, FortiManagerMCPError) and not isinstance(exc, ConnectionError):
             # FortiManager answered with an error code. A ConnectionError is the
@@ -880,6 +927,11 @@ class FortiManagerClient:
 
         if isinstance(response, dict):
             error_msg = response.get("status", {}).get("message", str(response))
+        elif isinstance(response, Response):
+            error_msg = (
+                f"HTTP {response.status_code} with a body that is not JSON: "
+                "FortiManager did not answer, something in front of it did"
+            )
         else:
             error_msg = str(response)
 

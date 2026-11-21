@@ -1419,14 +1419,17 @@ class TestTokenAuthLivenessProbe:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A non-zero status from the probe (e.g. token lacks access) also fails
-        the connect rather than reporting connected."""
+        the connect rather than reporting connected. -11 is FortiManager
+        refusing the token, so it is an authentication error."""
+        from fortimanager_mcp.utils.errors import AuthenticationError
+
         stub = MagicMock()
         stub.login.return_value = (0, {"status": {"code": 0}})
         stub.get.return_value = (-11, {"status": {"message": "No permission for the resource"}})
         monkeypatch.setattr("fortimanager_mcp.api.client.FortiManager", lambda *a, **kw: stub)
 
         client = FortiManagerClient(host="fmg.example.com", api_token="t")
-        with pytest.raises(ConnectionError):
+        with pytest.raises(AuthenticationError):
             await client.connect()
         assert not client.is_connected
 

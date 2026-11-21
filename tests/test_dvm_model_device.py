@@ -1130,3 +1130,22 @@ class TestMetaVariableEcho:
         }
         sent = client.add_device.call_args.kwargs["device"]["meta variables"]
         assert sent["vpn_token"] == "Secr3t-tok"
+
+
+class TestAddAnswerThatIsNotADict:
+    """The add went through and its answer carries no dict (pyfmg hands back
+    whatever the reply held as ``data``). The device exists, so the tool must
+    not answer an error for it."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("answer", [None, [], "OK"])
+    async def test_the_add_is_reported_as_done(self, answer: Any) -> None:
+        client = _absent(MagicMock())
+        client.add_device = AsyncMock(return_value=answer)
+        with patch.object(dvm_tools, "get_fmg_client", return_value=client):
+            result = await dvm_tools.add_model_device(
+                adom="root", name="branch1", serial_number=_SERIAL
+            )
+        assert result["status"] == "success", result
+        assert result["device"]["name"] == "branch1"
+        assert "partially_created" not in result
