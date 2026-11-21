@@ -35,11 +35,14 @@ class Wire:
         #: (HTTP status, body) sent in place of FortiManager's answer, as a
         #: proxy in front of it does when it cannot reach it.
         self.page: tuple[int, bytes] | None = None
+        #: Nothing listens: the connection is refused.
+        self.refuses = False
         #: FortiManager's status for a login; a rejected one opens no session.
         self.login = (0, "OK")
+        #: The session an accepted login opens.
+        self.session: str | None = "session-for-tests"
         #: url -> (code, message, data) for everything that is not a login.
         self.answers: dict[str, tuple[int, str, Any]] = {
-            "/cli/global/system/global": (0, "OK", {"workspace-mode": 0, "adom-status": 0}),
             "/sys/status": (0, "OK", {"Hostname": "fmg-01", "Version": "v7.6.5-build3653"}),
         }
 
@@ -50,14 +53,16 @@ class Wire:
         call = json.loads(request.body or b"{}")
         url = call["params"][0]["url"]
         self.calls.append((call["method"], url))
+        if self.refuses:
+            raise requests.exceptions.ConnectionError("connection refused")
         if self.page is not None:
             return _response(request, *self.page, "text/html")
         reply: dict[str, Any] = {"id": call["id"]}
         if url == "sys/login/user":
             code, message = self.login
             result: dict[str, Any] = {"status": {"code": code, "message": message}, "url": url}
-            if code == 0:
-                reply["session"] = "session-for-tests"
+            if code == 0 and self.session:
+                reply["session"] = self.session
         else:
             code, message, data = self.answers.get(url, (0, "OK", {}))
             result = {"status": {"code": code, "message": message}, "url": url}
