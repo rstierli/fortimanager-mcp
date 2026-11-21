@@ -190,12 +190,12 @@ class TestIpsecDiagnosis:
             "network-id": 1,
         }
         live = {
-            "system/interface": {"port2": {"link": True, "ip": UNDERLAY_IP}},
-            "vpn/ipsec": [
+            "system/interface?vdom=root": {"port2": {"link": True, "ip": UNDERLAY_IP}},
+            "vpn/ipsec?vdom=root": [
                 {"name": "HUB1-VPN1", "rgwy": REMOTE_GW, "proxyid": [{"status": "down"}]}
             ],
-            "virtual-wan/members": [{"interface": "port2", "link": "up"}],
-            "virtual-wan/health-check": {},
+            "virtual-wan/members?vdom=root": [{"interface": "port2", "link": "up"}],
+            "virtual-wan/health-check?vdom=root": {},
         }
         client = AsyncMock()
         client.get_device_ipsec_phase1_interface = AsyncMock(return_value=gateway)
