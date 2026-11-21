@@ -1,6 +1,7 @@
 """Tests for sdwan_tools module (device-DB SD-WAN config read + summary)."""
 
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import parse_qs
 
 import pytest
 
@@ -967,18 +968,36 @@ def _live(
     }
 
 
+#: What a VDOM that holds none of this answers to the live reads.
+_NOTHING_THERE: dict[str, object] = {
+    "system/interface": {},
+    "vpn/ipsec": [],
+    "virtual-wan/members": [],
+    "virtual-wan/health-check": {},
+}
+
+
 def _diag_client(
     spoke: dict[str, object],
     hub: dict[str, object] | None = None,
     admin_status: int = 1,
     failing: tuple[str, ...] = (),
+    vdom: str = "root",
 ) -> AsyncMock:
+    """Devices with VDOMs: the live state given is that of ``vdom``.
+
+    A read that names another VDOM, or none, is answered as by a VDOM that
+    holds neither the tunnel nor its underlay.
+    """
+
     async def proxy(action: str, resource: str, target: list[str], data=None):
         live = hub if hub is not None and "datacenter" in target[0] else spoke
-        key = resource.removeprefix("/api/v2/monitor/")
+        path, _, query = resource.partition("?")
+        key = path.removeprefix("/api/v2/monitor/")
         if key in failing:
             raise RuntimeError("proxy timeout")
-        return _envelope(live[key])
+        asked = parse_qs(query).get("vdom", [None])[0]
+        return _envelope(live[key] if asked == vdom else _NOTHING_THERE[key])
 
     client = AsyncMock()
     client.get_device_ipsec_phase1_interface = AsyncMock(return_value=_SPOKE_GW)
@@ -1129,4 +1148,71 @@ class TestDiagnoseIpsecTunnel:
         with patch.object(sdwan_tools, "get_fmg_client", return_value=client):
             result = await sdwan_tools.diagnose_ipsec_tunnel(device="branch2", tunnel="x; drop")
         assert "error" in result
+        client.proxy_call.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_live_reads_name_the_vdom_of_the_tunnel(self) -> None:
+        """The config half is read in ``vdom``. The live half named no VDOM, so
+        a healthy tunnel in another VDOM than the one that answered read as
+        ``tunnel_down``, with nothing in ``unverified``."""
+        client = _diag_client(_live(), vdom="customerA")
+        result = await _diagnose(client, vdom="customerA")
+
+        assert result["verdict"] == "healthy"
+        assert result["unverified"] == []
+        assert [c.kwargs["resource"] for c in client.proxy_call.call_args_list] == [
+            "/api/v2/monitor/system/interface?vdom=customerA",
+            "/api/v2/monitor/vpn/ipsec?vdom=customerA",
+            "/api/v2/monitor/virtual-wan/members?vdom=customerA",
+            "/api/v2/monitor/virtual-wan/health-check?vdom=customerA",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_the_default_vdom_is_named_too(self) -> None:
+        """The config half reads ``/vdom/root/`` by default, so the live half
+        asks for ``root`` and not for whichever VDOM the device would pick."""
+        client = _diag_client(_live())
+        await _diagnose(client)
+
+        assert [c.kwargs["resource"] for c in client.proxy_call.call_args_list] == [
+            "/api/v2/monitor/system/interface?vdom=root",
+            "/api/v2/monitor/vpn/ipsec?vdom=root",
+            "/api/v2/monitor/virtual-wan/members?vdom=root",
+            "/api/v2/monitor/virtual-wan/health-check?vdom=root",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_hub_reads_name_the_vdom_as_well(self) -> None:
+        hub_live = {
+            "system/interface": {"port2": {"link": True, "ip": "203.0.113.1"}},
+            "vpn/ipsec": [
+                {
+                    "name": "VPN2_0",
+                    "parent": "VPN2",
+                    "rgwy": "192.0.2.10",
+                    "proxyid": [{"p2name": "VPN2", "status": "up"}],
+                }
+            ],
+        }
+        client = _diag_client(_live(), hub=hub_live, vdom="customerA")
+        result = await _diagnose(client, vdom="customerA", hub_device="datacenter")
+
+        hub = result["evidence"]["hub"]
+        assert hub["underlay_link"] is True
+        assert hub["instances_up"] == 1
+        assert [
+            c.kwargs["resource"]
+            for c in client.proxy_call.call_args_list
+            if "datacenter" in c.kwargs["target"][0]
+        ] == [
+            "/api/v2/monitor/system/interface?vdom=customerA",
+            "/api/v2/monitor/vpn/ipsec?vdom=customerA",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_bad_vdom_rejected_before_any_read(self) -> None:
+        client = _diag_client(_live())
+        result = await _diagnose(client, vdom="root&scope=global")
+        assert result["error_code"] == "validation_error"
+        client.get_device_ipsec_phase1_interface.assert_not_called()
         client.proxy_call.assert_not_called()
