@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **HTTP:** an `MCP_AUTH_TOKEN` holding a byte that is not valid UTF-8 made every request a 500, because the Bearer check could not encode it. The server now refuses to start with that token, as it does without one.
 - **Metadata variables:** `list_metadata_variables(device=)` reported only the first of a device's mappings in `device_values`, although a device can hold one per scope (`global` and a VDOM such as `root`) with different values. Each entry now lists every scope in `scopes`, and `value` is `null` when they differ, because FortiManager does not document which scope a template reads. `check_device_variables` uses the same list.
+- **IPsec diagnosis:** `diagnose_ipsec_tunnel` read the gateway from the VDOM it was given and sent its live reads with no VDOM named. On a device with several VDOMs the live state can then come from another VDOM than the tunnel's, and a healthy tunnel can read as `tunnel_down` with nothing in `unverified`. Every live read now names the VDOM, on the hub as well. **Behaviour change:** this includes the default, so a call without `vdom` sends `?vdom=root` with each live read, where it sent none. Not run against a device with several VDOMs (#139).
+- **Live device reads:** `get_device_sdwan_monitor`, `get_device_bgp_status`, `get_device_realtime_status`, `get_device_interfaces` and `get_device_client_location` sent no VDOM with their reads and had no argument for one. Each takes an optional `vdom` now and sends it with every read, as `query_device_api` does. Without it the request is unchanged (#139).
 
 ## [1.13.2] - 2026-11-10
 
