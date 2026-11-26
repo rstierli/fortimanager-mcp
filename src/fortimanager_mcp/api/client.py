@@ -127,8 +127,9 @@ class FortiManagerClient:
     _TRANSIENT_ERROR_CODES = frozenset({-1})
     # pyfmg's own code for a reply whose body is not JSON: it hands back the
     # HTTP response in place of FortiManager's result. FortiManager's codes
-    # are zero or negative. Such a reply comes from something in front of
-    # FortiManager (a proxy's 502 or 503 page), not from FortiManager.
+    # are zero or negative. Such a reply is not FortiManager's JSON-RPC
+    # answer: a proxy's 502 or 503 page, or the one FortiManager's own web
+    # server serves while its JSON-RPC backend restarts.
     _NOT_JSON_CODE = 100
     # FortiManager's answers to a login that refuse the administrator, each
     # an authentication error: -22 "Login fail" for a wrong user name or
@@ -381,10 +382,11 @@ class FortiManagerClient:
         """
         reply = fmg.req_resp_object.response_json
         if reply is None:
-            # pyfmg parsed nothing, so the body was not JSON.
+            # pyfmg parsed nothing, so the body was not JSON. Its login()
+            # does not keep the HTTP status, so that is not named here.
             return ConnectionError(
-                "the login was answered with a body that is not JSON: "
-                "FortiManager did not answer, something in front of it did"
+                "the reply to the login was not FortiManager's JSON-RPC answer "
+                "(its body is not JSON)"
             )
         result = reply.get("result") if isinstance(reply, dict) else None
         if isinstance(result, list) and result:
@@ -964,8 +966,8 @@ class FortiManagerClient:
             error_msg = response.get("status", {}).get("message", str(response))
         elif isinstance(response, Response):
             error_msg = (
-                f"HTTP {response.status_code} with a body that is not JSON: "
-                "FortiManager did not answer, something in front of it did"
+                "The reply was not FortiManager's JSON-RPC answer "
+                f"(HTTP {response.status_code}, its body is not JSON)"
             )
         else:
             error_msg = str(response)

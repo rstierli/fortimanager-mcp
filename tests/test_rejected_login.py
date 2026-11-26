@@ -241,6 +241,23 @@ async def test_a_proxy_page_at_login_is_not_an_authentication_error(wire: Wire, 
     assert not any(part in str(refused.value) for part in PYFMG_DUMP)
 
 
+async def test_a_page_at_login_is_named_for_what_it_is_not(
+    wire: Wire, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A proxy serves such a page, and so does FortiManager's own web server
+    while its JSON-RPC backend restarts: the text holds for both."""
+    wire.page = BAD_GATEWAY
+    client = new_client("session")
+    monkeypatch.setattr(system_tools, "get_fmg_client", lambda: client)
+    result = await system_tools.get_system_status()
+    assert result == {
+        "status": "error",
+        "error_code": "connection_error",
+        "message": "Failed to connect to FortiManager: the reply to the login was not "
+        "FortiManager's JSON-RPC answer (its body is not JSON)",
+    }
+
+
 async def test_a_login_answered_without_a_session_is_a_connection_error(wire: Wire) -> None:
     """The reply holds no code that refuses the administrator, so nothing
     says the credentials are wrong."""

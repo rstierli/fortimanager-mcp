@@ -111,6 +111,31 @@ async def test_the_error_says_what_answered(
     assert "<Response" not in text
 
 
+#: What a tool answers per HTTP status. A proxy serves such a page, and so
+#: does FortiManager's own web server while its JSON-RPC backend restarts.
+TOOL_MESSAGE = {
+    502: "The reply was not FortiManager's JSON-RPC answer (HTTP 502, its body is not JSON)",
+    503: "The reply was not FortiManager's JSON-RPC answer (HTTP 503, its body is not JSON)",
+}
+
+
+@PAGES
+async def test_a_tool_names_the_reply_for_what_it_is_not(
+    client: FortiManagerClient,
+    wire: Wire,
+    page: tuple[int, bytes],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(system_tools, "get_fmg_client", lambda: client)
+    wire.page = page
+    result = await system_tools.get_system_status()
+    assert result == {
+        "status": "error",
+        "error_code": "api_error",
+        "message": TOOL_MESSAGE[page[0]],
+    }
+
+
 @PAGES
 async def test_a_proxy_page_starts_no_new_login(
     client: FortiManagerClient, wire: Wire, page: tuple[int, bytes]
