@@ -1151,10 +1151,28 @@ async def assign_vap_to_wtp_profile(
         # and a partial write would be a silent change of scope. A radio with
         # no mode stored counts as not manual: the mode is not known, and
         # FortiOS's default is tunnel.
-        not_manual: dict[int, str] = {}
+        #
+        # FortiManager returns an enum as an integer code unless the read
+        # asks for names (channel-bonding was seen as a code on live
+        # profiles). A code compared with "manual" made the radio look not
+        # manual, so a mode that came back as a code is read again by name.
+        # The plain read stays the source of what is written back.
+        modes: dict[int, Any] = {}
         for n in radios:
             stored_radio = stored.get(f"radio-{n}")
-            mode = stored_radio.get("vap-all") if isinstance(stored_radio, dict) else None
+            modes[n] = stored_radio.get("vap-all") if isinstance(stored_radio, dict) else None
+        if any(isinstance(mode, int) for mode in modes.values()):
+            named = await client.get_device_wtp_profile(
+                device=device, vdom=vdom, name=profile, verbose=True
+            )
+            if isinstance(named, list):
+                named = named[0] if named else {}
+            for n in radios:
+                named_radio = named.get(f"radio-{n}") if isinstance(named, dict) else None
+                modes[n] = named_radio.get("vap-all") if isinstance(named_radio, dict) else None
+        not_manual: dict[int, str] = {}
+        for n in radios:
+            mode = modes[n]
             if mode != "manual":
                 not_manual[n] = f"vap-all '{mode}'" if mode else "no vap-all mode stored"
         leaving = ", ".join(f"radio-{n} ({what})" for n, what in sorted(not_manual.items()))
@@ -1210,7 +1228,7 @@ async def assign_vap_to_wtp_profile(
             if isinstance(vaps, str):
                 vaps = [vaps]
             vaps = [str(v) for v in vaps]
-            if vap in vaps and radio.get("vap-all") == "manual":
+            if vap in vaps and modes[radio_num] == "manual":
                 continue
             merged = vaps if vap in vaps else [*vaps, vap]
             # Carry the rest of the radio object through. This is a

@@ -3600,12 +3600,17 @@ class FortiManagerClient:
         device: str,
         vdom: str,
         name: str,
+        verbose: bool = False,
     ) -> Any:
         """Get a device-DB FortiAP (WTP) profile by name.
 
+        With ``verbose`` the enum fields come back as their CLI names (see
+        ``get_verbose``), which is what a check of a radio's mode needs.
+
         FNDN: GET /pm/config/device/{device}/vdom/{vdom}/wireless-controller/wtp-profile/{name}
         """
-        return await self.get(
+        read = self.get_verbose if verbose else self.get
+        return await read(
             f"/pm/config/device/{device}/vdom/{vdom}/wireless-controller/wtp-profile/{name}",
         )
 

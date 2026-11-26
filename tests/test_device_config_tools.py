@@ -943,6 +943,86 @@ class TestAssignVapToARadioThatIsNotManual:
         assert "warning" not in result
 
 
+class TestTheRadioModeIsReadByName:
+    """FortiManager returns an enum as an integer code unless the read asks
+    for names ("verbose": 1), as channel-bonding was seen on live profiles.
+    The mode check compared the stored value with "manual", so a radio whose
+    mode came back as a code read as not manual. The codes below are made up:
+    the tool must not depend on them."""
+
+    async def _assign(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        coded: dict[str, Any],
+        named: dict[str, Any],
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        def read(*_: Any, **__: Any) -> tuple[int, dict[str, Any]]:
+            profile = named if mock_fmg_instance.verbose is True else coded
+            return 0, {"name": "AP-profile", **profile}
+
+        mock_fmg_instance.verbose = False
+        mock_fmg_instance.get.side_effect = read
+        mock_fmg_instance.update.return_value = (0, {"name": "AP-profile"})
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result: dict[str, Any] = await device_config_tools.assign_vap_to_wtp_profile(
+                device="FGT-01", profile="AP-profile", vap="TEST", radios=[1], **kwargs
+            )
+        return result
+
+    @pytest.mark.asyncio
+    async def test_a_manual_radio_stored_as_a_code_needs_no_asking(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        result = await self._assign(
+            mock_client,
+            mock_fmg_instance,
+            {"radio-1": {"vap-all": 71, "vaps": ["corp"], "channel-bonding": 4}},
+            {"radio-1": {"vap-all": "manual", "vaps": ["corp"], "channel-bonding": "20MHz"}},
+        )
+
+        assert result.get("success") is True
+        assert "warning" not in result
+        # The rest of the radio goes back as the plain read gave it.
+        assert mock_fmg_instance.update.call_args.kwargs["data"]["radio-1"] == {
+            "vap-all": "manual",
+            "vaps": ["corp", "TEST"],
+            "channel-bonding": 4,
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_tunnel_radio_stored_as_a_code_is_refused_by_name(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        result = await self._assign(
+            mock_client,
+            mock_fmg_instance,
+            {"radio-1": {"vap-all": 72, "vaps": ["corp"]}},
+            {"radio-1": {"vap-all": "tunnel", "vaps": ["corp"]}},
+        )
+
+        assert result["error_code"] == "validation_error"
+        assert "vap-all 'tunnel'" in result["error"]
+        assert "72" not in result["error"]
+        mock_fmg_instance.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_vap_already_on_a_manual_radio_stored_as_a_code_writes_nothing(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        result = await self._assign(
+            mock_client,
+            mock_fmg_instance,
+            {"radio-1": {"vap-all": 71, "vaps": ["TEST"]}},
+            {"radio-1": {"vap-all": "manual", "vaps": ["TEST"]}},
+        )
+
+        assert result.get("success") is True
+        assert "already assigned" in result["message"]
+        mock_fmg_instance.update.assert_not_called()
+
+
 class TestListDeviceWtpProfiles:
     @pytest.mark.asyncio
     async def test_lists_profiles(
