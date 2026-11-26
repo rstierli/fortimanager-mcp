@@ -131,6 +131,7 @@ REFUSED_LOGINS = {
         "No permission for the resource",
         "FortiManager login failed: No permission for the resource",
     ),
+    -23: ("Reach login limit", "FortiManager login failed: Reach login limit"),
 }
 REFUSALS = pytest.mark.parametrize("code", list(REFUSED_LOGINS))
 
@@ -140,7 +141,8 @@ async def test_a_refusing_code_at_the_login_is_an_authentication_error(
     wire: Wire, code: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """-22 is a wrong user name or password. -11 is what FortiManager 8.0.2
-    answers an administrator without JSON API access."""
+    answers an administrator without JSON API access, and -23 a login during
+    the lockout after failed ones."""
     said, message = REFUSED_LOGINS[code]
     wire.login = (code, said)
     client = new_client("session")

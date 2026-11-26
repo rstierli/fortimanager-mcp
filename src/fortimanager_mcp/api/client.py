@@ -132,10 +132,11 @@ class FortiManagerClient:
     _NOT_JSON_CODE = 100
     # FortiManager's answers to a login that refuse the administrator, each
     # an authentication error: -22 "Login fail" for a wrong user name or
-    # password, and -11 "No permission for the resource" for an
-    # administrator without JSON API access (measured on 8.0.2). Any other
-    # code says nothing about the credentials.
-    _LOGIN_REJECTED_CODES = frozenset({-22, -11})
+    # password, -11 "No permission for the resource" for an administrator
+    # without JSON API access, and -23 "Reach login limit" during the
+    # lockout after failed logins (both measured on 8.0.2). Any other code
+    # says nothing about the credentials.
+    _LOGIN_REJECTED_CODES = frozenset({-22, -11, -23})
     # Verbs a replay cannot turn into a second change: get reads, set/update
     # write the same values again, and delete removes what is already gone
     # (a replay after a delete that did land can at worst fail, e.g. -3
