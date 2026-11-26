@@ -385,7 +385,7 @@ class FortiManagerClient:
             # Any other code, such as -1 for an internal error, says nothing
             # about the credentials.
             return ConnectionError(f"FortiManager login failed with code {code}: {message}")
-        error_msg = response.get("status", {}).get("message", "Login failed")
+        error_msg = _status_text(response.get("status", {}).get("message", "Login failed"))
         return AuthenticationError(f"FortiManager login failed: {error_msg}")
 
     async def disconnect(self) -> None:
