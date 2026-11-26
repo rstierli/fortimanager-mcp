@@ -50,18 +50,27 @@ async def test_a_rejected_login_is_an_authentication_error(wire: Wire, auth: str
     assert attempts(wire, auth) == 1
 
 
+#: What a tool answers per mode. For a code the server has a text for, that
+#: text is the message, not FortiManager's words in the exception.
+TOOL_MESSAGE = {
+    "session": "Login failed - invalid credentials",
+    "token": "No permission for the resource (or the session expired)",
+}
+
+
 @BOTH
 async def test_a_tool_reports_it_as_one(
     wire: Wire, auth: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _, said = reject(wire, auth)
+    reject(wire, auth)
     client = new_client(auth)
     monkeypatch.setattr(system_tools, "get_fmg_client", lambda: client)
     result = await system_tools.get_system_status()
-    assert result["status"] == "error"
-    assert result["error_code"] == "authentication_error"
-    assert said in result["message"]
-    assert not any(part in result["message"] for part in PYFMG_DUMP)
+    assert result == {
+        "status": "error",
+        "error_code": "authentication_error",
+        "message": TOOL_MESSAGE[auth],
+    }
 
 
 @BOTH
