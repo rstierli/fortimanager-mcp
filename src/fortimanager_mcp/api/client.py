@@ -377,15 +377,15 @@ class FortiManagerClient:
         if isinstance(result, list) and result:
             result = result[0]
         status = result.get("status") if isinstance(result, dict) else None
-        code = status.get("code") if isinstance(status, dict) else None
-        if isinstance(code, int) and code:
+        if isinstance(status, dict) and isinstance(status.get("code"), int) and status["code"]:
+            code = status["code"]
             message = _status_text(status.get("message", "no message"))
             if code == FortiManagerClient._LOGIN_REJECTED_CODE:
                 return AuthenticationError(f"FortiManager login failed: {message}", code=code)
             # Any other code, such as -1 for an internal error, says nothing
             # about the credentials.
             return ConnectionError(f"FortiManager login failed with code {code}: {message}")
-        error_msg = _status_text(response.get("status", {}).get("message", "Login failed"))
+        error_msg = response.get("status", {}).get("message", "Login failed")
         return AuthenticationError(f"FortiManager login failed: {error_msg}")
 
     async def disconnect(self) -> None:
