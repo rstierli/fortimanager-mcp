@@ -197,6 +197,8 @@ DEFAULT_ADOM=root
 # The MCP SDK rejects non-localhost Host headers by default for DNS rebinding protection.
 # Examples: ["mcp.example.com"], ["10.1.5.62:8000"], or wildcard ["10.1.5.62:*"]
 # MCP_ALLOWED_HOSTS=["mcp.example.com"]
+# Allowed Origin headers for a browser-based client (optional, works on its own)
+# MCP_ALLOWED_ORIGINS=["https://app.example.com"]
 
 # Streamable HTTP transport mode (optional - stateful by default)
 # Set true behind a load balancer / multiple replicas, or a proxy that does not
@@ -405,7 +407,7 @@ MCP Client → HTTPS → Reverse Proxy (Traefik/nginx) → HTTP → MCP Containe
 
 **Key considerations:**
 
-1. **MCP_ALLOWED_HOSTS** — The MCP SDK validates the Host header to prevent DNS rebinding attacks. By default only `localhost` and `127.0.0.1` are accepted. Set this to the value clients put in their connection URL (NOT the client's IP):
+1. **MCP_ALLOWED_HOSTS** — The MCP SDK validates the Host header to prevent DNS rebinding attacks. By default only `localhost` and `127.0.0.1` are accepted, whatever address the server is bound to. Set this to the value clients put in their connection URL (NOT the client's IP). Loopback stays accepted beside it. A browser-based client also sends an `Origin` header: list its origin in `MCP_ALLOWED_ORIGINS` (same format, with or without `MCP_ALLOWED_HOSTS`), otherwise it gets 403:
 
    ```bash
    # Reverse-proxy hostname (Traefik/nginx):
@@ -414,6 +416,8 @@ MCP Client → HTTPS → Reverse Proxy (Traefik/nginx) → HTTP → MCP Containe
    MCP_ALLOWED_HOSTS=["10.1.5.62:8000"]
    # Port wildcard (any port on the host):
    MCP_ALLOWED_HOSTS=["10.1.5.62:*"]
+   # Origin of a browser-based client:
+   MCP_ALLOWED_ORIGINS=["https://app.example.com"]
    ```
 
 2. **MCP_AUTH_TOKEN** — Always set a Bearer token for HTTP deployments:

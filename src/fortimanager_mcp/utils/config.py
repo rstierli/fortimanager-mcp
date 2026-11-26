@@ -170,9 +170,20 @@ class Settings(BaseSettings):
     # MCP Allowed Hosts (for reverse proxy / Docker deployments)
     MCP_ALLOWED_HOSTS: Annotated[list[str], NoDecode] = Field(
         default_factory=list,
-        description="Additional allowed Host header values for DNS rebinding protection. "
-        'Accepts a comma-separated list (host1,host2) or a JSON array (["host1"]) in the '
-        "env var. localhost/127.0.0.1 always allowed by SDK.",
+        description="Allowed Host header values for DNS rebinding protection, beside "
+        "the loopback hosts (127.0.0.1, localhost, [::1], any port), which are always "
+        'accepted. Accepts a comma-separated list (host1,host2) or a JSON array (["host1"]) '
+        "in the env var. The Host header is always checked, whatever address the server is "
+        "bound to: when this is unset, only a loopback Host is accepted and any other gets "
+        "421.",
+    )
+
+    MCP_ALLOWED_ORIGINS: Annotated[list[str], NoDecode] = Field(
+        default_factory=list,
+        description="Additional allowed Origin header values, for a browser-based client "
+        "that reaches the public hostname (for example https://app.example.com). Same "
+        "format as MCP_ALLOWED_HOSTS. Added to the loopback origins; every other Origin "
+        "gets 403. Works with or without MCP_ALLOWED_HOSTS.",
     )
 
     # MCP Streamable HTTP Transport Mode
@@ -280,10 +291,11 @@ class Settings(BaseSettings):
         description="Skip write operations in tests",
     )
 
-    @field_validator("MCP_ALLOWED_HOSTS", mode="before")
+    @field_validator("MCP_ALLOWED_HOSTS", "MCP_ALLOWED_ORIGINS", mode="before")
     @classmethod
     def parse_allowed_hosts(cls, v: object) -> object:
-        """Accept both comma-separated and JSON-array env values.
+        """Accept both comma-separated and JSON-array env values, for the
+        allowed hosts and the allowed origins.
 
         ``NoDecode`` disables pydantic-settings' JSON-only decoding for this
         field, so the raw env string arrives here; without this, the

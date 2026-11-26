@@ -91,4 +91,4 @@ def test_allowed_hosts_reach_the_transport(monkeypatch: pytest.MonkeyPatch) -> N
     server = _reload_server(monkeypatch, None)
     security = _transport_kwargs(server, monkeypatch)["transport_security"]
     assert security is not None
-    assert security.allowed_hosts == ["mcp.example.com"]
+    assert security.allowed_hosts == ["127.0.0.1:*", "localhost:*", "[::1]:*", "mcp.example.com"]
