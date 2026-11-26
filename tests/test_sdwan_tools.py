@@ -16,7 +16,7 @@ MOCK_DEVICE_SDWAN = {
         {
             "seq-num": 1,
             "interface": "wan1_vlan",
-            "gateway": "82.197.160.1",
+            "gateway": "198.51.100.1",
             "zone": "BBI-zone",
             "weight": 70,
             "priority": 0,
@@ -25,7 +25,7 @@ MOCK_DEVICE_SDWAN = {
         {
             "seq-num": 2,
             "interface": "wan2_vlan",
-            "gateway": "46.127.181.1",
+            "gateway": "203.0.113.1",
             "zone": "BBI-zone",
             "weight": 30,
             "priority": 0,
