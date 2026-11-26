@@ -489,7 +489,8 @@ async def update_address(
         adom: ADOM name
         name: Current address name
         new_name: New name (optional)
-        subnet: New subnet for ipmask type (optional)
+        subnet: New subnet for ipmask type, in the forms create_address_subnet
+            takes; a bare IP is a host (optional)
         fqdn: New FQDN for fqdn type (optional)
         comment: New comment (optional)
 
@@ -510,6 +511,11 @@ async def update_address(
         if new_name:
             data["name"] = new_name
         if subnet:
+            # Checked and sent as create_address_subnet does.
+            if "/" in subnet or " " in subnet:
+                subnet = validate_ipv4_subnet(subnet)
+            else:
+                subnet = validate_ipv4_address(subnet)
             if "/" in subnet:
                 ip, prefix = subnet.split("/")
                 prefix_int = int(prefix)
@@ -517,10 +523,12 @@ async def update_address(
                     [str((0xFFFFFFFF << (32 - prefix_int) >> i) & 0xFF) for i in [24, 16, 8, 0]]
                 )
                 data["subnet"] = [ip, netmask]
-            else:
+            elif " " in subnet:
                 data["subnet"] = subnet.split()
+            else:
+                data["subnet"] = [subnet, "255.255.255.255"]
         if fqdn:
-            data["fqdn"] = fqdn
+            data["fqdn"] = validate_fqdn(fqdn)
         if comment is not None:
             data["comment"] = comment
 

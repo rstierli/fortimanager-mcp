@@ -554,6 +554,68 @@ class TestInputValidationRejection:
         mock_fmg_instance.delete.assert_not_called()
 
 
+class TestUpdateAddressValues:
+    """update_address checks subnet and fqdn as the create tools do (#139
+    item 9). The update is mocked to succeed, so only the check can refuse."""
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"subnet": "abc/24"},
+            {"subnet": "192.0.2.0/33"},
+            {"subnet": "192.0.2.0 abc"},
+            {"subnet": "192.0.2.300"},
+            {"fqdn": "not a domain"},
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_a_bad_value_is_refused(
+        self, mock_client: MagicMock, mock_fmg_instance: MagicMock, kwargs: dict[str, str]
+    ) -> None:
+        mock_fmg_instance.update.return_value = (0, {})
+
+        with patch("fortimanager_mcp.tools.object_tools.get_fmg_client", return_value=mock_client):
+            result = await object_tools.update_address(adom="root", name="web", **kwargs)
+
+        assert result["status"] == "error"
+        assert result["error_code"] == "validation_error"
+        mock_fmg_instance.update.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("subnet", "sent"),
+        [
+            ("192.0.2.0/24", ["192.0.2.0", "255.255.255.0"]),
+            ("192.0.2.0 255.255.255.0", ["192.0.2.0", "255.255.255.0"]),
+            ("192.0.2.5", ["192.0.2.5", "255.255.255.255"]),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_a_good_subnet_is_sent_as_create_sends_it(
+        self, mock_client: MagicMock, mock_fmg_instance: MagicMock, subnet: str, sent: list[str]
+    ) -> None:
+        mock_fmg_instance.update.return_value = (0, {})
+
+        with patch("fortimanager_mcp.tools.object_tools.get_fmg_client", return_value=mock_client):
+            result = await object_tools.update_address(adom="root", name="web", subnet=subnet)
+
+        assert result["status"] == "success"
+        assert mock_fmg_instance.update.call_args.kwargs["subnet"] == sent
+
+    @pytest.mark.asyncio
+    async def test_a_good_fqdn_is_sent_as_create_sends_it(
+        self, mock_client: MagicMock, mock_fmg_instance: MagicMock
+    ) -> None:
+        mock_fmg_instance.update.return_value = (0, {})
+
+        with patch("fortimanager_mcp.tools.object_tools.get_fmg_client", return_value=mock_client):
+            result = await object_tools.update_address(
+                adom="root", name="web", fqdn=" WWW.Example.COM "
+            )
+
+        assert result["status"] == "success"
+        assert mock_fmg_instance.update.call_args.kwargs["fqdn"] == "www.example.com"
+
+
 class TestSearchTools:
     """Test object search tools."""
 
