@@ -50,10 +50,23 @@ async def _dynamic_mode(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
     collector = _ToolCollector()
     server.register_dynamic_tools(collector)  # type: ignore[arg-type]
     answer = await collector.fns["execute_fortimanager_tool"](tool, arguments)
-    return answer["result"] if answer.get("success") else {"refused": answer["error"]}
+    # A tool that ran answers under "result", an error of its own included.
+    return answer["result"] if "result" in answer else {"refused": answer["error"]}
 
 
 ROUTES = pytest.mark.parametrize("route", [_full_mode, _dynamic_mode])
+#: A value as sent, and the string stored and compared for it. A JSON client
+#: may write the integer 2 as 2.0, which FortiManager holds as "2".
+#: A string is stored as sent.
+NUMBERS = [
+    (2, "2"),
+    (1.5, "1.5"),
+    ("2", "2"),
+    (2.0, "2"),
+    (-3.0, "-3"),
+    (1e3, "1000"),
+    ("2.0", "2.0"),
+]
 
 
 @pytest.fixture
@@ -69,7 +82,7 @@ def client() -> Any:
 
 
 @ROUTES
-@pytest.mark.parametrize(("value", "stored"), [(2, "2"), (1.5, "1.5"), ("2", "2")])
+@pytest.mark.parametrize(("value", "stored"), NUMBERS)
 async def test_check_device_variables_takes_a_number(
     client: Any, route: Any, value: Any, stored: str
 ) -> None:
@@ -79,7 +92,7 @@ async def test_check_device_variables_takes_a_number(
 
 
 @ROUTES
-@pytest.mark.parametrize(("value", "stored"), [(2, "2"), (1.5, "1.5"), ("2", "2")])
+@pytest.mark.parametrize(("value", "stored"), NUMBERS)
 async def test_add_model_device_takes_a_number(
     client: Any, route: Any, value: Any, stored: str
 ) -> None:
@@ -104,6 +117,30 @@ async def test_a_boolean_is_refused_and_not_read_as_one(
     which would be stored as the variable's value."""
     result = await route(tool, arguments)
     assert "boolean" in result["refused"], result
+    client.add_device.assert_not_awaited()
+    client.get_metadata_variables.assert_not_awaited()
+
+
+@ROUTES
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize(
+    ("tool", "arguments", "param"),
+    [
+        ("check_device_variables", CHECK, "expected"),
+        ("add_model_device", ADD, "meta_variables"),
+    ],
+)
+async def test_a_number_that_is_not_finite_is_refused(
+    client: Any, route: Any, tool: str, arguments: dict[str, Any], param: str, value: float
+) -> None:
+    """Python's JSON reader takes NaN and Infinity, which would be stored as
+    the text "nan" or "inf"."""
+    result = await route(tool, {**arguments, param: {"branch_id": value}})
+    assert result == {
+        "status": "error",
+        "error_code": "validation_error",
+        "message": "Meta-variable 'branch_id' must be a finite number",
+    }
     client.add_device.assert_not_awaited()
     client.get_metadata_variables.assert_not_awaited()
 

@@ -7,6 +7,7 @@ model device provisioning, and device group management.
 
 import asyncio
 import logging
+import math
 import re
 from typing import Annotated, Any
 
@@ -93,8 +94,9 @@ MetaValue = Annotated[str | int | float, BeforeValidator(_refuse_bool_value)]
 def _validate_meta_variables(meta_variables: Any) -> dict[str, str]:
     """Validate per-device meta-variable values for a model device.
 
-    FMG stores every value as a string, so numbers are coerced; anything
-    else (a list, a dict, None) is refused rather than stringified.
+    FMG stores every value as a string, so numbers are coerced (a float
+    without a fraction as the integer, 2.0 as "2"); NaN, an infinity and
+    anything else (a list, a dict, None) is refused rather than stringified.
 
     A value is pasted verbatim into every CLI template that references it
     as ``$(name)`` and is installed with the next install_device_settings,
@@ -119,6 +121,13 @@ def _validate_meta_variables(meta_variables: Any) -> dict[str, str]:
             )
         if isinstance(value, bool) or not isinstance(value, str | int | float):
             raise ValidationError(f"Meta-variable {key!r} must be a string or number")
+        if isinstance(value, float):
+            if not math.isfinite(value):
+                raise ValidationError(f"Meta-variable {key!r} must be a finite number")
+            if value.is_integer():
+                # A JSON client may write the integer 2 as 2.0; "2.0" would be
+                # stored, and would not match a stored "2".
+                value = int(value)
         text = str(value)
         if len(text) > _META_VARIABLE_MAX_VALUE:
             raise ValidationError(
