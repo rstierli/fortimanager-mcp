@@ -204,7 +204,9 @@ DEFAULT_ADOM=root
 # MCP_STATELESS_HTTP=true
 
 # HTTP request bounds (optional - bounded by default)
-# MCP_MAX_REQUEST_BYTES=10485760     # Max request body; oversize gets 413. 0 disables.
+# MCP_MAX_REQUEST_BYTES=10485760     # Max request body; oversize gets 413. The MCP SDK refuses
+#                                    # any body over 4 MiB itself, so above 4 MiB this has no
+#                                    # effect, and 0 turns off only this server's check.
 # MCP_MAX_CONCURRENT_REQUESTS=64     # Max in-flight requests; excess gets 503. 0 disables.
 
 # Reversible data masking (optional - off by default, issue #34)

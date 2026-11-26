@@ -137,7 +137,10 @@ class Settings(BaseSettings):
         ge=0,
         description="Maximum accepted HTTP request body, in bytes. The Streamable HTTP "
         "transport buffers the whole body before decoding it, so an unbounded body is an "
-        "unbounded allocation. Oversize requests get 413. Set 0 to disable the bound.",
+        "unbounded allocation. Oversize requests get 413. The MCP SDK also refuses any body "
+        "over 4 MiB with 413 by itself (mcp 2.0 to 2.3), so a value above 4 MiB has no effect, "
+        "the default included. Set 0 to turn off this server's own check; the SDK's limit "
+        "stays.",
     )
 
     MCP_MAX_CONCURRENT_REQUESTS: int = Field(
