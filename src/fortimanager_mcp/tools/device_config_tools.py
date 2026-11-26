@@ -365,6 +365,11 @@ async def list_device_dhcp_servers(
         return {"error": msg, "error_code": code}
 
 
+#: DNS server slots of a DHCP scope: dns-server1 to dns-server4 in the FortiOS
+#: CLI reference (6.2 and later).
+_DNS_SERVER_SLOTS = 4
+
+
 @mcp.tool()
 async def create_device_dhcp_server(
     device: str,
@@ -387,7 +392,7 @@ async def create_device_dhcp_server(
         netmask: Scope netmask (e.g. "255.255.255.0")
         default_gateway: Gateway handed to clients (defaults to the
             interface address if omitted, per FortiOS behavior)
-        dns_servers: Up to three DNS servers to hand out; omitted means the
+        dns_servers: Up to four DNS servers to hand out; omitted means the
             device's system DNS is used (dns-service default)
         lease_time: Lease time in seconds
         vdom: VDOM the scope lives in (default "root")
@@ -414,9 +419,10 @@ async def create_device_dhcp_server(
         if default_gateway is not None:
             data["default-gateway"] = validate_ipv4_address(default_gateway)
         if dns_servers:
-            if len(dns_servers) > 3:
+            if len(dns_servers) > _DNS_SERVER_SLOTS:
                 raise ValidationError(
-                    f"dns_servers accepts at most 3 entries, got {len(dns_servers)}"
+                    f"dns_servers accepts at most {_DNS_SERVER_SLOTS} entries, "
+                    f"got {len(dns_servers)}"
                 )
             data["dns-service"] = "specify"
             for i, server in enumerate(dns_servers, start=1):
@@ -653,7 +659,7 @@ async def update_device_dhcp_server(
         end_ip: New last address of the lease range
         netmask: New scope netmask
         default_gateway: New gateway handed to clients
-        dns_servers: Up to three DNS servers. The list replaces the served
+        dns_servers: Up to four DNS servers. The list replaces the served
             set: the servers given are written in order and the remaining
             slots are cleared. An empty list switches the scope back to the
             device's system DNS (dns-service default), as create does when
@@ -687,19 +693,20 @@ async def update_device_dhcp_server(
         if default_gateway is not None:
             data["default-gateway"] = validate_ipv4_address(default_gateway)
         if dns_servers is not None:
-            if len(dns_servers) > 3:
+            if len(dns_servers) > _DNS_SERVER_SLOTS:
                 raise ValidationError(
-                    f"dns_servers accepts at most 3 entries, got {len(dns_servers)}"
+                    f"dns_servers accepts at most {_DNS_SERVER_SLOTS} entries, "
+                    f"got {len(dns_servers)}"
                 )
             if dns_servers:
                 data["dns-service"] = "specify"
-                # All three slots are written. FortiManager keeps a slot the
+                # Every slot is written. FortiManager keeps a slot the
                 # update does not name, so a shorter list left the old
                 # servers 2 and 3 in place and they were still handed out.
                 # 0.0.0.0 clears a slot. Both measured on FortiManager 8.0.2
-                # with a model device (#139).
+                # with a model device (#139), for slots 1 to 3.
                 slots = [validate_ipv4_address(server) for server in dns_servers]
-                slots += [_UNSET_DNS_SERVER] * (3 - len(slots))
+                slots += [_UNSET_DNS_SERVER] * (_DNS_SERVER_SLOTS - len(slots))
                 for i, server in enumerate(slots, start=1):
                     data[f"dns-server{i}"] = server
             else:
