@@ -80,6 +80,17 @@ def _status_text(message: Any) -> str:
     return text if len(text) <= _STATUS_TEXT_MAX else text[:_STATUS_TEXT_MAX] + "..."
 
 
+def _rejection(text: str, code: int) -> AuthenticationError:
+    """FortiManager refusing a login, as an error.
+
+    A tool's message for an error whose code the server has a text for is
+    that text (``client_safe_error``). The text for -11 offers an expired
+    session as the cause, and a login has no session yet, so -11 is left
+    off and the tool quotes FortiManager's words.
+    """
+    return AuthenticationError(text, code=None if code == -11 else code)
+
+
 def _is_bare_envelope(result: Any) -> bool:
     """Whether ``result`` is a success envelope that carried no ``data`` member.
 
@@ -119,9 +130,12 @@ class FortiManagerClient:
     # are zero or negative. Such a reply comes from something in front of
     # FortiManager (a proxy's 502 or 503 page), not from FortiManager.
     _NOT_JSON_CODE = 100
-    # FortiManager's answer to a login with a wrong user name or password
-    # ("Login fail"), the one code of a login measured to mean that.
-    _LOGIN_REJECTED_CODE = -22
+    # FortiManager's answers to a login that refuse the administrator, each
+    # an authentication error: -22 "Login fail" for a wrong user name or
+    # password, and -11 "No permission for the resource" for an
+    # administrator without JSON API access (measured on 8.0.2). Any other
+    # code says nothing about the credentials.
+    _LOGIN_REJECTED_CODES = frozenset({-22, -11})
     # Verbs a replay cannot turn into a second change: get reads, set/update
     # write the same values again, and delete removes what is already gone
     # (a replay after a delete that did land can at worst fail, e.g. -3
@@ -380,8 +394,8 @@ class FortiManagerClient:
         if isinstance(status, dict) and isinstance(status.get("code"), int) and status["code"]:
             code = status["code"]
             message = _status_text(status.get("message", "no message"))
-            if code == FortiManagerClient._LOGIN_REJECTED_CODE:
-                return AuthenticationError(f"FortiManager login failed: {message}", code=code)
+            if code in FortiManagerClient._LOGIN_REJECTED_CODES:
+                return _rejection(f"FortiManager login failed: {message}", code)
             # Any other code, such as -1 for an internal error, says nothing
             # about the credentials.
             return ConnectionError(f"FortiManager login failed with code {code}: {message}")

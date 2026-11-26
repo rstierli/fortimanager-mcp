@@ -121,6 +121,54 @@ async def test_another_error_at_login_is_not_an_authentication_error(
     assert client.is_reachable
 
 
+#: The codes with which FortiManager refuses a login: its message, and what a
+#: tool answers. For a code the server has a text for, that text is the
+#: message; the one for -11 offers an expired session, so a tool quotes
+#: FortiManager instead.
+REFUSED_LOGINS = {
+    -22: ("Login fail", "Login failed - invalid credentials"),
+    -11: (
+        "No permission for the resource",
+        "FortiManager login failed: No permission for the resource",
+    ),
+}
+REFUSALS = pytest.mark.parametrize("code", list(REFUSED_LOGINS))
+
+
+@REFUSALS
+async def test_a_refusing_code_at_the_login_is_an_authentication_error(
+    wire: Wire, code: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """-22 is a wrong user name or password. -11 is what FortiManager 8.0.2
+    answers an administrator without JSON API access."""
+    said, message = REFUSED_LOGINS[code]
+    wire.login = (code, said)
+    client = new_client("session")
+    monkeypatch.setattr(system_tools, "get_fmg_client", lambda: client)
+    result = await system_tools.get_system_status()
+    assert result == {
+        "status": "error",
+        "error_code": "authentication_error",
+        "message": message,
+    }
+    assert not client.is_connected
+
+
+@REFUSALS
+async def test_each_later_call_logs_in_again(
+    wire: Wire, code: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A control, not a fix: an authentication error does not stop the next
+    tool call from logging in. ensure_connected shares a failed attempt only
+    with the calls that waited for it, and the next call makes its own."""
+    wire.login = (code, REFUSED_LOGINS[code][0])
+    client = new_client("session")
+    monkeypatch.setattr(system_tools, "get_fmg_client", lambda: client)
+    for number in range(1, 4):
+        await system_tools.get_system_status()
+        assert wire.logins() == number
+
+
 #: A status message as an appliance could send it, and what is quoted of it.
 NOISY = "Internal error\r\n\x1b[31m" + "A" * 1000
 QUOTED = "Internal error[31m" + "A" * 182 + "..."
