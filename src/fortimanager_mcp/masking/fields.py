@@ -112,7 +112,7 @@ FIELD_TYPES: dict[str, str] = {
     # ``get_device_interfaces`` return the FortiOS response verbatim under
     # ``data`` (dvm_tools.py:752, :800), and every FortiOS monitor
     # envelope carries its serial at top level: measured on a live 7.4.12
-    # FortiGate, ``"serial": "FGT70FTK22019321"`` beside the interface
+    # FortiGate, ``"serial": "FGT70FTK00000001"`` beside the interface
     # records whose ``mac`` and ``ip`` were already masking. Two other
     # spellings of a device serial were already carriers, so this one
     # reaching the caller in clear was an inconsistency rather than a

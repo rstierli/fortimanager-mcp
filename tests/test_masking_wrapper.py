@@ -522,19 +522,19 @@ class TestDeviceSerialCarrier:
         payload = {
             "status": "success",
             "data": {
-                "results": {"wan1": {"mac": "ac:71:2e:71:74:9e", "ip": "104.167.217.70"}},
-                "serial": "FGT70FTK22019321",
+                "results": {"wan1": {"mac": "00:00:5e:00:53:01", "ip": "203.0.113.70"}},
+                "serial": "FGT70FTK00000001",
                 "version": "v7.4.12",
             },
         }
 
         out = masker.mask_result(payload)
 
-        assert "FGT70FTK22019321" not in str(out)
-        assert engine.unseal_serial(out["data"]["serial"]) == "FGT70FTK22019321"
+        assert "FGT70FTK00000001" not in str(out)
+        assert engine.unseal_serial(out["data"]["serial"]) == "FGT70FTK00000001"
 
     def test_the_version_beside_it_is_untouched(self, masker: OutputMasker) -> None:
-        out = masker.mask_result({"serial": "FGT70FTK22019321", "version": "v7.4.12"})
+        out = masker.mask_result({"serial": "FGT70FTK00000001", "version": "v7.4.12"})
         assert out["version"] == "v7.4.12"
 
 
