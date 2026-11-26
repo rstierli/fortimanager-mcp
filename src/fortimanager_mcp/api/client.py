@@ -104,6 +104,9 @@ class FortiManagerClient:
     # are zero or negative. Such a reply comes from something in front of
     # FortiManager (a proxy's 502 or 503 page), not from FortiManager.
     _NOT_JSON_CODE = 100
+    # FortiManager's answer to a login with a wrong user name or password
+    # ("Login fail"), the one code of a login measured to mean that.
+    _LOGIN_REJECTED_CODE = -22
     # Verbs a replay cannot turn into a second change: get reads, set/update
     # write the same values again, and delete removes what is already gone
     # (a replay after a delete that did land can at worst fail, e.g. -3
@@ -359,11 +362,14 @@ class FortiManagerClient:
         if isinstance(result, list) and result:
             result = result[0]
         status = result.get("status") if isinstance(result, dict) else None
-        if isinstance(status, dict) and isinstance(status.get("code"), int) and status["code"]:
-            return AuthenticationError(
-                f"FortiManager login failed: {status.get('message', 'no message')}",
-                code=status["code"],
-            )
+        code = status.get("code") if isinstance(status, dict) else None
+        if isinstance(code, int) and code:
+            message = status.get("message", "no message")
+            if code == FortiManagerClient._LOGIN_REJECTED_CODE:
+                return AuthenticationError(f"FortiManager login failed: {message}", code=code)
+            # Any other code, such as -1 for an internal error, says nothing
+            # about the credentials.
+            return ConnectionError(f"FortiManager login failed with code {code}: {message}")
         error_msg = response.get("status", {}).get("message", "Login failed")
         return AuthenticationError(f"FortiManager login failed: {error_msg}")
 

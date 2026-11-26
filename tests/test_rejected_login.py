@@ -87,6 +87,31 @@ async def test_each_tool_call_still_presents_the_credentials_once(
         assert attempts(wire, auth) == number
 
 
+async def test_another_error_at_login_is_not_an_authentication_error(
+    wire: Wire, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only -22 is FortiManager rejecting the credentials. Its internal error
+    in answer to a login says nothing about them, and the next call logs in."""
+    wire.login = (-1, "Internal error")
+    client = new_client("session")
+    monkeypatch.setattr(system_tools, "get_fmg_client", lambda: client)
+    result = await system_tools.get_system_status()
+    assert result == {
+        "status": "error",
+        "error_code": "connection_error",
+        "message": "Failed to connect to FortiManager: "
+        "FortiManager login failed with code -1: Internal error",
+    }
+    assert wire.logins() == 1
+    assert not client.is_connected
+
+    wire.login = (0, "OK")
+    result = await system_tools.get_system_status()
+    assert result["status"] == "success", result
+    assert wire.logins() == 2
+    assert client.is_reachable
+
+
 @BOTH
 async def test_a_proxy_page_at_login_is_not_an_authentication_error(wire: Wire, auth: str) -> None:
     """What answered was not FortiManager, so nothing rejected the credentials."""
