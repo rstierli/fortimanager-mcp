@@ -26,6 +26,7 @@ from fortimanager_mcp.utils.validation import (
     ValidationError,
     validate_adom,
     validate_device_name,
+    validate_install_scope,
     validate_limit,
     validate_object_name,
 )
@@ -1425,6 +1426,7 @@ async def assign_sdwan_template(
         adom = validate_adom(adom)
         template = validate_object_name(template, "SD-WAN template")
         device = validate_device_name(device)
+        vdom = validate_object_name(vdom, "VDOM")
         scope = [{"name": device, "vdom": vdom}]
         result = await client.assign_sdwan_template(adom=adom, template=template, scope=scope)
         return {
@@ -1469,6 +1471,7 @@ async def assign_sdwan_template_bulk(
     try:
         adom = validate_adom(adom)
         template = validate_object_name(template, "SD-WAN template")
+        devices = validate_install_scope(devices)
         result = await client.assign_sdwan_template(adom=adom, template=template, scope=devices)
         return {
             "success": True,
@@ -1513,6 +1516,7 @@ async def unassign_sdwan_template(
         adom = validate_adom(adom)
         template = validate_object_name(template, "SD-WAN template")
         device = validate_device_name(device)
+        vdom = validate_object_name(vdom, "VDOM")
         scope = [{"name": device, "vdom": vdom}]
         result = await client.unassign_sdwan_template(adom=adom, template=template, scope=scope)
         return {

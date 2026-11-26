@@ -618,6 +618,9 @@ def validate_device_dict_list(devices: Any) -> list[dict[str, Any]]:
 def validate_install_scope(devices: Any) -> list[dict[str, str]]:
     """Check an install/preview scope: a non-empty list of {"name", "vdom"} dicts.
 
+    The bulk template assignments send the same shape as their scope member
+    and use it too (#139).
+
     An empty scope is refused rather than sent: the preview staging call
     accepts it and spawns a task that has nothing to stage.
     """
