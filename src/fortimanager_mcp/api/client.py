@@ -65,6 +65,21 @@ def _sanitize_for_logging(data: Any, depth: int = 0) -> Any:
     return data
 
 
+#: The longest status message quoted from the answer to a login.
+_STATUS_TEXT_MAX = 200
+
+
+def _status_text(message: Any) -> str:
+    """A status message as a login error quotes it.
+
+    The text is FortiManager's, or of whatever answered in its place, and it
+    goes into the tool error and the log: printable characters only, and no
+    more than ``_STATUS_TEXT_MAX`` of them.
+    """
+    text = "".join(ch for ch in str(message) if ch.isprintable())
+    return text if len(text) <= _STATUS_TEXT_MAX else text[:_STATUS_TEXT_MAX] + "..."
+
+
 def _is_bare_envelope(result: Any) -> bool:
     """Whether ``result`` is a success envelope that carried no ``data`` member.
 
@@ -319,10 +334,10 @@ class FortiManagerClient:
             if self.api_token:
                 vcode, vresp = await self._run_fmg_call(self._fmg.get, "/sys/status")
                 if vcode != 0:
-                    detail = (
+                    detail = _status_text(
                         vresp.get("status", {}).get("message", "verification failed")
                         if isinstance(vresp, dict)
-                        else str(vresp)
+                        else vresp
                     )
                     if vcode == -11:
                         # FortiManager answered and refused: the token, or
@@ -364,13 +379,13 @@ class FortiManagerClient:
         status = result.get("status") if isinstance(result, dict) else None
         code = status.get("code") if isinstance(status, dict) else None
         if isinstance(code, int) and code:
-            message = status.get("message", "no message")
+            message = _status_text(status.get("message", "no message"))
             if code == FortiManagerClient._LOGIN_REJECTED_CODE:
                 return AuthenticationError(f"FortiManager login failed: {message}", code=code)
             # Any other code, such as -1 for an internal error, says nothing
             # about the credentials.
             return ConnectionError(f"FortiManager login failed with code {code}: {message}")
-        error_msg = response.get("status", {}).get("message", "Login failed")
+        error_msg = _status_text(response.get("status", {}).get("message", "Login failed"))
         return AuthenticationError(f"FortiManager login failed: {error_msg}")
 
     async def disconnect(self) -> None:

@@ -112,6 +112,45 @@ async def test_another_error_at_login_is_not_an_authentication_error(
     assert client.is_reachable
 
 
+#: A status message as an appliance could send it, and what is quoted of it.
+NOISY = "Internal error\r\n\x1b[31m" + "A" * 1000
+QUOTED = "Internal error[31m" + "A" * 182 + "..."
+
+
+@BOTH
+async def test_the_status_text_in_a_tool_error_and_the_log_is_bounded(
+    wire: Wire, auth: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The text is FortiManager's, or of whatever answered in its place: no
+    control characters of it and no more than 200 characters reach the caller
+    and the log."""
+    if auth == "session":
+        wire.login = (-1, NOISY)
+        expected = f"FortiManager login failed with code -1: {QUOTED}"
+    else:
+        wire.answers["/sys/status"] = (-1, NOISY, None)
+        expected = f"FortiManager token verification failed: {QUOTED}"
+    client = new_client(auth)
+    monkeypatch.setattr(system_tools, "get_fmg_client", lambda: client)
+    result = await system_tools.get_system_status()
+    assert result["message"] == f"Failed to connect to FortiManager: {expected}"
+    assert "A" * 183 not in caplog.text
+    assert "\x1b" not in caplog.text
+
+
+@BOTH
+async def test_a_rejection_quotes_a_bounded_status_text(wire: Wire, auth: str) -> None:
+    if auth == "session":
+        wire.login = (-22, NOISY)
+        expected = f"FortiManager login failed: {QUOTED}"
+    else:
+        wire.answers["/sys/status"] = (-11, NOISY, None)
+        expected = f"FortiManager token verification failed: {QUOTED}"
+    with pytest.raises(AuthenticationError) as refused:
+        await new_client(auth).connect()
+    assert str(refused.value) == expected
+
+
 @BOTH
 async def test_a_proxy_page_at_login_is_not_an_authentication_error(wire: Wire, auth: str) -> None:
     """What answered was not FortiManager, so nothing rejected the credentials."""
