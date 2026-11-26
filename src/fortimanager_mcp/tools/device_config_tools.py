@@ -365,6 +365,11 @@ async def list_device_dhcp_servers(
         return {"error": msg, "error_code": code}
 
 
+#: DNS server slots of a DHCP scope: dns-server1 to dns-server4 in the FortiOS
+#: CLI reference (6.2 and later).
+_DNS_SERVER_SLOTS = 4
+
+
 @mcp.tool()
 async def create_device_dhcp_server(
     device: str,
@@ -387,7 +392,7 @@ async def create_device_dhcp_server(
         netmask: Scope netmask (e.g. "255.255.255.0")
         default_gateway: Gateway handed to clients (defaults to the
             interface address if omitted, per FortiOS behavior)
-        dns_servers: Up to three DNS servers to hand out; omitted means the
+        dns_servers: Up to four DNS servers to hand out; omitted means the
             device's system DNS is used (dns-service default)
         lease_time: Lease time in seconds
         vdom: VDOM the scope lives in (default "root")
@@ -414,9 +419,10 @@ async def create_device_dhcp_server(
         if default_gateway is not None:
             data["default-gateway"] = validate_ipv4_address(default_gateway)
         if dns_servers:
-            if len(dns_servers) > 3:
+            if len(dns_servers) > _DNS_SERVER_SLOTS:
                 raise ValidationError(
-                    f"dns_servers accepts at most 3 entries, got {len(dns_servers)}"
+                    f"dns_servers accepts at most {_DNS_SERVER_SLOTS} entries, "
+                    f"got {len(dns_servers)}"
                 )
             data["dns-service"] = "specify"
             for i, server in enumerate(dns_servers, start=1):
@@ -623,6 +629,12 @@ async def create_device_on_demand_sniffer(
         return {"error": msg, "error_code": code}
 
 
+#: What FortiOS stores in a DNS server slot of a DHCP scope that is not set.
+#: A value written to a device's configuration, not an address this server
+#: binds to, which is what bandit's B104 takes the literal for.
+_UNSET_DNS_SERVER = "0.0.0.0"  # nosec B104
+
+
 @mcp.tool()
 async def update_device_dhcp_server(
     device: str,
@@ -647,7 +659,11 @@ async def update_device_dhcp_server(
         end_ip: New last address of the lease range
         netmask: New scope netmask
         default_gateway: New gateway handed to clients
-        dns_servers: Up to three DNS servers; replaces the served set
+        dns_servers: Up to four DNS servers. The list replaces the served
+            set: the servers given are written in order and the remaining
+            slots are cleared. An empty list switches the scope back to the
+            device's system DNS (dns-service default), as create does when
+            no server is given. Omitted, DNS is left as it is.
         lease_time: New lease time in seconds
         vdom: VDOM the scope lives in (default "root")
 
@@ -677,13 +693,26 @@ async def update_device_dhcp_server(
         if default_gateway is not None:
             data["default-gateway"] = validate_ipv4_address(default_gateway)
         if dns_servers is not None:
-            if len(dns_servers) > 3:
+            if len(dns_servers) > _DNS_SERVER_SLOTS:
                 raise ValidationError(
-                    f"dns_servers accepts at most 3 entries, got {len(dns_servers)}"
+                    f"dns_servers accepts at most {_DNS_SERVER_SLOTS} entries, "
+                    f"got {len(dns_servers)}"
                 )
-            data["dns-service"] = "specify"
-            for i, server in enumerate(dns_servers, start=1):
-                data[f"dns-server{i}"] = validate_ipv4_address(server)
+            if dns_servers:
+                data["dns-service"] = "specify"
+                # Every slot is written. FortiManager keeps a slot the
+                # update does not name, so a shorter list left the old
+                # servers 2 and 3 in place and they were still handed out.
+                # 0.0.0.0 clears a slot. Both measured on FortiManager 8.0.2
+                # with a model device (#139), for slots 1 to 3.
+                slots = [validate_ipv4_address(server) for server in dns_servers]
+                slots += [_UNSET_DNS_SERVER] * (_DNS_SERVER_SLOTS - len(slots))
+                for i, server in enumerate(slots, start=1):
+                    data[f"dns-server{i}"] = server
+            else:
+                # No server: back to the device's own DNS, as on create.
+                # "specify" with no server changed nothing (measured).
+                data["dns-service"] = "default"
         if lease_time is not None:
             data["lease-time"] = lease_time
 
@@ -1060,12 +1089,19 @@ async def assign_vap_to_wtp_profile(
     vap: str,
     radios: list[int] | None = None,
     vdom: str = "root",
+    switch_to_manual: bool = False,
 ) -> dict[str, Any]:
     """Add a VAP (SSID) to a FortiAP profile's radios so it gets broadcast.
 
-    Reads the profile, appends the VAP to each selected radio's manual VAP
-    list, and switches that radio's vap-all mode to "manual" (the mode that
-    honors an explicit list). VAPs already present are left in place.
+    Reads the profile and appends the VAP to each selected radio's manual VAP
+    list. VAPs already in that list are left in place.
+
+    A radio only honors its list in vap-all mode "manual". In "tunnel" or
+    "bridge" mode it broadcasts every SSID of that mode by itself, and
+    switching it to manual stops all of them except the ones in its list,
+    with the next install. So a radio that is not in manual mode is refused
+    unless switch_to_manual is set: nothing is written for any radio, and the
+    error names the radios and their mode.
 
     Args:
         device: Managed device name
@@ -1073,9 +1109,15 @@ async def assign_vap_to_wtp_profile(
         vap: VAP object name to broadcast
         radios: Radios to add the SSID to, from 1-3 (default [1, 2])
         vdom: VDOM the profile lives in (default "root")
+        switch_to_manual: Also switch a selected radio that is in tunnel or
+            bridge mode (or has no mode stored) to manual. Every SSID that
+            mode was broadcasting on the radio stops with the next install,
+            except the VAPs in its list. Check what the radio serves first
+            (list_device_vaps). Default False.
 
     Returns:
-        Update result listing the radios changed
+        Update result listing the radios changed. With switch_to_manual, a
+        "warning" names the radios that left tunnel or bridge mode.
     """
     client = get_fmg_client()
     if not client:
@@ -1109,6 +1151,51 @@ async def assign_vap_to_wtp_profile(
                 "error_code": "not_found",
             }
 
+        # A radio in tunnel or bridge mode broadcasts every SSID of that mode
+        # by itself. Going to manual with a list that holds the new VAP stops
+        # all the others with the next install (#139). Refused for the whole
+        # call unless asked for: a warning in a result is too easy to miss,
+        # and a partial write would be a silent change of scope. A radio with
+        # no mode stored counts as not manual: the mode is not known, and
+        # FortiOS's default is tunnel.
+        #
+        # FortiManager returns an enum as an integer code unless the read
+        # asks for names (channel-bonding was seen as a code on live
+        # profiles). A code compared with "manual" made the radio look not
+        # manual, so a mode that came back as a code is read again by name.
+        # The plain read stays the source of what is written back.
+        modes: dict[int, Any] = {}
+        for n in radios:
+            stored_radio = stored.get(f"radio-{n}")
+            modes[n] = stored_radio.get("vap-all") if isinstance(stored_radio, dict) else None
+        if any(isinstance(mode, int) for mode in modes.values()):
+            named = await client.get_device_wtp_profile(
+                device=device, vdom=vdom, name=profile, verbose=True
+            )
+            if isinstance(named, list):
+                named = named[0] if named else {}
+            for n in radios:
+                named_radio = named.get(f"radio-{n}") if isinstance(named, dict) else None
+                modes[n] = named_radio.get("vap-all") if isinstance(named_radio, dict) else None
+        not_manual: dict[int, str] = {}
+        for n in radios:
+            mode = modes[n]
+            if mode != "manual":
+                not_manual[n] = f"vap-all '{mode}'" if mode else "no vap-all mode stored"
+        leaving = ", ".join(f"radio-{n} ({what})" for n, what in sorted(not_manual.items()))
+        if not_manual and not switch_to_manual:
+            return {
+                "error": (
+                    f"{leaving} of profile '{profile}' not in manual mode. A radio in "
+                    "tunnel or bridge mode broadcasts every SSID of that mode by itself. "
+                    f"Adding '{vap}' would switch it to manual, where only the VAPs in its "
+                    "list are broadcast, so every other SSID it serves now would stop with "
+                    "the next install. Nothing was changed. Check what the radio serves "
+                    "(list_device_vaps), then pass switch_to_manual=True to do it."
+                ),
+                "error_code": "validation_error",
+            }
+
         # 6 GHz radios are WPA3-only, so a VAP with the wrong security mode
         # is rejected at install time, possibly bundled with unrelated
         # changes. Check before staging anything, and refuse the WHOLE call
@@ -1131,6 +1218,13 @@ async def assign_vap_to_wtp_profile(
             refusal, warning = await _check_six_ghz_vap(client, device, vdom, vap, sorted(six_ghz))
             if refusal:
                 return refusal
+        if not_manual:
+            switched = (
+                f"{leaving} switched to manual, as asked. Every SSID that mode was "
+                "broadcasting on the radio stops with the next install, except the VAPs "
+                "now in its list."
+            )
+            warning = f"{warning} {switched}" if warning else switched
 
         data: dict[str, Any] = {}
         for radio_num in radios:
@@ -1141,7 +1235,7 @@ async def assign_vap_to_wtp_profile(
             if isinstance(vaps, str):
                 vaps = [vaps]
             vaps = [str(v) for v in vaps]
-            if vap in vaps and radio.get("vap-all") == "manual":
+            if vap in vaps and modes[radio_num] == "manual":
                 continue
             merged = vaps if vap in vaps else [*vaps, vap]
             # Carry the rest of the radio object through. This is a

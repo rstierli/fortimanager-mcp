@@ -193,9 +193,29 @@ class TestCreateDeviceDhcpServer:
         assert "dns-server1" not in data
 
     @pytest.mark.asyncio
-    async def test_rejects_more_than_three_dns_servers(
+    async def test_rejects_more_than_four_dns_servers(
         self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
     ) -> None:
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.create_device_dhcp_server(
+                device="FGT-01",
+                interface="vlan15",
+                start_ip="192.0.2.32",
+                end_ip="192.0.2.200",
+                netmask="255.255.255.0",
+                dns_servers=["192.0.2.1", "192.0.2.2", "192.0.2.3", "192.0.2.4", "192.0.2.5"],
+            )
+
+        assert "at most 4" in result["error"]
+        mock_fmg_instance.add.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_four_dns_servers_fill_the_four_slots(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """A DHCP scope has four DNS slots (dns-server1 to dns-server4 in the
+        FortiOS CLI reference)."""
+        mock_fmg_instance.add.return_value = (0, {"id": 1})
         with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
             result = await device_config_tools.create_device_dhcp_server(
                 device="FGT-01",
@@ -206,8 +226,14 @@ class TestCreateDeviceDhcpServer:
                 dns_servers=["192.0.2.1", "192.0.2.2", "192.0.2.3", "192.0.2.4"],
             )
 
-        assert "error" in result
-        mock_fmg_instance.add.assert_not_called()
+        assert result.get("success") is True
+        data = mock_fmg_instance.add.call_args.kwargs["data"]
+        assert [data[f"dns-server{i}"] for i in (1, 2, 3, 4)] == [
+            "192.0.2.1",
+            "192.0.2.2",
+            "192.0.2.3",
+            "192.0.2.4",
+        ]
 
     @pytest.mark.asyncio
     async def test_rejects_bad_ip(
@@ -260,6 +286,101 @@ class TestUpdateDeviceDhcpServer:
 
         assert "error" in result
         mock_fmg_instance.update.assert_not_called()
+
+    async def _sent_for(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        dns_servers: list[str] | None,
+        **more: Any,
+    ) -> dict[str, Any]:
+        mock_fmg_instance.update.return_value = (0, {"id": 1})
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.update_device_dhcp_server(
+                device="FGT-01", dhcp_server_id=1, dns_servers=dns_servers, **more
+            )
+        assert result.get("success") is True
+        data: dict[str, Any] = mock_fmg_instance.update.call_args.kwargs["data"]
+        return data
+
+    @pytest.mark.asyncio
+    async def test_one_dns_server_clears_the_other_slots(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """The list replaces the served set (#139 item 2).
+
+        Measured on FortiManager 8.0.2 with a model device: an update that
+        sends dns-server1 alone leaves dns-server2 and dns-server3 as they
+        were stored, and an update that sends 0.0.0.0 for a slot clears it.
+        The fourth slot is from the FortiOS CLI reference, not measured.
+        """
+        data = await self._sent_for(mock_client, mock_fmg_instance, ["192.0.2.53"])
+
+        assert data == {
+            "dns-service": "specify",
+            "dns-server1": "192.0.2.53",
+            "dns-server2": "0.0.0.0",
+            "dns-server3": "0.0.0.0",
+            "dns-server4": "0.0.0.0",
+        }
+
+    @pytest.mark.asyncio
+    async def test_two_dns_servers_clear_the_last_two_slots(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        data = await self._sent_for(mock_client, mock_fmg_instance, ["192.0.2.53", "198.51.100.53"])
+
+        assert data["dns-server1"] == "192.0.2.53"
+        assert data["dns-server2"] == "198.51.100.53"
+        assert data["dns-server3"] == "0.0.0.0"
+        assert data["dns-server4"] == "0.0.0.0"
+
+    @pytest.mark.asyncio
+    async def test_four_dns_servers_fill_every_slot(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        data = await self._sent_for(
+            mock_client, mock_fmg_instance, ["192.0.2.1", "192.0.2.2", "192.0.2.3", "192.0.2.4"]
+        )
+
+        assert [data[f"dns-server{i}"] for i in (1, 2, 3, 4)] == [
+            "192.0.2.1",
+            "192.0.2.2",
+            "192.0.2.3",
+            "192.0.2.4",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_five_dns_servers_are_refused(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.update_device_dhcp_server(
+                device="FGT-01",
+                dhcp_server_id=1,
+                dns_servers=["192.0.2.1", "192.0.2.2", "192.0.2.3", "192.0.2.4", "192.0.2.5"],
+            )
+
+        assert "at most 4" in result["error"]
+        mock_fmg_instance.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_empty_list_goes_back_to_the_devices_own_dns(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """As on create, where no server means dns-service default. It sent
+        "specify" with no server before, which changed nothing (measured)."""
+        data = await self._sent_for(mock_client, mock_fmg_instance, [])
+
+        assert data == {"dns-service": "default"}
+
+    @pytest.mark.asyncio
+    async def test_no_dns_argument_leaves_dns_alone(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        data = await self._sent_for(mock_client, mock_fmg_instance, None, lease_time=7200)
+
+        assert data == {"lease-time": 7200}
 
 
 class TestDeleteDeviceDhcpServer:
@@ -558,7 +679,7 @@ class TestAssignVapToWtpProfile:
 
         with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
             result = await device_config_tools.assign_vap_to_wtp_profile(
-                device="FGT-01", profile="AP-profile", vap="TEST"
+                device="FGT-01", profile="AP-profile", vap="TEST", switch_to_manual=True
             )
 
         assert result.get("success") is True
@@ -607,7 +728,11 @@ class TestAssignVapToWtpProfile:
 
         with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
             await device_config_tools.assign_vap_to_wtp_profile(
-                device="FGT-01", profile="AP-profile", vap="TEST", radios=[1]
+                device="FGT-01",
+                profile="AP-profile",
+                vap="TEST",
+                radios=[1],
+                switch_to_manual=True,
             )
 
         written = mock_fmg_instance.update.call_args.kwargs["data"]["radio-1"]
@@ -669,7 +794,11 @@ class TestAssignVapToWtpProfile:
 
         with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
             result = await device_config_tools.assign_vap_to_wtp_profile(
-                device="FGT-01", profile="AP-profile", vap="TEST", radios=[2]
+                device="FGT-01",
+                profile="AP-profile",
+                vap="TEST",
+                radios=[2],
+                switch_to_manual=True,
             )
 
         assert result.get("success") is True
@@ -707,7 +836,11 @@ class TestAssignVapToWtpProfile:
 
         with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
             result = await device_config_tools.assign_vap_to_wtp_profile(
-                device="FGT-01", profile="AP-profile", vap="TEST", radios=[1]
+                device="FGT-01",
+                profile="AP-profile",
+                vap="TEST",
+                radios=[1],
+                switch_to_manual=True,
             )
 
         assert result.get("success") is True
@@ -723,6 +856,215 @@ MOCK_WTP_PROFILES = [
         "radio-3": {"vap-all": "manual", "band": "802.11ax-6G", "channel-bonding": "160MHz"},
     }
 ]
+
+
+class TestAssignVapToARadioThatIsNotManual:
+    """A radio in tunnel or bridge mode broadcasts every SSID of that mode.
+
+    Adding a VAP switches the radio to manual, where only the VAPs in its
+    list are broadcast: every other SSID the radio was serving stops with the
+    next install (#139 item 3). The tool refuses that unless the caller asks
+    for it, because a warning in a result is too easy to miss.
+    """
+
+    async def _assign(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        profile: dict[str, Any],
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        mock_fmg_instance.get.return_value = (0, {"name": "AP-profile", **profile})
+        mock_fmg_instance.update.return_value = (0, {"name": "AP-profile"})
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result: dict[str, Any] = await device_config_tools.assign_vap_to_wtp_profile(
+                device="FGT-01", profile="AP-profile", vap="TEST", **kwargs
+            )
+        return result
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", ["tunnel", "bridge"])
+    async def test_it_is_refused_and_nothing_is_written(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock, mode: str
+    ) -> None:
+        result = await self._assign(
+            mock_client,
+            mock_fmg_instance,
+            {"radio-1": {"vap-all": mode, "band": "802.11ax-5G"}},
+            radios=[1],
+        )
+
+        assert result["error_code"] == "validation_error"
+        assert "radio-1" in result["error"]
+        assert mode in result["error"]
+        assert "switch_to_manual" in result["error"]
+        mock_fmg_instance.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_radio_with_no_mode_stored_is_refused_too(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """The mode is not known to be manual, and FortiOS's default is tunnel."""
+        result = await self._assign(
+            mock_client, mock_fmg_instance, {"radio-1": {"band": "802.11ax-5G"}}, radios=[1]
+        )
+
+        assert result["error_code"] == "validation_error"
+        mock_fmg_instance.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_one_such_radio_refuses_the_whole_call(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """Not a partial write: the manual radio is not changed either."""
+        result = await self._assign(
+            mock_client,
+            mock_fmg_instance,
+            {
+                "radio-1": {"vap-all": "manual", "vaps": ["corp"]},
+                "radio-2": {"vap-all": "tunnel"},
+            },
+        )
+
+        assert result["error_code"] == "validation_error"
+        assert "radio-2" in result["error"]
+        assert "radio-1" not in result["error"]
+        mock_fmg_instance.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_asked_for_it_is_done_and_the_result_says_what_stops(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        result = await self._assign(
+            mock_client,
+            mock_fmg_instance,
+            {"radio-1": {"vap-all": "tunnel", "vaps": ["corp"], "band": "802.11ax-5G"}},
+            radios=[1],
+            switch_to_manual=True,
+        )
+
+        assert result.get("success") is True
+        data = mock_fmg_instance.update.call_args.kwargs["data"]
+        assert data["radio-1"] == {
+            "vap-all": "manual",
+            "vaps": ["corp", "TEST"],
+            "band": "802.11ax-5G",
+        }
+        assert "radio-1" in result["warning"]
+        assert "tunnel" in result["warning"]
+
+    @pytest.mark.asyncio
+    async def test_a_manual_radio_needs_no_asking(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        result = await self._assign(
+            mock_client,
+            mock_fmg_instance,
+            {"radio-1": {"vap-all": "manual", "vaps": ["corp"]}},
+            radios=[1],
+        )
+
+        assert result.get("success") is True
+        assert mock_fmg_instance.update.call_args.kwargs["data"]["radio-1"]["vaps"] == [
+            "corp",
+            "TEST",
+        ]
+        assert "warning" not in result
+
+    @pytest.mark.asyncio
+    async def test_asking_changes_nothing_for_a_manual_radio(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        result = await self._assign(
+            mock_client,
+            mock_fmg_instance,
+            {"radio-1": {"vap-all": "manual", "vaps": ["corp"]}},
+            radios=[1],
+            switch_to_manual=True,
+        )
+
+        assert result.get("success") is True
+        assert "warning" not in result
+
+
+class TestTheRadioModeIsReadByName:
+    """FortiManager returns an enum as an integer code unless the read asks
+    for names ("verbose": 1), as channel-bonding was seen on live profiles.
+    The mode check compared the stored value with "manual", so a radio whose
+    mode came back as a code read as not manual. The codes below are made up:
+    the tool must not depend on them."""
+
+    async def _assign(
+        self,
+        mock_client: FortiManagerClient,
+        mock_fmg_instance: MagicMock,
+        coded: dict[str, Any],
+        named: dict[str, Any],
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        def read(*_: Any, **__: Any) -> tuple[int, dict[str, Any]]:
+            profile = named if mock_fmg_instance.verbose is True else coded
+            return 0, {"name": "AP-profile", **profile}
+
+        mock_fmg_instance.verbose = False
+        mock_fmg_instance.get.side_effect = read
+        mock_fmg_instance.update.return_value = (0, {"name": "AP-profile"})
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result: dict[str, Any] = await device_config_tools.assign_vap_to_wtp_profile(
+                device="FGT-01", profile="AP-profile", vap="TEST", radios=[1], **kwargs
+            )
+        return result
+
+    @pytest.mark.asyncio
+    async def test_a_manual_radio_stored_as_a_code_needs_no_asking(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        result = await self._assign(
+            mock_client,
+            mock_fmg_instance,
+            {"radio-1": {"vap-all": 71, "vaps": ["corp"], "channel-bonding": 4}},
+            {"radio-1": {"vap-all": "manual", "vaps": ["corp"], "channel-bonding": "20MHz"}},
+        )
+
+        assert result.get("success") is True
+        assert "warning" not in result
+        # The rest of the radio goes back as the plain read gave it.
+        assert mock_fmg_instance.update.call_args.kwargs["data"]["radio-1"] == {
+            "vap-all": "manual",
+            "vaps": ["corp", "TEST"],
+            "channel-bonding": 4,
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_tunnel_radio_stored_as_a_code_is_refused_by_name(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        result = await self._assign(
+            mock_client,
+            mock_fmg_instance,
+            {"radio-1": {"vap-all": 72, "vaps": ["corp"]}},
+            {"radio-1": {"vap-all": "tunnel", "vaps": ["corp"]}},
+        )
+
+        assert result["error_code"] == "validation_error"
+        assert "vap-all 'tunnel'" in result["error"]
+        assert "72" not in result["error"]
+        mock_fmg_instance.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_vap_already_on_a_manual_radio_stored_as_a_code_writes_nothing(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        result = await self._assign(
+            mock_client,
+            mock_fmg_instance,
+            {"radio-1": {"vap-all": 71, "vaps": ["TEST"]}},
+            {"radio-1": {"vap-all": "manual", "vaps": ["TEST"]}},
+        )
+
+        assert result.get("success") is True
+        assert "already assigned" in result["message"]
+        mock_fmg_instance.update.assert_not_called()
 
 
 class TestListDeviceWtpProfiles:
@@ -1814,8 +2156,8 @@ class TestSixGhzWpa3Guard:
 
     PROFILE_6G = {
         "name": "AP-profile",
-        "radio-1": {"vap-all": "tunnel", "band": "802.11ax-5G"},
-        "radio-3": {"vap-all": "tunnel", "band": "802.11ax-6G"},
+        "radio-1": {"vap-all": "manual", "band": "802.11ax-5G"},
+        "radio-3": {"vap-all": "manual", "band": "802.11ax-6G"},
     }
 
     @staticmethod
@@ -1931,7 +2273,7 @@ class TestSixGhzWpa3Guard:
         # FortiManager stores some scalars as one-element lists; channel is
         # documented that way in this module and vaps arrives as a list.
         mock_fmg_instance.get.side_effect = [
-            (0, {"name": "AP-profile", "radio-3": {"band": ["802.11be-6G"]}}),
+            (0, {"name": "AP-profile", "radio-3": {"vap-all": "manual", "band": ["802.11be-6G"]}}),
             (0, {"security": "open"}),
         ]
 
@@ -1946,7 +2288,12 @@ class TestSixGhzWpa3Guard:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "radio",
-        [{"vap-all": "tunnel"}, {"band": "802.11ax-5G"}, {"band": ""}, {"band": ["a", "b"]}],
+        [
+            {"vap-all": "manual"},
+            {"vap-all": "manual", "band": "802.11ax-5G"},
+            {"vap-all": "manual", "band": ""},
+            {"vap-all": "manual", "band": ["a", "b"]},
+        ],
         ids=["band-absent", "five-ghz", "band-empty", "band-multi-list"],
     )
     async def test_a_non_6ghz_or_unknown_band_costs_no_extra_read(
