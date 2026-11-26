@@ -81,12 +81,12 @@ def _status_text(message: Any) -> str:
 
 
 def _rejection(text: str, code: int) -> AuthenticationError:
-    """FortiManager refusing a login, as an error.
+    """FortiManager refusing a login or an API token, as an error.
 
     A tool's message for an error whose code the server has a text for is
     that text (``client_safe_error``). The text for -11 offers an expired
-    session as the cause, and a login has no session yet, so -11 is left
-    off and the tool quotes FortiManager's words.
+    session as the cause, and neither a login nor a token has a session
+    yet, so -11 is left off and the tool quotes FortiManager's words.
     """
     return AuthenticationError(text, code=None if code == -11 else code)
 
@@ -357,9 +357,7 @@ class FortiManagerClient:
                     if vcode == -11:
                         # FortiManager answered and refused: the token, or
                         # what its administrator may do over JSON-RPC.
-                        raise AuthenticationError(
-                            f"FortiManager token verification failed: {detail}", code=vcode
-                        )
+                        raise _rejection(f"FortiManager token verification failed: {detail}", vcode)
                     raise ConnectionError(f"FortiManager token verification failed: {detail}")
 
             self._connected = True

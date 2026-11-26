@@ -44,17 +44,19 @@ async def test_a_rejected_login_is_an_authentication_error(wire: Wire, auth: str
         await client.connect()
     text = str(refused.value)
     assert said in text
-    assert refused.value.code == code
+    assert refused.value.code == {"session": -22, "token": None}[auth]
     assert not any(part in text for part in PYFMG_DUMP)
     assert not client.is_connected
     assert attempts(wire, auth) == 1
 
 
 #: What a tool answers per mode. For a code the server has a text for, that
-#: text is the message, not FortiManager's words in the exception.
+#: text is the message, not FortiManager's words in the exception. The one
+#: for -11 offers an expired session, and a token has none, so the token's
+#: message is FortiManager's.
 TOOL_MESSAGE = {
     "session": "Login failed - invalid credentials",
-    "token": "No permission for the resource (or the session expired)",
+    "token": "FortiManager token verification failed: No permission for the resource",
 }
 
 
@@ -70,6 +72,24 @@ async def test_a_tool_reports_it_as_one(
         "status": "error",
         "error_code": "authentication_error",
         "message": TOOL_MESSAGE[auth],
+    }
+
+
+@BOTH
+async def test_a_later_minus_11_keeps_the_server_text(
+    wire: Wire, auth: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A control: only a refused login or token quotes FortiManager. A -11 on
+    a request after the connect is answered with the server's text for it."""
+    client = new_client(auth)
+    await client.connect()
+    wire.answers["/sys/ha/status"] = (-11, "No permission for the resource", None)
+    monkeypatch.setattr(system_tools, "get_fmg_client", lambda: client)
+    result = await system_tools.get_ha_status()
+    assert result == {
+        "status": "error",
+        "error_code": "permission_denied",
+        "message": "No permission for the resource (or the session expired)",
     }
 
 
