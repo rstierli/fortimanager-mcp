@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from pyFMG.fortimgr import FortiManager
+from requests import Response
 from requests.exceptions import ConnectTimeout as RequestsConnectTimeout
 from urllib3.exceptions import ConnectTimeoutError, MaxRetryError
 
@@ -64,6 +65,32 @@ def _sanitize_for_logging(data: Any, depth: int = 0) -> Any:
     return data
 
 
+#: The longest status message quoted from the answer to a login.
+_STATUS_TEXT_MAX = 200
+
+
+def _status_text(message: Any) -> str:
+    """A status message as a login error quotes it.
+
+    The text is FortiManager's, or of whatever answered in its place, and it
+    goes into the tool error and the log: printable characters only, and no
+    more than ``_STATUS_TEXT_MAX`` of them.
+    """
+    text = "".join(ch for ch in str(message) if ch.isprintable())
+    return text if len(text) <= _STATUS_TEXT_MAX else text[:_STATUS_TEXT_MAX] + "..."
+
+
+def _rejection(text: str, code: int) -> AuthenticationError:
+    """FortiManager refusing a login or an API token, as an error.
+
+    A tool's message for an error whose code the server has a text for is
+    that text (``client_safe_error``). The text for -11 offers an expired
+    session as the cause, and neither a login nor a token has a session
+    yet, so -11 is left off and the tool quotes FortiManager's words.
+    """
+    return AuthenticationError(text, code=None if code == -11 else code)
+
+
 def _is_bare_envelope(result: Any) -> bool:
     """Whether ``result`` is a success envelope that carried no ``data`` member.
 
@@ -98,6 +125,19 @@ class FortiManagerClient:
     # is really permission/stale-session -- retrying it without a reconnect
     # just replays the failure; it is handled by the reconnect path above.)
     _TRANSIENT_ERROR_CODES = frozenset({-1})
+    # pyfmg's own code for a reply whose body is not JSON: it hands back the
+    # HTTP response in place of FortiManager's result. FortiManager's codes
+    # are zero or negative. Such a reply is not FortiManager's JSON-RPC
+    # answer: a proxy's 502 or 503 page, or the one FortiManager's own web
+    # server serves while its JSON-RPC backend restarts.
+    _NOT_JSON_CODE = 100
+    # FortiManager's answers to a login that refuse the administrator, each
+    # an authentication error: -22 "Login fail" for a wrong user name or
+    # password, -11 "No permission for the resource" for an administrator
+    # without JSON API access (measured on 8.0.2), and -23 "Reach login
+    # limit" during the lockout after failed logins (seen once on 8.0.2).
+    # Any other code says nothing about the credentials.
+    _LOGIN_REJECTED_CODES = frozenset({-22, -11, -23})
     # Verbs a replay cannot turn into a second change: get reads, set/update
     # write the same values again, and delete removes what is already gone
     # (a replay after a delete that did land can at worst fail, e.g. -3
@@ -284,17 +324,22 @@ class FortiManagerClient:
                     use_ssl=True,
                     verify_ssl=self.resolve_verify(),
                     timeout=self.timeout,
+                    # With it on, pyfmg's login() goes on to read the workspace
+                    # mode, for lock helpers of its own that this client does
+                    # not use (it locks through execute). After a login that
+                    # opened no session that read raises, so a rejected login
+                    # never came back as a result.
+                    check_adom_workspace=False,
                 )
             else:
                 raise AuthenticationError(
                     "No authentication provided. Set API token or username/password."
                 )
 
-            code, response = await self._run_fmg_call(self._fmg.login)
+            code, _ = await self._run_fmg_call(self._fmg.login)
 
             if code != 0:
-                error_msg = response.get("status", {}).get("message", "Login failed")
-                raise AuthenticationError(f"FortiManager login failed: {error_msg}")
+                raise self._login_failure(self._fmg)
 
             # With an API token, pyfmg's login() performs no network round-trip
             # (it just stores the key), so an unreachable FMG or a bad token is
@@ -305,11 +350,15 @@ class FortiManagerClient:
             if self.api_token:
                 vcode, vresp = await self._run_fmg_call(self._fmg.get, "/sys/status")
                 if vcode != 0:
-                    detail = (
+                    detail = _status_text(
                         vresp.get("status", {}).get("message", "verification failed")
                         if isinstance(vresp, dict)
-                        else str(vresp)
+                        else vresp
                     )
+                    if vcode == -11:
+                        # FortiManager answered and refused: the token, or
+                        # what its administrator may do over JSON-RPC.
+                        raise _rejection(f"FortiManager token verification failed: {detail}", vcode)
                     raise ConnectionError(f"FortiManager token verification failed: {detail}")
 
             self._connected = True
@@ -322,6 +371,38 @@ class FortiManagerClient:
         except Exception as e:
             logger.error(f"Connection failed: {e}")
             raise ConnectionError(f"Failed to connect to FortiManager: {e}") from e
+
+    @staticmethod
+    def _login_failure(fmg: FortiManager) -> FortiManagerMCPError:
+        """The error for a login pyfmg reports as failed.
+
+        pyfmg's own result says only that no session was opened. FortiManager's
+        reply to the login says why, and pyfmg keeps it as the last response
+        it parsed. Only that is read: the request beside it holds the password.
+        """
+        reply = fmg.req_resp_object.response_json
+        if reply is None:
+            # pyfmg parsed nothing, so the body was not JSON. Its login()
+            # does not keep the HTTP status, so that is not named here.
+            return ConnectionError(
+                "the reply to the login was not FortiManager's JSON-RPC answer "
+                "(its body is not JSON)"
+            )
+        result = reply.get("result") if isinstance(reply, dict) else None
+        if isinstance(result, list) and result:
+            result = result[0]
+        status = result.get("status") if isinstance(result, dict) else None
+        if isinstance(status, dict) and isinstance(status.get("code"), int) and status["code"]:
+            code = status["code"]
+            message = _status_text(status.get("message", "no message"))
+            if code in FortiManagerClient._LOGIN_REJECTED_CODES:
+                return _rejection(f"FortiManager login failed: {message}", code)
+            # Any other code, such as -1 for an internal error, says nothing
+            # about the credentials.
+            return ConnectionError(f"FortiManager login failed with code {code}: {message}")
+        # No code that refuses the administrator, and yet no session: nothing
+        # says the credentials are wrong.
+        return ConnectionError("the login was answered without a session")
 
     async def disconnect(self) -> None:
         """Disconnect and cleanup resources.
@@ -433,7 +514,10 @@ class FortiManagerClient:
             # Unreachable (failed on-demand connect, or a transient error from
             # a dropped session): raise rather than send the real request to a
             # guessed endpoint and wait out the same timeout a second time.
-            if isinstance(e, ConnectionError) or self._is_transient_error(e, verb="get"):
+            # A rejected login too: the real request would log in once more.
+            if isinstance(e, ConnectionError | AuthenticationError) or self._is_transient_error(
+                e, verb="get"
+            ):
                 raise
             # Do NOT cache the fallback: it says nothing about the version.
             # The next call probes again.
@@ -706,7 +790,7 @@ class FortiManagerClient:
 
     def _note_reachability(self, exc: Exception) -> None:
         """Update ``is_reachable`` from a failed request."""
-        if self._is_unreachable_error(exc):
+        if self._is_unreachable_error(exc) or getattr(exc, "code", None) == self._NOT_JSON_CODE:
             self._unreachable = True
         elif isinstance(exc, FortiManagerMCPError) and not isinstance(exc, ConnectionError):
             # FortiManager answered with an error code. A ConnectionError is the
@@ -880,6 +964,11 @@ class FortiManagerClient:
 
         if isinstance(response, dict):
             error_msg = response.get("status", {}).get("message", str(response))
+        elif isinstance(response, Response):
+            error_msg = (
+                "The reply was not FortiManager's JSON-RPC answer "
+                f"(HTTP {response.status_code}, its body is not JSON)"
+            )
         else:
             error_msg = str(response)
 

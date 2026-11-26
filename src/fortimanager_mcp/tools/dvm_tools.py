@@ -7,8 +7,11 @@ model device provisioning, and device group management.
 
 import asyncio
 import logging
+import math
 import re
-from typing import Any
+from typing import Annotated, Any
+
+from pydantic import BeforeValidator
 
 from fortimanager_mcp.api.client import FortiManagerClient
 from fortimanager_mcp.server import get_fmg_client, mcp
@@ -74,11 +77,26 @@ def _is_meta_control(ch: str) -> bool:
     return code < 32 or 127 <= code <= 159 or code in (0x2028, 0x2029)
 
 
+def _refuse_bool_value(value: Any) -> Any:
+    if isinstance(value, bool):
+        raise ValueError("must be a string or number, not a boolean")
+    return value
+
+
+#: A meta-variable value as a caller sends it: a string, or a number that
+#: _validate_meta_variables turns into the string FortiManager stores. Both
+#: MCP routes validate tool arguments with pydantic in lax mode, which reads
+#: JSON ``true`` as ``1`` where an ``int`` is allowed, so the boolean is
+#: refused in the argument model, as ``utils.validation.Id`` does for an id.
+MetaValue = Annotated[str | int | float, BeforeValidator(_refuse_bool_value)]
+
+
 def _validate_meta_variables(meta_variables: Any) -> dict[str, str]:
     """Validate per-device meta-variable values for a model device.
 
-    FMG stores every value as a string, so numbers are coerced; anything
-    else (a list, a dict, None) is refused rather than stringified.
+    FMG stores every value as a string, so numbers are coerced (a float
+    without a fraction as the integer, 2.0 as "2"); NaN, an infinity and
+    anything else (a list, a dict, None) is refused rather than stringified.
 
     A value is pasted verbatim into every CLI template that references it
     as ``$(name)`` and is installed with the next install_device_settings,
@@ -103,6 +121,13 @@ def _validate_meta_variables(meta_variables: Any) -> dict[str, str]:
             )
         if isinstance(value, bool) or not isinstance(value, str | int | float):
             raise ValidationError(f"Meta-variable {key!r} must be a string or number")
+        if isinstance(value, float):
+            if not math.isfinite(value):
+                raise ValidationError(f"Meta-variable {key!r} must be a finite number")
+            if value.is_integer():
+                # A JSON client may write the integer 2 as 2.0; "2.0" would be
+                # stored, and would not match a stored "2".
+                value = int(value)
         text = str(value)
         if len(text) > _META_VARIABLE_MAX_VALUE:
             raise ValidationError(
@@ -911,7 +936,7 @@ async def add_model_device(
     os_version: str = "7.0",
     description: str | None = None,
     device_blueprint: str | dict[str, Any] | None = None,
-    meta_variables: dict[str, str] | None = None,
+    meta_variables: dict[str, MetaValue] | None = None,
     groups: list[str] | None = None,
     ha_mode: str | None = None,
     ha_group_name: str | None = None,
@@ -1211,7 +1236,9 @@ async def add_model_device(
         # whatever the record holds, not only what was submitted, and a
         # model-device record can come back with blanked or default-populated
         # psk and private_key fields.
-        echoed = strip_device_credentials(result.get("device", device_config))
+        echoed = strip_device_credentials(
+            result.get("device", device_config) if isinstance(result, dict) else device_config
+        )
         if isinstance(echoed, dict) and "meta variables" in echoed:
             # Password-type variable values are masked as the read paths
             # (list_metadata_variables) do; all of them if the types are
@@ -1473,7 +1500,7 @@ async def set_metadata_variable(
 async def check_device_variables(
     adom: str,
     device: str,
-    expected: dict[str, str],
+    expected: dict[str, MetaValue],
 ) -> dict[str, Any]:
     """Check a device's metadata variable values against what was imported.
 
