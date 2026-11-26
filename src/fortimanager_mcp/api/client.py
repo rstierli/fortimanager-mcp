@@ -3928,11 +3928,12 @@ class FortiManagerClient:
         Passes flags="f_preview" so FortiManager returns the path without
         starting an upgrade -- confirmed both by swagger/um.json (um.image.upgrade
         "flags" enum includes "f_preview") and by the How-To Guide's captured
-        example for this exact request.
+        example for this exact request. A preview changes nothing, so it is
+        retried as a read.
 
         FNDN: EXEC /um/image/upgrade (swagger/um.json: um.image.upgrade)
         """
-        return await self.execute(
+        return await self.execute_read(
             "/um/image/upgrade",
             adom=adom,
             device=device,
