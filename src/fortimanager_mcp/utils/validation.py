@@ -1289,6 +1289,16 @@ def validate_capture_id(capture_id: int) -> int:
     return _validate_int_id(capture_id, "Capture ID")
 
 
+def validate_dhcp_server_id(dhcp_server_id: int) -> int:
+    """Validate a device-DB DHCP server id.
+
+    The update and delete tools put it into the URL. Both MCP routes refuse
+    a non-integer, but a call made as a function did not: a string went
+    into the path as given (#139).
+    """
+    return _validate_int_id(dhcp_server_id, "DHCP server ID")
+
+
 def validate_task_id(task_id: int) -> int:
     """Validate a FortiManager task ID.
 
