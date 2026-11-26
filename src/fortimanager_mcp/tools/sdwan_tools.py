@@ -18,6 +18,7 @@ from typing import Any
 
 from fortimanager_mcp.server import get_fmg_client, mcp
 from fortimanager_mcp.utils.config import get_default_adom, get_default_device
+from fortimanager_mcp.utils.device_proxy import in_vdom as _in_vdom
 from fortimanager_mcp.utils.device_proxy import proxy_error as _proxy_error
 from fortimanager_mcp.utils.device_proxy import proxy_results as _proxy_results
 from fortimanager_mcp.utils.errors import ResourceNotFoundError, client_safe_error
@@ -613,6 +614,7 @@ def _summarize_sdwan_monitor(members_raw: Any, health_raw: Any) -> dict[str, Any
 async def get_device_sdwan_monitor(
     adom: str | None = None,
     device: str | None = None,
+    vdom: str | None = None,
 ) -> dict[str, Any]:
     """Read a device's LIVE SD-WAN Monitor status through the FortiManager proxy.
 
@@ -631,6 +633,9 @@ async def get_device_sdwan_monitor(
         adom: ADOM name (defaults to DEFAULT_ADOM / "root" when omitted)
         device: Managed device name (e.g. "FGT-HQ"). Defaults to DEFAULT_DEVICE
             when omitted; required if that is not configured.
+        vdom: VDOM to read (optional). Without it the request names no VDOM
+            and the device answers for one of its own choice, as with
+            ``query_device_api``
 
     Returns:
         dict with keys:
@@ -658,15 +663,16 @@ async def get_device_sdwan_monitor(
     try:
         adom = validate_adom(adom)
         device = validate_device_name(device)
+        vdom = validate_object_name(vdom, "VDOM") if vdom else None
         target = [f"/adom/{adom}/device/{device}"]
         members = await client.proxy_call(
             action="get",
-            resource="/api/v2/monitor/virtual-wan/members",
+            resource=_in_vdom("/api/v2/monitor/virtual-wan/members", vdom),
             target=target,
         )
         health = await client.proxy_call(
             action="get",
-            resource="/api/v2/monitor/virtual-wan/health-check",
+            resource=_in_vdom("/api/v2/monitor/virtual-wan/health-check", vdom),
             target=target,
         )
         # The JSON-RPC call succeeds for a device that did not answer, and
@@ -770,6 +776,7 @@ def _summarize_bgp_status(neighbors: Any, paths: Any, routes: Any) -> dict[str, 
 async def get_device_bgp_status(
     adom: str | None = None,
     device: str | None = None,
+    vdom: str | None = None,
 ) -> dict[str, Any]:
     """Read a device's LIVE BGP state through the FortiManager proxy.
 
@@ -789,6 +796,9 @@ async def get_device_bgp_status(
         adom: ADOM name (defaults to DEFAULT_ADOM / "root" when omitted)
         device: Managed device name (e.g. "FGT-HQ"). Defaults to DEFAULT_DEVICE
             when omitted; required if that is not configured.
+        vdom: VDOM to read (optional). Without it the request names no VDOM
+            and the device answers for one of its own choice, as with
+            ``query_device_api``
 
     Returns:
         dict with keys:
@@ -813,18 +823,21 @@ async def get_device_bgp_status(
     try:
         adom = validate_adom(adom)
         device = validate_device_name(device)
+        vdom = validate_object_name(vdom, "VDOM") if vdom else None
     except Exception as e:
         msg, code = client_safe_error(e)
         return {"error": msg, "error_code": code}
 
     unverified: list[str] = []
-    neighbors, err = await _live_get(client, adom, device, "/api/v2/monitor/router/bgp/neighbors")
+    neighbors, err = await _live_get(
+        client, adom, device, "/api/v2/monitor/router/bgp/neighbors", vdom
+    )
     if err:
         unverified.append(f"BGP neighbors: {err}")
-    paths, err = await _live_get(client, adom, device, "/api/v2/monitor/router/bgp/paths")
+    paths, err = await _live_get(client, adom, device, "/api/v2/monitor/router/bgp/paths", vdom)
     if err:
         unverified.append(f"BGP paths: {err}")
-    routes, err = await _live_get(client, adom, device, "/api/v2/monitor/router/ipv4")
+    routes, err = await _live_get(client, adom, device, "/api/v2/monitor/router/ipv4", vdom)
     if err:
         unverified.append(f"routing table: {err}")
 
@@ -864,16 +877,19 @@ def _since(epoch: Any) -> str | None:
     return None
 
 
-async def _live_get(client: Any, adom: str, device: str, resource: str) -> tuple[Any, str | None]:
+async def _live_get(
+    client: Any, adom: str, device: str, resource: str, vdom: str | None = None
+) -> tuple[Any, str | None]:
     """GET a FortiOS monitor endpoint through the FMG proxy.
 
     Returns ``(results, None)`` or ``(None, reason)``; never raises, so one
-    unreadable source leaves the rest of the diagnosis intact.
+    unreadable source leaves the rest of the diagnosis intact. ``vdom`` is
+    validated by the caller.
     """
     try:
         raw = await client.proxy_call(
             action="get",
-            resource=resource,
+            resource=_in_vdom(resource, vdom),
             target=[f"/adom/{adom}/device/{device}"],
         )
     except Exception as e:
@@ -988,13 +1004,13 @@ async def _hub_side(
     hub_underlay = _first(match.get("interface"))
     hub_info.update({"tunnel": hub_tunnel, "underlay": hub_underlay})
 
-    interfaces, err = await _live_get(client, adom, hub, "/api/v2/monitor/system/interface")
+    interfaces, err = await _live_get(client, adom, hub, "/api/v2/monitor/system/interface", vdom)
     if err:
         unverified.append(f"hub interface status: {err}")
     elif isinstance(interfaces, dict) and isinstance(interfaces.get(hub_underlay), dict):
         hub_info["underlay_link"] = interfaces[hub_underlay].get("link")
 
-    vpn, err = await _live_get(client, adom, hub, "/api/v2/monitor/vpn/ipsec")
+    vpn, err = await _live_get(client, adom, hub, "/api/v2/monitor/vpn/ipsec", vdom)
     if err:
         unverified.append(f"hub tunnel status: {err}")
     elif isinstance(vpn, list):
@@ -1136,7 +1152,8 @@ async def diagnose_ipsec_tunnel(
         device: Device the tunnel lives on (e.g. "branch2")
         tunnel: Phase1-interface name (e.g. "HUB1-VPN2")
         adom: ADOM of the device (default: DEFAULT_ADOM or "root")
-        vdom: VDOM of the tunnel (default "root")
+        vdom: VDOM of the tunnel (default "root"). The gateway and every
+            live read are taken from it, on the hub as well
         hub_device: Optional hub device to check the far side on
 
     Returns:
@@ -1189,7 +1206,12 @@ async def diagnose_ipsec_tunnel(
             msg, _ = client_safe_error(e)
             unverified.append(f"underlay config: {msg}")
 
-    interfaces, err = await _live_get(client, adom, device, "/api/v2/monitor/system/interface")
+    # The live reads name the VDOM the gateway was read from. Unnamed, the
+    # device answers for a VDOM of its own choice, and a tunnel that lives in
+    # another one reads as absent, which is the tunnel_down verdict.
+    interfaces, err = await _live_get(
+        client, adom, device, "/api/v2/monitor/system/interface", vdom
+    )
     if err:
         unverified.append(f"interface status: {err}")
     elif isinstance(interfaces, dict) and isinstance(interfaces.get(underlay), dict):
@@ -1197,7 +1219,7 @@ async def diagnose_ipsec_tunnel(
         underlay_ev["link"] = live.get("link")
         underlay_ev["ip"] = live.get("ip")
 
-    vpn, err = await _live_get(client, adom, device, "/api/v2/monitor/vpn/ipsec")
+    vpn, err = await _live_get(client, adom, device, "/api/v2/monitor/vpn/ipsec", vdom)
     tunnel_ev: dict[str, Any] = {}
     if err:
         unverified.append(f"tunnel status: {err}")
@@ -1206,14 +1228,18 @@ async def diagnose_ipsec_tunnel(
         # A configured tunnel the monitor does not list has no IKE SA at all.
         tunnel_ev = live_tunnel or {"name": tunnel, "up": False, "phase2": []}
 
-    members, err = await _live_get(client, adom, device, "/api/v2/monitor/virtual-wan/members")
+    members, err = await _live_get(
+        client, adom, device, "/api/v2/monitor/virtual-wan/members", vdom
+    )
     if err:
         unverified.append(f"SD-WAN members: {err}")
     else:
         underlay_ev["sdwan"] = _sdwan_member(members, underlay)
         tunnel_ev["sdwan"] = _sdwan_member(members, tunnel)
 
-    health, err = await _live_get(client, adom, device, "/api/v2/monitor/virtual-wan/health-check")
+    health, err = await _live_get(
+        client, adom, device, "/api/v2/monitor/virtual-wan/health-check", vdom
+    )
     if err:
         unverified.append(f"SD-WAN health checks: {err}")
     health_ev = _health_for(health, tunnel)

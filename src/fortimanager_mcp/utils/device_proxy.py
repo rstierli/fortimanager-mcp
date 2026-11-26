@@ -8,8 +8,21 @@ An off-shape envelope that reports no failure still reads as no results.
 """
 
 from typing import Any
+from urllib.parse import urlencode
 
 from fortimanager_mcp.utils.redaction import safe_device_message
+
+
+def in_vdom(resource: str, vdom: str | None) -> str:
+    """The proxied ``resource``, naming the VDOM to read it in.
+
+    Without a VDOM the resource is returned as it is: the request then names
+    none, and which VDOM answers is the device's choice. ``vdom`` is the
+    caller's to validate.
+    """
+    if not vdom:
+        return resource
+    return f"{resource}{'&' if '?' in resource else '?'}{urlencode({'vdom': vdom})}"
 
 
 def proxy_results(raw: Any) -> Any:
