@@ -618,6 +618,9 @@ def validate_device_dict_list(devices: Any) -> list[dict[str, Any]]:
 def validate_install_scope(devices: Any) -> list[dict[str, str]]:
     """Check an install/preview scope: a non-empty list of {"name", "vdom"} dicts.
 
+    The bulk template assignments send the same shape as their scope member
+    and use it too (#139).
+
     An empty scope is refused rather than sent: the preview staging call
     accepts it and spawns a task that has nothing to stage.
     """
@@ -1287,6 +1290,16 @@ def validate_capture_id(capture_id: int) -> int:
     so the ``int`` annotation enforces nothing (upstream #83).
     """
     return _validate_int_id(capture_id, "Capture ID")
+
+
+def validate_dhcp_server_id(dhcp_server_id: int) -> int:
+    """Validate a device-DB DHCP server id.
+
+    The update and delete tools put it into the URL. Both MCP routes refuse
+    a non-integer, but a call made as a function did not: a string went
+    into the path as given (#139).
+    """
+    return _validate_int_id(dhcp_server_id, "DHCP server ID")
 
 
 def validate_task_id(task_id: int) -> int:

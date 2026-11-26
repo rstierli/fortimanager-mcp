@@ -279,6 +279,45 @@ class TestDeleteDeviceDhcpServer:
         assert args[0] == "/pm/config/device/FGT-01/vdom/root/system/dhcp/server/1"
 
 
+class TestDhcpServerIdValidation:
+    """The id goes into the URL, so each tool checks it itself, as #71 and
+    #83 did for task and capture ids (#139 item 10). Both MCP routes refuse
+    a non-integer already; this is the call made as a function.
+
+    The appliance call is mocked to succeed, so only the guard can produce
+    the error."""
+
+    @pytest.mark.parametrize("bad", ["1", "1/../2", True, 1.5, -1, None])
+    @pytest.mark.asyncio
+    async def test_update_refuses_a_bad_id(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock, bad: Any
+    ) -> None:
+        mock_fmg_instance.update.return_value = (0, {})
+
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.update_device_dhcp_server(
+                device="FGT-01", dhcp_server_id=bad, lease_time=7200
+            )
+
+        assert result.get("error_code") == "validation_error"
+        mock_fmg_instance.update.assert_not_called()
+
+    @pytest.mark.parametrize("bad", ["1", "1/../2", True, 1.5, -1, None])
+    @pytest.mark.asyncio
+    async def test_delete_refuses_a_bad_id(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock, bad: Any
+    ) -> None:
+        mock_fmg_instance.delete.return_value = (0, {})
+
+        with patch.object(device_config_tools, "get_fmg_client", return_value=mock_client):
+            result = await device_config_tools.delete_device_dhcp_server(
+                device="FGT-01", dhcp_server_id=bad
+            )
+
+        assert result.get("error_code") == "validation_error"
+        mock_fmg_instance.delete.assert_not_called()
+
+
 class TestListDeviceVaps:
     @pytest.mark.asyncio
     async def test_lists_vaps(

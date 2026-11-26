@@ -132,6 +132,30 @@ class TestGetFirmwareUpgradePath:
         assert result["status"] == "success"
 
     @pytest.mark.asyncio
+    async def test_retried_like_the_other_reads(
+        self, mock_client: FortiManagerClient, mock_fmg_instance: MagicMock
+    ) -> None:
+        """The preview only reads, so a -1 is retried as for every
+        execute_read reader (#139 item 13). Sent as a plain execute, it
+        failed on the first -1."""
+        from fortimanager_mcp.tools import firmware_tools
+
+        mock_client._TRANSIENT_BACKOFF_BASE = 0.0
+        mock_fmg_instance.execute.side_effect = [
+            (-1, {"status": {"code": -1, "message": "internal error"}}),
+            (0, MOCK_UPGRADE_PATH_RESPONSE),
+        ]
+
+        with patch.object(firmware_tools, "get_fmg_client", return_value=mock_client):
+            result = await firmware_tools.get_firmware_upgrade_path(
+                device="FGT-01", target_version="6.4.1-1637"
+            )
+
+        assert result["status"] == "success"
+        assert result["upgrade_path"] == ["6.0.8-303", "6.2.4-1112", "6.4.1-1637"]
+        assert mock_fmg_instance.execute.call_count == 2
+
+    @pytest.mark.asyncio
     async def test_invalid_version_rejected(
         self, mock_client_configured: FortiManagerClient
     ) -> None:

@@ -24,6 +24,7 @@ from fortimanager_mcp.utils.validation import (
     ValidationError,
     validate_device_name,
     validate_device_serial,
+    validate_dhcp_server_id,
     validate_interface_name,
     validate_ipv4_address,
     validate_ipv4_subnet,
@@ -661,6 +662,7 @@ async def update_device_dhcp_server(
     try:
         device = validate_device_name(device)
         vdom = validate_object_name(vdom, "VDOM")
+        dhcp_server_id = validate_dhcp_server_id(dhcp_server_id)
         if (start_ip is None) != (end_ip is None):
             raise ValidationError("start_ip and end_ip must be provided together")
         data: dict[str, Any] = {}
@@ -728,6 +730,7 @@ async def delete_device_dhcp_server(
     try:
         device = validate_device_name(device)
         vdom = validate_object_name(vdom, "VDOM")
+        dhcp_server_id = validate_dhcp_server_id(dhcp_server_id)
         result = await client.delete_device_dhcp_server(
             device=device, vdom=vdom, server_id=dhcp_server_id
         )

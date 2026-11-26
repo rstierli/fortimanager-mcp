@@ -1924,11 +1924,14 @@ class FortiManagerClient:
         """Delete multiple firewall policies.
 
         FNDN: DELETE /pm/config/adom/{adom}/pkg/{pkg}/firewall/policy with filter
+
+        ``confirm`` and ``filter`` are siblings of the url; as keyword
+        arguments pyFMG would nest them under ``data``.
         """
-        return await self.delete(
+        return await self._flat_request(
+            "delete",
             f"/pm/config/adom/{adom}/pkg/{pkg}/firewall/policy",
-            confirm=1,
-            filter=["policyid", "in"] + policyids,
+            {"confirm": 1, "filter": ["policyid", "in", *policyids]},
         )
 
     async def move_firewall_policy(
@@ -2636,7 +2639,7 @@ class FortiManagerClient:
             action: HTTP method (get, post, put, delete)
             resource: FortiGate API endpoint (e.g., /api/v2/monitor/system/status)
             target: Target path ["/adom/{adom}/device/{device}"]
-            data: Request data for POST/PUT operations
+            data: Request body for POST/PUT operations, sent as ``payload``
 
         Example:
             >>> # Get device status
@@ -2652,7 +2655,9 @@ class FortiManagerClient:
             "target": target,
         }
         if data:
-            params["data"] = data
+            # Not "data": pyFMG would send that key's value in place of the
+            # whole payload, and action, resource and target would be lost.
+            params["payload"] = data
 
         # A proxied GET only reads; a post/put/delete reaches the FortiGate
         # and must not be replayed after the request may have landed.
@@ -3928,11 +3933,12 @@ class FortiManagerClient:
         Passes flags="f_preview" so FortiManager returns the path without
         starting an upgrade -- confirmed both by swagger/um.json (um.image.upgrade
         "flags" enum includes "f_preview") and by the How-To Guide's captured
-        example for this exact request.
+        example for this exact request. A preview changes nothing, so it is
+        retried as a read.
 
         FNDN: EXEC /um/image/upgrade (swagger/um.json: um.image.upgrade)
         """
-        return await self.execute(
+        return await self.execute_read(
             "/um/image/upgrade",
             adom=adom,
             device=device,

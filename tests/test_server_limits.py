@@ -268,3 +268,90 @@ class TestHttpWiring:
         server.run_http()
 
         assert captured["kwargs"]["limit_concurrency"] is None
+
+
+async def _mcp_post_status(
+    monkeypatch: pytest.MonkeyPatch, size: int, max_bytes: int
+) -> tuple[int, bytes]:
+    """Status and body the app ``run_http`` builds answers a POST /mcp of
+    ``size`` bytes with, sent in chunks and without a Content-Length."""
+    import asyncio
+
+    import uvicorn
+
+    monkeypatch.setattr(server.settings, "MCP_AUTH_TOKEN", "secret-token")
+    monkeypatch.setattr(server.settings, "MCP_MAX_REQUEST_BYTES", max_bytes)
+
+    # No FortiManager behind this app: the lifespan starts the session
+    # manager only.
+    async def idle() -> None:
+        return None
+
+    async def no_stop(_task: Any) -> None:
+        return None
+
+    monkeypatch.setattr(server, "_start_fmg_client", lambda: asyncio.ensure_future(idle()))
+    monkeypatch.setattr(server, "_stop_fmg_client", no_stop)
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kw: captured.update(app=app))
+    server.run_http()
+    app = captured["app"]
+
+    scope = http_scope(
+        [
+            (b"host", b"127.0.0.1:8000"),
+            (b"authorization", b"Bearer secret-token"),
+            (b"accept", b"application/json, text/event-stream"),
+            (b"content-type", b"application/json"),
+        ]
+    )
+    body = b"x" * size
+    chunks = [body[i : i + 65536] for i in range(0, size, 65536)]
+    sent: list[dict[str, Any]] = []
+    answered = asyncio.Event()
+
+    async def receive() -> dict[str, Any]:
+        if chunks:
+            chunk = chunks.pop(0)
+            return {"type": "http.request", "body": chunk, "more_body": bool(chunks)}
+        await answered.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict[str, Any]) -> None:
+        sent.append(message)
+        if message["type"] == "http.response.start":
+            answered.set()
+
+    async with app.router.lifespan_context(app):
+        await asyncio.wait_for(app(scope, receive, send), timeout=10)
+    status = status_of(sent)
+    assert status is not None
+    text = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
+    return status, text
+
+
+class TestTheSdkBodyLimit:
+    """The MCP SDK refuses a body over 4 MiB itself, inside the app this
+    server mounts (measured with mcp 2.0.0, 2.1.1 and 2.3.0). So
+    MCP_MAX_REQUEST_BYTES above 4 MiB has no effect, and 0 turns off only
+    this server's own check (#139 item 14). The README, .env.example and the
+    setting's description say so; if this fails after an SDK upgrade, they
+    need changing too."""
+
+    @pytest.mark.parametrize("max_bytes", [10 * 1024 * 1024, 0])
+    @pytest.mark.asyncio
+    async def test_a_body_over_4_mib_gets_the_sdks_413(
+        self, monkeypatch: pytest.MonkeyPatch, max_bytes: int
+    ) -> None:
+        status, text = await _mcp_post_status(monkeypatch, 4 * 1024 * 1024 + 1, max_bytes)
+
+        assert (status, text) == (413, b"Request body too large")
+
+    @pytest.mark.asyncio
+    async def test_a_body_of_4_mib_reaches_the_transport(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The control: one byte less is read and parsed (it is not JSON)."""
+        status, _ = await _mcp_post_status(monkeypatch, 4 * 1024 * 1024, 10 * 1024 * 1024)
+
+        assert status == 400
