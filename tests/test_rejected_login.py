@@ -221,15 +221,16 @@ async def test_a_proxy_page_at_login_is_not_an_authentication_error(wire: Wire, 
     assert not any(part in str(refused.value) for part in PYFMG_DUMP)
 
 
-async def test_a_login_answered_without_a_session_is_refused_in_pyfmg_words(wire: Wire) -> None:
-    """FortiManager's reply holds no error to quote, so the text is pyfmg's,
-    as the branch for a failed login always worded it."""
+async def test_a_login_answered_without_a_session_is_a_connection_error(wire: Wire) -> None:
+    """The reply holds no code that refuses the administrator, so nothing
+    says the credentials are wrong."""
     wire.session = None
-    with pytest.raises(AuthenticationError) as refused:
+    with pytest.raises(ConnectionError) as refused:
         await new_client("session").connect()
-    assert refused.value.code is None
-    assert "no valid connection" in str(refused.value)
-    assert "OK" not in str(refused.value)
+    assert not isinstance(refused.value, AuthenticationError)
+    assert str(refused.value) == (
+        "Failed to connect to FortiManager: the login was answered without a session"
+    )
 
 
 @BOTH

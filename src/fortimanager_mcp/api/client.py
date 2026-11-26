@@ -335,10 +335,10 @@ class FortiManagerClient:
                     "No authentication provided. Set API token or username/password."
                 )
 
-            code, response = await self._run_fmg_call(self._fmg.login)
+            code, _ = await self._run_fmg_call(self._fmg.login)
 
             if code != 0:
-                raise self._login_failure(self._fmg, response)
+                raise self._login_failure(self._fmg)
 
             # With an API token, pyfmg's login() performs no network round-trip
             # (it just stores the key), so an unreachable FMG or a bad token is
@@ -374,7 +374,7 @@ class FortiManagerClient:
             raise ConnectionError(f"Failed to connect to FortiManager: {e}") from e
 
     @staticmethod
-    def _login_failure(fmg: FortiManager, response: Any) -> FortiManagerMCPError:
+    def _login_failure(fmg: FortiManager) -> FortiManagerMCPError:
         """The error for a login pyfmg reports as failed.
 
         pyfmg's own result says only that no session was opened. FortiManager's
@@ -400,8 +400,9 @@ class FortiManagerClient:
             # Any other code, such as -1 for an internal error, says nothing
             # about the credentials.
             return ConnectionError(f"FortiManager login failed with code {code}: {message}")
-        error_msg = _status_text(response.get("status", {}).get("message", "Login failed"))
-        return AuthenticationError(f"FortiManager login failed: {error_msg}")
+        # No code that refuses the administrator, and yet no session: nothing
+        # says the credentials are wrong.
+        return ConnectionError("the login was answered without a session")
 
     async def disconnect(self) -> None:
         """Disconnect and cleanup resources.
